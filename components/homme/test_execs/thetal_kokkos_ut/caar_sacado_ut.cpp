@@ -361,8 +361,8 @@ TEST_CASE("caar_dx_check") {
   auto atol = 1e-10;
 
   auto& catch_capture = Catch::getResultCapture();
-  // NOTE: cannot use hydrostatic=true, since it requires a scan sum
-  for (const bool hydrostatic : {false}) {
+  // Note, doing hydrostatic after non-hydrostatic causes test failures for some reason
+  for (const bool hydrostatic : {true,false}) {
     if (comm.am_i_root()) {
       std::cout << " -> " << (hydrostatic ? "Hydrostatic\n" : "Non-Hydrostatic\n");
     }
@@ -448,6 +448,14 @@ TEST_CASE("caar_dx_check") {
         auto x = dxdp0.clone(true);
         auto y = x.clone();
         caar_dx.run_JV(data,x,y);
+
+        // Note, changing to run_JV_full requires commenting/uncommenting
+        // the relevant blocks around lines 1953 and 2016 in CaarFunctorImpl.hpp to 
+        // change how pi/phinh are reset.
+
+        // caar_dx.init_J_full(data);
+        // caar_dx.run_pre_exchange(data);
+        // caar_dx.run_JV_full(data,elems.m_state);
 
         // Check that dXnew/dp = dXnew/dXold * dXold/dp. dXnew/dp is in elems_dp.m_state at slice np1
         // while dXnew/dXold is in elems_dx.m_state at slice np1
@@ -646,8 +654,8 @@ TEST_CASE("caar_jtv_check") {
   const Real rtol = 1e-8;
   const Real atol = 1e-8;
 
-  // NOTE: cannot use hydrostatic=true (requires a scan sum not supported here)
-  for (const bool hydrostatic : {false}) {
+  // Note, doing hydrostatic after non-hydrostatic causes test failures for some reason
+  for (const bool hydrostatic : {true, false}) {
     params.theta_hydrostatic_mode       = hydrostatic;
     limiter.m_theta_hydrostatic_mode    = hydrostatic;
     limiter_dx.m_theta_hydrostatic_mode = hydrostatic;
@@ -700,6 +708,7 @@ TEST_CASE("caar_jtv_check") {
 
         // Init d/dx(n0) structures
         caar_dx.init_J(data);
+        //caar_dx.init_J_full(data);
 
         // Compute d/dx(np1)
         caar_dx.run_pre_exchange(data);
@@ -709,9 +718,16 @@ TEST_CASE("caar_jtv_check") {
         // J^T*a -> adj_a[np1]
         caar_dx.run_JtV(data, xa, ya);
 
+        // Note, changing to run_JV_full/run_JtV_full requires commenting/uncommenting
+        // the relevant blocks around lines 1953 and 2016 in CaarFunctorImpl.hpp to 
+        // change how pi/phinh are reset.
+
+        // // J*b   -> adj_b[np1]
+        // caar_dx.run_JV_full(data, xb, yb);
+        // // J^T*a -> adj_a[np1]
+        // caar_dx.run_JtV_full(data, xa, ya);
+
         // (xa,yb) = (xa,J*xb) = (J^T*xa,xb) = (ya,xb)
-        // Note: we must sum over all state vars, since J and J^T scramble them differently
-        //       The contributions of each vars are kept just for debugging weird vals (like nans)
         Real2 V_dot, vth_dot, dp_dot, phi_dot, w_dot;
         Real2 gdot;
 

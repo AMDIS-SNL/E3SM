@@ -23,7 +23,8 @@ constexpr int DpFadSize = HOMMEXX_DP_SFAD_SIZE;
 using DpFadType = SFadN<double,DpFadSize>;
 
 // The fad type for the deriv w.r.t. state vars of some functors
-using DxFadTypeCaar = SFadN<double,16*NP*NP>;
+using DxFadTypeCaar = SFadN<double,19*NP*NP>; // for JV
+//using DxFadTypeCaar = SFadN<double,1568>; // for JV_full
 
 // The fad type for the deriv w.r.t. state vars of the DIRK functor.
 // DIRK has no horizontal (GaussPoint) coupling: each column (ip,jp) is independent.
