@@ -1007,7 +1007,7 @@ struct CaarFunctorImplST {
     auto dphidx_v = ekat::scalarize(m_state.m_phinh_i);
     auto dwdx_v = ekat::scalarize(m_state.m_w_i);
 
-    // Compute Y = d(state_new)/d(state_old) * X
+    // Compute Y = J^T * X
     int np1 = data.np1;
 
     auto x_V = ekat::scalarize(x.v);

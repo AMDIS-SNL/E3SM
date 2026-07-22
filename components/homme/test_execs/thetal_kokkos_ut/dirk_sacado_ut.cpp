@@ -210,7 +210,9 @@ TEST_CASE ("dirk_jv_testing") {
   // Verify the chain rule: dX_np1/dp = J * (dX_n0/dp)
   //  - LHS: computed via DpFadType by running DIRK with FAD arithmetic over p
   //  - RHS: computed via init_J + run + run_JV (DxFadTypeDirk)
-  // This checks that J = d(state_np1) / d(state_n0) is correctly assembled.
+  // NOTE: here, X_np1 and X_n0 refer to the state before and after running DIRK.
+  // In terms of time slices, they both refer to np1, since DIRK updates that
+  // slice in place.
 
   std::random_device rd;
   const unsigned int catchRngSeed = Catch::rngSeed();
@@ -243,29 +245,19 @@ TEST_CASE ("dirk_jv_testing") {
   using DirkDp = DirkFunctorImplST<DpFadType>;
   using DirkDx = DirkFunctorImplST<DxFadType>;
 
-  // elems:    Real-typed, holds V = dX_n0/dp and after run_JV holds J*V at np1
   // elems_dp: DpFadType, used to compute dX_np1/dp directly via FAD DIRK run
   // elems_dx: DxFadTypeDirk, used to compute J via init_J + run
-  ElementsST<Real>      elems;
   ElementsST<DpFadType> elems_dp;
   ElementsST<DxFadType> elems_dx;
-  elems.init(num_elems, false, true, PhysicalConstants::rearth0, -1, true);
   elems_dp.init(num_elems, false, true, PhysicalConstants::rearth0, -1, true);
   elems_dx.init(num_elems, false, true, PhysicalConstants::rearth0, -1, true);
 
-  auto& geometry = elems.m_geometry = elems_dp.m_geometry = elems_dx.m_geometry;
-  Context::singleton().create_ref(elems.m_geometry);
+  auto& geometry = elems_dp.m_geometry = elems_dx.m_geometry;
+  Context::singleton().create_ref(geometry);
   geometry.randomize(seed);
 
   // Randomize state values (real part) for all time levels
   elems_dp.m_state.randomize(seed, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geometry.m_phis);
-
-  // Randomize FAD derivatives at n0: these represent dX_n0/dp for a random scalar p
-  elems_dp.m_state.randomize_derivs(seed, n0);
-
-  // Initialize DxFadType state with the same real values as DpFadType state
-  for (int tl = 0; tl < NUM_TIME_LEVELS; ++tl)
-    elems_dx.m_state.import_values(elems_dp.m_state, tl);
 
   // Create DIRK functors
   DirkDp dirk_dp(num_elems);
@@ -283,17 +275,22 @@ TEST_CASE ("dirk_jv_testing") {
   const Real dt2 = rpdf(0.1, 0.9)(engine);
   const bool bfb_solver = false;
 
-  // Extract V = dX_n0/dp into the Real element state at n0
-  auto dxdp0 = elems_dp.m_state.take_deriv_snapshot(n0,0);
-
+  StateSnapshot x(num_elems), y(num_elems);
   for (Real alphadt_nm1 : {0.0, 0.3}) {
-    const int nm1_tl = (alphadt_nm1 == 0.0) ? -1 : nm1;
     printf("-> alphadt_nm1: %f\n", alphadt_nm1);
     for (Real alphadt_n0 : {0.0, 0.7}) {
       printf("  -> alphadt_n0: %f\n", alphadt_n0);
 
+      // Set dx state VALUES to match the dp state ones
+      for (int tl = 0; tl < NUM_TIME_LEVELS; ++tl)
+        elems_dx.m_state.import_values(elems_dp.m_state, tl);
+
+      // Randomize initial sensitivities, and store them (for JV step)
+      elems_dp.m_state.randomize_derivs(seed, np1);
+      elems_dp.m_state.take_deriv_snapshot(x,np1,0);
+
       // Step 1: run DpFadType DIRK to compute dX_np1/dp
-      dirk_dp.run(nm1_tl, alphadt_nm1, n0, alphadt_n0, np1, dt2,
+      dirk_dp.run(nm1, alphadt_nm1, n0, alphadt_n0, np1, dt2,
                   elems_dp, hvcoord, bfb_solver);
       Kokkos::fence();
 
@@ -301,20 +298,19 @@ TEST_CASE ("dirk_jv_testing") {
       //   init_J  - set d(X_n0[k])/d(X_n0[k]) = 1 per state variable per level k per column
       //   run     - Newton solve with FAD arithmetic, propagating J through the solve
       //   run_JV  - apply product rule: (J at np1) * (V at n0) -> result at np1
-      dirk_dx.init_J(n0, elems_dx);
-      dirk_dx.run(nm1_tl, alphadt_nm1, n0, alphadt_n0, np1, dt2,
+      dirk_dx.init_J(np1, elems_dx.m_state);
+      dirk_dx.run(nm1, alphadt_nm1, n0, alphadt_n0, np1, dt2,
                   elems_dx, hvcoord, bfb_solver);
       Kokkos::fence();
-      elems.m_state.import_snapshot(dxdp0,n0);
-      dirk_dx.run_JV(n0, np1, elems_dx, elems.m_state);
+      dirk_dx.run_JV(np1, elems_dx.m_state, x, y);
       Kokkos::fence();
 
       // Compare: elems.m_state at np1 (= J*V) vs. elems_dp.m_state.dx(0) at np1 (= dX_np1/dp)
       // DIRK only updates w_i and phinh_i; check both interface-level fields.
       auto dphi_dp = ekat::scalarize(elems_dp.m_state.m_phinh_i);
       auto dw_dp   = ekat::scalarize(elems_dp.m_state.m_w_i);
-      auto dphi_jv = ekat::scalarize(elems.m_state.m_phinh_i);
-      auto dw_jv   = ekat::scalarize(elems.m_state.m_w_i);
+      auto dphi_jv = ekat::scalarize(y.phinh_i);
+      auto dw_jv   = ekat::scalarize(y.w_i);
 
       const auto dphi_dp_h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), dphi_dp);
       const auto dw_dp_h   = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), dw_dp);
@@ -325,11 +321,11 @@ TEST_CASE ("dirk_jv_testing") {
         for (int ip = 0; ip < np; ++ip)
           for (int jp = 0; jp < np; ++jp)
             for (int k = 0; k <= nlev; ++k) {
-              auto dphi_src = dphi_jv_h(ie, np1, ip, jp, k);
+              auto dphi_src = dphi_jv_h(ie, ip, jp, k);
               auto dphi_tgt = dphi_dp_h(ie, np1, ip, jp, k).dx(0);
               CHECK_THAT(dphi_src, Catch::WithinRel(dphi_tgt, rtol) || Catch::WithinAbs(dphi_tgt, atol));
 
-              auto dw_src = dw_jv_h(ie, np1, ip, jp, k);
+              auto dw_src = dw_jv_h(ie, ip, jp, k);
               auto dw_tgt = dw_dp_h(ie, np1, ip, jp, k).dx(0);
               CHECK_THAT(dw_src, Catch::WithinRel(dw_tgt, rtol) || Catch::WithinAbs(dw_tgt, atol));
             }
@@ -347,7 +343,7 @@ TEST_CASE ("dirk_jtv_testing") {
 
   std::random_device rd;
   const unsigned int catchRngSeed = Catch::rngSeed();
-  const unsigned int seed = catchRngSeed == 0 ? rd() : catchRngSeed;
+  unsigned int seed = catchRngSeed == 0 ? rd() : catchRngSeed;
   std::cout << "seed: " << seed << (catchRngSeed == 0 ? " (catch rng seed was 0)\n" : "\n");
 
   using ipdf = std::uniform_int_distribution<int>;
@@ -367,7 +363,7 @@ TEST_CASE ("dirk_jtv_testing") {
   int np1 = 2;
 
   HybridVCoord hvcoord;
-  hvcoord.random_init(seed);
+  hvcoord.random_init(seed++);
   const auto max_pressure = 1000 + hvcoord.ps0;
 
   using DxFadType = DxFadTypeDirk;
@@ -378,15 +374,16 @@ TEST_CASE ("dirk_jtv_testing") {
 
   auto& geometry = elems_dx.m_geometry;
   Context::singleton().create_ref(geometry);
-  geometry.randomize(seed);
+  geometry.randomize(seed++);
 
   // Two adjoint vectors (Real), both initialized to the same random state at n0.
   // run_JV / run_JtV only read n0 and write np1, so n0 remains unchanged throughout.
-  ElementsStateST<Real> adj_a, adj_b;
-  adj_a.init(num_elems);
-  adj_b.init(num_elems);
-  adj_a.randomize(seed + 1, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geometry.m_phis);
-  adj_b.import_values(adj_a, n0);
+  StateSnapshot xa(num_elems), xb(num_elems);
+  xa.randomize(seed++, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geometry.m_phis);
+  xb.randomize(seed++, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geometry.m_phis);
+
+  auto ya = xa.clone();
+  auto yb = xb.clone();
 
   DirkDx dirk_dx(num_elems);
   dirk_dx.m_verbose = false;
@@ -406,20 +403,31 @@ TEST_CASE ("dirk_jtv_testing") {
   const p5_mid_t p5_mid({0,0,0,0,0}, {num_elems, 2, NP, NP, NUM_PHYSICAL_LEV});
   const p4_int_t p4_int({0,0,0,0}, {num_elems, NP, NP, NUM_INTERFACE_LEV});
 
-  auto sa_v   = ekat::scalarize(adj_a.m_v);
-  auto sa_vth = ekat::scalarize(adj_a.m_vtheta_dp);
-  auto sa_dp  = ekat::scalarize(adj_a.m_dp3d);
-  auto sa_phi = ekat::scalarize(adj_a.m_phinh_i);
-  auto sa_w   = ekat::scalarize(adj_a.m_w_i);
+  auto xa_v   = ekat::scalarize(xa.v);
+  auto xa_vth = ekat::scalarize(xa.vtheta_dp);
+  auto xa_dp  = ekat::scalarize(xa.dp3d);
+  auto xa_phi = ekat::scalarize(xa.phinh_i);
+  auto xa_w   = ekat::scalarize(xa.w_i);
 
-  auto sb_v   = ekat::scalarize(adj_b.m_v);
-  auto sb_vth = ekat::scalarize(adj_b.m_vtheta_dp);
-  auto sb_dp  = ekat::scalarize(adj_b.m_dp3d);
-  auto sb_phi = ekat::scalarize(adj_b.m_phinh_i);
-  auto sb_w   = ekat::scalarize(adj_b.m_w_i);
+  auto ya_v   = ekat::scalarize(ya.v);
+  auto ya_vth = ekat::scalarize(ya.vtheta_dp);
+  auto ya_dp  = ekat::scalarize(ya.dp3d);
+  auto ya_phi = ekat::scalarize(ya.phinh_i);
+  auto ya_w   = ekat::scalarize(ya.w_i);
+
+  auto xb_v   = ekat::scalarize(xb.v);
+  auto xb_vth = ekat::scalarize(xb.vtheta_dp);
+  auto xb_dp  = ekat::scalarize(xb.dp3d);
+  auto xb_phi = ekat::scalarize(xb.phinh_i);
+  auto xb_w   = ekat::scalarize(xb.w_i);
+
+  auto yb_v   = ekat::scalarize(yb.v);
+  auto yb_vth = ekat::scalarize(yb.vtheta_dp);
+  auto yb_dp  = ekat::scalarize(yb.dp3d);
+  auto yb_phi = ekat::scalarize(yb.phinh_i);
+  auto yb_w   = ekat::scalarize(yb.w_i);
 
   for (Real alphadt_nm1 : {0.0, 0.3}) {
-    const int nm1_tl = (alphadt_nm1 == 0.0) ? -1 : nm1;
     printf("-> alphadt_nm1: %f\n", alphadt_nm1);
     for (Real alphadt_n0 : {0.0, 0.7}) {
       printf("  -> alphadt_n0: %f\n", alphadt_n0);
@@ -427,46 +435,45 @@ TEST_CASE ("dirk_jtv_testing") {
       // Randomize the DxFad state for this run
       elems_dx.m_state.randomize(seed, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geometry.m_phis);
 
-      // Initialize Jacobian d/dx(n0) and run DIRK with FAD arithmetic
-      dirk_dx.init_J(n0, elems_dx);
-      dirk_dx.run(nm1_tl, alphadt_nm1, n0, alphadt_n0, np1, dt2, elems_dx, hvcoord, bfb_solver);
+      // Initialize Jacobian d/dx(np1) and run DIRK with FAD arithmetic
+      dirk_dx.init_J(np1, elems_dx.m_state);
+      dirk_dx.run(nm1, alphadt_nm1, n0, alphadt_n0, np1, dt2, elems_dx, hvcoord, bfb_solver);
       Kokkos::fence();
 
       // J*b  -> adj_b[np1]
-      dirk_dx.run_JV (n0, np1, elems_dx, adj_b);
+      dirk_dx.run_JV (np1, elems_dx.m_state, xa, ya);
       // J^T*a -> adj_a[np1]
-      dirk_dx.run_JtV(n0, np1, elems_dx, adj_a);
+      dirk_dx.run_JtV(np1, elems_dx.m_state, xb, yb);
       Kokkos::fence();
 
-      // Compute dot1 = <a[n0], J*b[np1]>  and  dot2 = <J^T*a[np1], b[n0]>.
-      // Both must equal a^T * J * b by the definition of the matrix transpose.
+      // (x_b,y_a) = (x_b,J*x_a) = (J^T*x_b,x_a) = (y_b,x_a)
       Real2 V_dot, vth_dot, dp_dot, phi_dot, w_dot;
       Real2 gdot;
 
       Kokkos::parallel_reduce(p5_mid,
         KOKKOS_LAMBDA(int ie, int icmp, int ip, int jp, int k, Real2& acc) {
-          acc.v[0] += sa_v(ie, n0,  icmp, ip, jp, k) * sb_v(ie, np1, icmp, ip, jp, k);
-          acc.v[1] += sa_v(ie, np1, icmp, ip, jp, k) * sb_v(ie, n0,  icmp, ip, jp, k);
+          acc.v[0] += xa_v(ie, icmp, ip, jp, k) * yb_v(ie, icmp, ip, jp, k);
+          acc.v[1] += ya_v(ie, icmp, ip, jp, k) * xb_v(ie, icmp, ip, jp, k);
         }, V_dot);
       Kokkos::parallel_reduce(p4_mid,
         KOKKOS_LAMBDA(int ie, int ip, int jp, int k, Real2& acc) {
-          acc.v[0] += sa_vth(ie, n0,  ip, jp, k) * sb_vth(ie, np1, ip, jp, k);
-          acc.v[1] += sa_vth(ie, np1, ip, jp, k) * sb_vth(ie, n0,  ip, jp, k);
+          acc.v[0] += xa_vth(ie, ip, jp, k) * yb_vth(ie, ip, jp, k);
+          acc.v[1] += ya_vth(ie, ip, jp, k) * xb_vth(ie, ip, jp, k);
         }, vth_dot);
       Kokkos::parallel_reduce(p4_mid,
         KOKKOS_LAMBDA(int ie, int ip, int jp, int k, Real2& acc) {
-          acc.v[0] += sa_dp(ie, n0,  ip, jp, k) * sb_dp(ie, np1, ip, jp, k);
-          acc.v[1] += sa_dp(ie, np1, ip, jp, k) * sb_dp(ie, n0,  ip, jp, k);
+          acc.v[0] += xa_dp(ie, ip, jp, k) * yb_dp(ie, ip, jp, k);
+          acc.v[1] += ya_dp(ie, ip, jp, k) * xb_dp(ie, ip, jp, k);
         }, dp_dot);
       Kokkos::parallel_reduce(p4_int,
         KOKKOS_LAMBDA(int ie, int ip, int jp, int k, Real2& acc) {
-          acc.v[0] += sa_phi(ie, n0,  ip, jp, k) * sb_phi(ie, np1, ip, jp, k);
-          acc.v[1] += sa_phi(ie, np1, ip, jp, k) * sb_phi(ie, n0,  ip, jp, k);
+          acc.v[0] += xa_phi(ie, ip, jp, k) * yb_phi(ie, ip, jp, k);
+          acc.v[1] += ya_phi(ie, ip, jp, k) * xb_phi(ie, ip, jp, k);
         }, phi_dot);
       Kokkos::parallel_reduce(p4_int,
         KOKKOS_LAMBDA(int ie, int ip, int jp, int k, Real2& acc) {
-          acc.v[0] += sa_w(ie, n0,  ip, jp, k) * sb_w(ie, np1, ip, jp, k);
-          acc.v[1] += sa_w(ie, np1, ip, jp, k) * sb_w(ie, n0,  ip, jp, k);
+          acc.v[0] += xa_w(ie, ip, jp, k) * yb_w(ie, ip, jp, k);
+          acc.v[1] += ya_w(ie, ip, jp, k) * xb_w(ie, ip, jp, k);
         }, w_dot);
 
       gdot += V_dot;
