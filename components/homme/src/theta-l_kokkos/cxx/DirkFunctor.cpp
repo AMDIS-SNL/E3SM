@@ -16,6 +16,7 @@ template class DirkFunctorST<Real>;
 
 #ifdef HOMMEXX_ENABLE_FAD_TYPES
 template class DirkFunctorST<DpFadType>;
+template class DirkFunctorST<DxFadTypeDirk>;
 #endif
 
 } // namespace Homme
