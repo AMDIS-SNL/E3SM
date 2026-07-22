@@ -10,6 +10,17 @@ struct StateSnapshot {
   using PT = PackType<ST>;
 
   StateSnapshot (int nelem, bool alloc_ps = false);
+  StateSnapshot (const StateSnapshot&) = default;
+
+  StateSnapshot& operator= (const StateSnapshot&) = default;
+
+  void deep_copy (const StateSnapshot& src);
+
+  StateSnapshot clone (const bool deep_copy = false) const;
+
+  void randomize (const int seed, const Real p_max, const Real p0, const Real hyai0);
+  void randomize (const int seed, const Real p_max, const Real p0, const Real hyai0,
+                  const ExecViewUnmanaged<const Real*[NP][NP]>& phis);
 
   int num_elems;
 

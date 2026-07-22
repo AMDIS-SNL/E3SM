@@ -263,14 +263,6 @@ TEST_CASE ("dirk_jv_testing") {
   // Randomize FAD derivatives at n0: these represent dX_n0/dp for a random scalar p
   elems_dp.m_state.randomize_derivs(seed, n0);
 
-  // Extract V = dX_n0/dp into the Real element state at n0
-  Kokkos::deep_copy(elems.m_state.m_v,         0);
-  Kokkos::deep_copy(elems.m_state.m_vtheta_dp, 0);
-  Kokkos::deep_copy(elems.m_state.m_dp3d,      0);
-  Kokkos::deep_copy(elems.m_state.m_phinh_i,   0);
-  Kokkos::deep_copy(elems.m_state.m_w_i,       0);
-  elems.m_state.import_values_from_deriv(elems_dp.m_state, n0, 0);
-
   // Initialize DxFadType state with the same real values as DpFadType state
   for (int tl = 0; tl < NUM_TIME_LEVELS; ++tl)
     elems_dx.m_state.import_values(elems_dp.m_state, tl);
@@ -291,6 +283,9 @@ TEST_CASE ("dirk_jv_testing") {
   const Real dt2 = rpdf(0.1, 0.9)(engine);
   const bool bfb_solver = false;
 
+  // Extract V = dX_n0/dp into the Real element state at n0
+  auto dxdp0 = elems_dp.m_state.take_deriv_snapshot(n0,0);
+
   for (Real alphadt_nm1 : {0.0, 0.3}) {
     const int nm1_tl = (alphadt_nm1 == 0.0) ? -1 : nm1;
     printf("-> alphadt_nm1: %f\n", alphadt_nm1);
@@ -310,6 +305,7 @@ TEST_CASE ("dirk_jv_testing") {
       dirk_dx.run(nm1_tl, alphadt_nm1, n0, alphadt_n0, np1, dt2,
                   elems_dx, hvcoord, bfb_solver);
       Kokkos::fence();
+      elems.m_state.import_snapshot(dxdp0,n0);
       dirk_dx.run_JV(n0, np1, elems_dx, elems.m_state);
       Kokkos::fence();
 

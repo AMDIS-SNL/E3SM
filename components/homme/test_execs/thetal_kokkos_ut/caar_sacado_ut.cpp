@@ -415,12 +415,7 @@ TEST_CASE("caar_dx_check") {
         elems_dp.m_state.randomize_derivs(seed,n0);
 
         // Extract derivs into a non-fad type for the Dp = Dx*Dp_old test
-        Kokkos::deep_copy(elems.m_state.m_v,0);
-        Kokkos::deep_copy(elems.m_state.m_vtheta_dp,0);
-        Kokkos::deep_copy(elems.m_state.m_dp3d,0);
-        Kokkos::deep_copy(elems.m_state.m_phinh_i,0);
-        Kokkos::deep_copy(elems.m_state.m_w_i,0);
-        elems.m_state.import_values_from_deriv(elems_dp.m_state,n0,0);
+        auto dxdp0 = elems_dp.m_state.take_deriv_snapshot(n0,0);
 
         // Init d/dx state
         elems_dx.m_state.import_values(elems_dp.m_state,n0);
@@ -454,6 +449,7 @@ TEST_CASE("caar_dx_check") {
         // RUN caar's J*V functor for ST=DxFadType
         caar_dx.init_J(data);
         caar_dx.run_pre_exchange(data);
+        elems.m_state.import_snapshot(dxdp0,n0,0);
         caar_dx.run_JV(data,elems.m_state);
 
         // Check that dXnew/dp = dXnew/dXold * dXold/dp. dXnew/dp is in elems_dp.m_state at slice np1
