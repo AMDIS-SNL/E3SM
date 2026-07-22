@@ -661,19 +661,24 @@ struct CaarFunctorImplST {
           auto pt_Jphi = Jphi + pt_offset;
           auto pt_Jw   = Jw   + pt_offset;
 
-          // Dependencies on k quantities
-          y_phi_val += pt_Jphi[u_curr]   * x_u_ie  (mpt,npt,k)  // dphi(k)/du(k)
-                     + pt_Jphi[v_curr]   * x_v_ie  (mpt,npt,k)  // dphi(k)/dv(k)
-                     + pt_Jphi[dp_curr]  * x_dp_ie (mpt,npt,k)  // dphi(k)/ddp(k)
-                     + pt_Jphi[phi_curr] * x_phi_ie(mpt,npt,k)  // dphi(k)/dphi(k)
+          // Dependencies on k-th int quantities
+          y_phi_val += pt_Jphi[phi_curr] * x_phi_ie(mpt,npt,k)  // dphi(k)/dphi(k)
                      + pt_Jphi[w_curr]   * x_w_ie  (mpt,npt,k); // dphi(k)/dw(k)
 
-          y_w_val += pt_Jw[u_curr]   * x_u_ie  (mpt,npt,k)  // dw(k)/du(k)
-                   + pt_Jw[v_curr]   * x_v_ie  (mpt,npt,k)  // dw(k)/dv(k)
-                   + pt_Jw[vth_curr] * x_vth_ie(mpt,npt,k)  // dw(k)/dvth(k)
-                   + pt_Jw[dp_curr]  * x_dp_ie (mpt,npt,k)  // dw(k)/ddp(k)
-                   + pt_Jw[phi_curr] * x_phi_ie(mpt,npt,k)  // dw(k)/dphi(k)
+          y_w_val += pt_Jw[phi_curr] * x_phi_ie(mpt,npt,k)  // dw(k)/dphi(k)
                    + pt_Jw[w_curr]   * x_w_ie  (mpt,npt,k); // dw(k)/dw(k)
+
+          // Dependency on k-th mid quantities (not defined if k==last_int)
+          if (k<last_int) {
+            y_phi_val += pt_Jphi[u_curr]   * x_u_ie  (mpt,npt,k)  // dphi(k)/du(k)
+                       + pt_Jphi[v_curr]   * x_v_ie  (mpt,npt,k)  // dphi(k)/dv(k)
+                       + pt_Jphi[dp_curr]  * x_dp_ie (mpt,npt,k); // dphi(k)/ddp(k)
+
+            y_w_val += pt_Jw[u_curr]   * x_u_ie  (mpt,npt,k)  // dw(k)/du(k)
+                     + pt_Jw[v_curr]   * x_v_ie  (mpt,npt,k)  // dw(k)/dv(k)
+                     + pt_Jw[vth_curr] * x_vth_ie(mpt,npt,k)  // dw(k)/dvth(k)
+                     + pt_Jw[dp_curr]  * x_dp_ie (mpt,npt,k); // dw(k)/ddp(k)
+          }
 
           // Dependencies on k-1 quantities
           if (k>0) {
