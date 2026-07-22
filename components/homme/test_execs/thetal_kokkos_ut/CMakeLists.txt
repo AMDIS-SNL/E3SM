@@ -389,7 +389,6 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
   # Eqn of state sacado derivatives tests
   EkatCreateUnitTest (eos_sacado_ut
     eos_sacado_ut.cpp
-    COMPILER_CXX_DEFS
     LIBS thetal_kokkos_ut_lib
     LABELS AMDIS
   )
@@ -397,7 +396,6 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
   # Dirk sacado derivatives tests
   EkatCreateUnitTest ("dirk_sacado_ut"
     "dirk_sacado_ut.cpp;${SHARE_UT_DIR}/geometry_interface.F90;thetal_test_interface.F90"
-    COMPILER_CXX_DEFS
     LIBS thetal_kokkos_ut_lib
     LABELS AMDIS
   )
