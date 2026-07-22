@@ -7,6 +7,7 @@
 #ifndef HOMMEXX_ELEMENTS_STATE_HPP
 #define HOMMEXX_ELEMENTS_STATE_HPP
 
+#include "StateSnapshot.hpp"
 #include "Types.hpp"
 #include "kokkos_utils.hpp"
 #include "utilities/Hash.hpp"
@@ -36,29 +37,6 @@ private:
   int m_num_elems;
   Kokkos::TeamPolicy<ExecSpace> m_policy;
   TeamUtils<ExecSpace> m_tu;
-};
-
-struct StateSnapshot {
-  using ST = Real;
-  using PT = PackType<ST>;
-
-  StateSnapshot (int nelem, bool alloc_ps = false)
-   : v ("v",nelem)
-   , vtheta_dp ("vtheta_dp",nelem)
-   , dp3d ("dp3d",nelem)
-   , w_i ("w",nelem)
-   , phinh_i ("phinh",nelem)
-  {
-    if (alloc_ps)
-      ps_v = decltype(ps_v)("ps",nelem);
-  }
-
-  ExecViewManaged<PT * [2][NP][NP][NUM_LEV  ]> v;          // Horizontal velocity
-  ExecViewManaged<PT *    [NP][NP][NUM_LEV  ]> vtheta_dp;  // Virtual potential temperature (mass)
-  ExecViewManaged<PT *    [NP][NP][NUM_LEV  ]> dp3d;       // Delta p on levels
-  ExecViewManaged<PT *    [NP][NP][NUM_LEV_P]> w_i;        // Vertical velocity at interfaces
-  ExecViewManaged<PT *    [NP][NP][NUM_LEV_P]> phinh_i;    // Geopotential used by NH model at interfaces
-  ExecViewManaged<ST *    [NP][NP]           > ps_v;       // Surface pressure
 };
 
 /* Per element data - specific velocity, temperature, pressure, etc. */
