@@ -298,7 +298,7 @@ TEST_CASE ("dirk_jv_testing") {
       dirk_dx.run(nm1, alphadt_nm1, n0, alphadt_n0, np1, dt2,
                   elems_dx, hvcoord, bfb_solver);
       Kokkos::fence();
-      auto x = elems_dp.m_state.take_snapshot(n0);
+      auto x = elems_dp.m_state.take_value_snapshot(n0);
       auto y = x.clone(); 
       dirk_dx.run_JV(np1, elems_dx.m_state, x, y);
       Kokkos::fence();
@@ -376,7 +376,7 @@ TEST_CASE ("dirk_jtv_testing") {
 
   // Two adjoint vectors (Real), both initialized to the same random state at n0.
   // run_JV / run_JtV only read n0 and write np1, so n0 remains unchanged throughout.
-  StateSnapshot xa(num_elems), xb(num_elems);
+  StateSnapshot<Real> xa(num_elems), xb(num_elems);
   xa.randomize(seed++, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geometry.m_phis);
   xb.randomize(seed++, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geometry.m_phis);
 

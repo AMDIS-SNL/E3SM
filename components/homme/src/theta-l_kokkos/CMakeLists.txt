@@ -144,7 +144,6 @@ MACRO(THETAL_KOKKOS_SETUP)
     ${TARGET_DIR}/cxx/LimiterFunctor.hpp
     ${TARGET_DIR}/cxx/cxx_f90_interface_theta.cpp
     ${TARGET_DIR}/cxx/prim_advance_exp.cpp
-    ${TARGET_DIR}/cxx/StateSnapshot.cpp
     ${SRC_SHARE_DIR}/cxx/CaarFunctor.cpp
     ${SRC_SHARE_DIR}/cxx/Elements.cpp
     ${SRC_SHARE_DIR}/cxx/ElementsDerivedState.cpp

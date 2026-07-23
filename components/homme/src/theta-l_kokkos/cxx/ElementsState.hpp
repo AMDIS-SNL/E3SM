@@ -89,9 +89,9 @@ public:
   template<typename RST>
   void import_values (const ElementsStateST<RST>& rhs, int tl);
 
-  StateSnapshot take_snapshot (int tl, bool do_ps = false);
-  void take_snapshot (StateSnapshot& snap, int tl, bool do_ps = false);
-  void import_snapshot (const StateSnapshot& snap, int tl, bool do_ps = false);
+  StateSnapshot<ST> take_snapshot (int tl, bool do_ps = false);
+  void take_snapshot (StateSnapshot<ST>& snap, int tl, bool do_ps = false);
+  void import_snapshot (const StateSnapshot<ST>& snap, int tl, bool do_ps = false);
 
   // Check ElementsState for NaN or incorrectly signed values. The initial check
   // is fast and on device. If everything is fine, the routine returns
@@ -106,8 +106,10 @@ public:
 #ifdef HOMMEXX_ENABLE_FAD_TYPES
   void randomize_derivs(const int seed, const int itl);
 
-  StateSnapshot take_deriv_snapshot (int tl, int ider, bool do_ps = false);
-  void take_deriv_snapshot (StateSnapshot& snap, int tl, int ider, bool do_ps = false);
+  StateSnapshot<Real> take_deriv_snapshot (int tl, int ider, bool do_ps = false);
+  void take_deriv_snapshot (StateSnapshot<Real>& snap, int tl, int ider, bool do_ps = false);
+  StateSnapshot<Real> take_value_snapshot (int tl, bool do_ps = false);
+  void take_value_snapshot (StateSnapshot<Real>& snap, int tl, bool do_ps = false);
 #endif
 
 private:

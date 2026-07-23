@@ -472,11 +472,11 @@ struct CaarFunctorImplST {
 
   template<typename MyST = ST>
   std::enable_if_t<not std::is_same_v<MyST,DxFadTypeCaar>>
-  run_JV (const RKStageData& data, const StateSnapshot& x, StateSnapshot& y) = delete;
+  run_JV (const RKStageData& data, const StateSnapshot<Real>& x, StateSnapshot<Real>& y) = delete;
 
   template<typename MyST = ST>
   std::enable_if_t<std::is_same_v<MyST,DxFadTypeCaar>>
-  run_JV (const RKStageData& data, const StateSnapshot& x, StateSnapshot& y)
+  run_JV (const RKStageData& data, const StateSnapshot<Real>& x, StateSnapshot<Real>& y)
   {
     constexpr int stencil_sz = 16;
 
@@ -763,11 +763,11 @@ struct CaarFunctorImplST {
   //      NP*NP*(NUM_PHYSICAL_LEV*4 + NUM_INTERFACE_LEV*2)
   template<typename MyST = ST>
   std::enable_if_t<not std::is_same_v<MyST,DxFadTypeCaar>>
-  run_JV_full (const RKStageData& data, const StateSnapshot& x, StateSnapshot& y) = delete;
+  run_JV_full (const RKStageData& data, const StateSnapshot<Real>& x, StateSnapshot<Real>& y) = delete;
 
   template<typename MyST = ST>
   std::enable_if_t<std::is_same_v<MyST,DxFadTypeCaar>>
-  run_JV_full (const RKStageData& data, const StateSnapshot& x, StateSnapshot& y)
+  run_JV_full (const RKStageData& data, const StateSnapshot<Real>& x, StateSnapshot<Real>& y)
   {
     // First, init d/dx derivs
     auto dvdx_v = ekat::scalarize(m_state.m_v);
@@ -966,7 +966,7 @@ struct CaarFunctorImplST {
 
   template<typename MyST = ST>
   std::enable_if_t<not std::is_same_v<MyST,DxFadTypeCaar>>
-  run_JtV (const RKStageData& data, const StateSnapshot& x, StateSnapshot& y) = delete;
+  run_JtV (const RKStageData& data, const StateSnapshot<Real>& x, StateSnapshot<Real>& y) = delete;
 
   // Computes the transpose Jacobian-vector product: y = J^T * x,
   // where J = d(x_new)/d(x_old) is the same Jacobian used in run_JV.
@@ -975,7 +975,7 @@ struct CaarFunctorImplST {
   // rows (ipt,jpt,k) whose stencil includes that input point.
   template<typename MyST = ST>
   std::enable_if_t<std::is_same_v<MyST,DxFadTypeCaar>>
-  run_JtV (const RKStageData& data, const StateSnapshot& x, StateSnapshot& y)
+  run_JtV (const RKStageData& data, const StateSnapshot<Real>& x, StateSnapshot<Real>& y)
   {
     // The same compressed-column consideration as in run_JV holds, and everything looks "the same".
     // There is one important distinction. The indices (i,j,k) for y must now match the indices
@@ -1217,11 +1217,11 @@ struct CaarFunctorImplST {
   //      NP*NP*(NUM_PHYSICAL_LEV*4 + NUM_INTERFACE_LEV*2)
   template<typename MyST = ST>
   std::enable_if_t<not std::is_same_v<MyST,DxFadTypeCaar>>
-  run_JtV_full (const RKStageData& data, const StateSnapshot& x, StateSnapshot& y) = delete;
+  run_JtV_full (const RKStageData& data, const StateSnapshot<Real>& x, StateSnapshot<Real>& y) = delete;
 
   template<typename MyST = ST>
   std::enable_if_t<std::is_same_v<MyST,DxFadTypeCaar>>
-  run_JtV_full (const RKStageData& data, const StateSnapshot& x, StateSnapshot& y)
+  run_JtV_full (const RKStageData& data, const StateSnapshot<Real>& x, StateSnapshot<Real>& y)
   {
     // First, init d/dx derivs
     auto dvdx_v = ekat::scalarize(m_state.m_v);

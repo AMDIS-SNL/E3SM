@@ -612,7 +612,7 @@ TEST_CASE("caar_jtv_check") {
   ElementsStateST<Real> state;
   state.init(num_elems);
 
-  StateSnapshot xa(num_elems), xb(num_elems), ya(num_elems), yb(num_elems);
+  StateSnapshot<Real> xa(num_elems), xb(num_elems), ya(num_elems), yb(num_elems);
 
   // Scalarized device views (share memory with the packed views above).
   auto sxa_v   = ekat::scalarize(xa.v);

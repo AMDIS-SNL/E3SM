@@ -230,12 +230,12 @@ struct DirkFunctorImplST {
   template<typename MyST = ST>
   std::enable_if_t<not std::is_same_v<MyST, DxFadTypeDirk>>
   run_JV (const int /*np1*/, const ElementsStateST<ST>& /*state_dx*/,
-          const StateSnapshot& /* x */, StateSnapshot& /* y */) = delete;
+          const StateSnapshot<Real>& /* x */, StateSnapshot<Real>& /* y */) = delete;
 
   template<typename MyST = ST>
   std::enable_if_t<std::is_same_v<MyST, DxFadTypeDirk>>
   run_JV (const int np1, const ElementsStateST<ST>& state_dx,
-          const StateSnapshot& x, StateSnapshot& y)
+          const StateSnapshot<Real>& x, StateSnapshot<Real>& y)
   {
     // Extract the Jacobian-vector product using the product rule.
     // dw_v(ie,np1,ip,jp,k).dx(j) = d(w_np1(ie,ip,jp,k)) / d(input_j)
@@ -325,12 +325,12 @@ struct DirkFunctorImplST {
   template<typename MyST = ST>
   std::enable_if_t<not std::is_same_v<MyST, DxFadTypeDirk>>
   run_JtV (const int /*np1*/, const ElementsStateST<ST>& /*state_dx*/,
-           const StateSnapshot& /*x*/, StateSnapshot& /*y*/) = delete;
+           const StateSnapshot<Real>& /*x*/, StateSnapshot<Real>& /*y*/) = delete;
 
   template<typename MyST = ST>
   std::enable_if_t<std::is_same_v<MyST, DxFadTypeDirk>>
   run_JtV (const int np1, const ElementsStateST<ST>& state_dx,
-           const StateSnapshot& x, StateSnapshot& y)
+           const StateSnapshot<Real>& x, StateSnapshot<Real>& y)
   {
     // J has the following block structure (rows = np1 outputs, cols = itl inputs):
     //   - Identity block for u, v, vtheta_dp, dp3d (DIRK does not modify them)
