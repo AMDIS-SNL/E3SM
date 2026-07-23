@@ -63,7 +63,7 @@ void hash (const SFadN<T,N> v_, HashType& accum) {
 // The last integer specifies where to stop along the last dimension
 template<typename DT,typename... Props>
 std::enable_if_t<Kokkos::View<DT,Props...>::rank==6>
-hash (const int tl, const Kokkos::View<DT,Props...>& v, int n5, HashType& accum_out)
+hash (int itl, const Kokkos::View<DT,Props...>& v, int n5, HashType& accum_out)
 {
   using value_t = decltype(*v.data());
   using scalar_t = typename ekat::ScalarTraits<value_t>::scalar_type;
@@ -73,27 +73,8 @@ hash (const int tl, const Kokkos::View<DT,Props...>& v, int n5, HashType& accum_
   int end[5] = {v.extent_int(0), v.extent_int(2), v.extent_int(3), v.extent_int(4), n5};
   MDRangePolicy<ExecSpace, 5> policy(beg,end);
   auto lambda = KOKKOS_LAMBDA(int i0, int i2, int i3, int i4, int i5, HashType& accum) {
-    const auto* vcol = reinterpret_cast<const scalar_t*>(&v(i0,tl,i2,i3,i4,0));
+    const auto* vcol = reinterpret_cast<const scalar_t*>(&v(i0,itl,i2,i3,i4,0));
     Homme::hash(vcol[i5], accum);
-  };
-  Kokkos::parallel_reduce(policy,lambda,HashReducer<>(accum));
-  hash(accum, accum_out);
-}
-
-template<typename DT,typename... Props>
-std::enable_if_t<Kokkos::View<DT,Props...>::rank==5>
-hash (const int tl, const Kokkos::View<DT,Props...>& v, int n4, HashType& accum_out)
-{
-  using value_t = decltype(*v.data());
-  using scalar_t = typename ekat::ScalarTraits<value_t>::scalar_type;
-
-  HashType accum;
-  int beg[4] = {0, 0, 0, 0};
-  int end[4] = {v.extent_int(0), v.extent_int(2), v.extent_int(3), n4};
-  MDRangePolicy<ExecSpace, 4> policy(beg,end);
-  auto lambda = KOKKOS_LAMBDA(int i0, int i2, int i3, int i4, HashType& accum) {
-    const auto* vcol = reinterpret_cast<const scalar_t*>(&v(i0,tl,i2,i3,0));
-    Homme::hash(vcol[i4], accum);
   };
   Kokkos::parallel_reduce(policy,lambda,HashReducer<>(accum));
   hash(accum, accum_out);
@@ -107,11 +88,11 @@ hash (const Kokkos::View<DT,Props...>& v, int n4, HashType& accum_out)
   using scalar_t = typename ekat::ScalarTraits<value_t>::scalar_type;
 
   HashType accum;
-  int beg[5] = {0, 0, 0, 0, 0};
-  int end[5] = {v.extent_int(0), v.extent_int(1), v.extent_int(2), v.extent_int(3), n4};
-  MDRangePolicy<ExecSpace, 5> policy(beg,end);
-  auto lambda = KOKKOS_LAMBDA(int i0, int i1, int i2, int i3, int i4, HashType& accum) {
-    const auto* vcol = reinterpret_cast<const scalar_t*>(&v(i0,i1,i2,i3,0));
+  int beg[4] = {0, 0, 0, 0};
+  int end[4] = {v.extent_int(0), v.extent_int(2), v.extent_int(3), n4};
+  MDRangePolicy<ExecSpace, 4> policy(beg,end);
+  auto lambda = KOKKOS_LAMBDA(int i0, int i2, int i3, int i4, HashType& accum) {
+    const auto* vcol = reinterpret_cast<const scalar_t*>(&v(i0,i2,i3,0));
     Homme::hash(vcol[i4], accum);
   };
   Kokkos::parallel_reduce(policy,lambda,HashReducer<>(accum));
@@ -120,13 +101,13 @@ hash (const Kokkos::View<DT,Props...>& v, int n4, HashType& accum_out)
 
 template<typename DT,typename... Props>
 std::enable_if_t<Kokkos::View<DT,Props...>::rank==4>
-hash (const int tl, const Kokkos::View<DT,Props...>& v, HashType& accum_out) {
+hash (const Kokkos::View<DT,Props...>& v, HashType& accum_out) {
   HashType accum;
   int beg[3] = {0, 0, 0};
   int end[3] = {v.extent_int(0), v.extent_int(2), v.extent_int(3)};
   MDRangePolicy<ExecSpace, 3> policy(beg,end);
   auto lambda = KOKKOS_LAMBDA(int i0, int i2, int i3, HashType& accum) {
-    Homme::hash(v(i0,tl,i2,i3), accum);
+    Homme::hash(v(i0,i2,i3), accum);
   };
   Kokkos::parallel_reduce(policy,lambda,HashReducer<>(accum));
   hash(accum, accum_out);

@@ -38,6 +38,11 @@ void ElementsStateST<ST>::init(const int num_elems) {
   m_dp3d      = ExecViewManaged<PT *    [NP][NP][NUM_LEV  ]>("Delta p at levels", num_elems);
 
   m_ps_v = ExecViewManaged<ST * [NP][NP]>("PS_V", num_elems);
+
+  m_ref_states.init(num_elems);
+
+  m_policy = get_default_team_policy<ExecSpace>(m_num_elems*NUM_TIME_LEVELS);
+  m_tu     = TeamUtils<ExecSpace>(m_policy);
 }
 
 template<typename ST>
@@ -359,22 +364,22 @@ void ElementsStateST<ST>::randomize_derivs(const int seed)
       int ilev = k / VECTOR_SIZE;
       int ivec = k % VECTOR_SIZE;
 
-      v(ie,0,igp,jgp,ilev)[ivec].fastAccessDx(ider) = dv(ie,0,igp,jgp,k,ider);
-      v(ie,1,igp,jgp,ilev)[ivec].fastAccessDx(ider) = dv(ie,1,igp,jgp,k,ider);
-      vth(ie,igp,jgp,ilev)[ivec].fastAccessDx(ider) = dvth(ie,igp,jgp,k,ider);
-      dp(ie,igp,jgp,ilev)[ivec].fastAccessDx (ider) = ddp(ie,igp,jgp,k,ider);
-      phi(ie,igp,jgp,ilev)[ivec].fastAccessDx(ider) = dphi(ie,igp,jgp,k,ider);
-      w(ie,igp,jgp,ilev)[ivec].fastAccessDx  (ider) = dw(ie,igp,jgp,k,ider);
+      v(ie,itl,0,igp,jgp,ilev)[ivec].fastAccessDx(ider) = dv(ie,0,igp,jgp,k,ider);
+      v(ie,itl,1,igp,jgp,ilev)[ivec].fastAccessDx(ider) = dv(ie,1,igp,jgp,k,ider);
+      vth(ie,itl,igp,jgp,ilev)[ivec].fastAccessDx(ider) = dvth(ie,igp,jgp,k,ider);
+      dp(ie,itl,igp,jgp,ilev)[ivec].fastAccessDx (ider) = ddp(ie,igp,jgp,k,ider);
+      phi(ie,itl,igp,jgp,ilev)[ivec].fastAccessDx(ider) = dphi(ie,igp,jgp,k,ider);
+      w(ie,itl,igp,jgp,ilev)[ivec].fastAccessDx  (ider) = dw(ie,igp,jgp,k,ider);
 
       if (k==0) {
         // Handle last interface and ps only once (you could pick any k in the if above)
         int last_lev = NUM_PHYSICAL_LEV / VECTOR_SIZE;
         int last_vec = NUM_PHYSICAL_LEV % VECTOR_SIZE;
 
-        phi(ie,igp,jgp,last_lev)[last_vec].fastAccessDx(ider) = dphi(ie,igp,jgp,NUM_PHYSICAL_LEV,ider);
-        w(ie,igp,jgp,last_lev)[last_vec].fastAccessDx  (ider) = dw(ie,igp,jgp,NUM_PHYSICAL_LEV,ider);
+        phi(ie,itl,igp,jgp,last_lev)[last_vec].fastAccessDx(ider) = dphi(ie,igp,jgp,NUM_PHYSICAL_LEV,ider);
+        w(ie,itl,igp,jgp,last_lev)[last_vec].fastAccessDx  (ider) = dw(ie,igp,jgp,NUM_PHYSICAL_LEV,ider);
 
-        ps(ie,igp,jgp).fastAccessDx (ider) = dps(ie,igp,jgp,ider);
+        ps(ie,itl,igp,jgp).fastAccessDx (ider) = dps(ie,igp,jgp,ider);
       }
     };
     Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<5>> p({0,0,0,0,0},{m_num_elems,NP,NP,NUM_PHYSICAL_LEV,nder});
@@ -421,8 +426,8 @@ pull_from_f90_pointers (CF90Ptr& state_v,         CF90Ptr& state_w_i,
 
   Kokkos::deep_copy(m_v,        v_h);
   Kokkos::deep_copy(m_vtheta_dp,vth_h);
-  Kokkos::deep_copy(m_w_i,      w_h);
-  Kokkos::deep_copy(m_dp3d,     dp_h);
+  Kokkos::deep_copy(m_w_i,      w_h;
+  Kokkos::deep_copy(m_dp3d,     dp_h,A);
   Kokkos::deep_copy(m_phinh_i,  phi_h);
   Kokkos::deep_copy(m_ps_v,     ps_h);
 }
@@ -442,12 +447,14 @@ push_to_f90_pointers (F90Ptr& state_v, F90Ptr& state_w_i, F90Ptr& state_vtheta_d
   auto dp_h  = ekat::scalarize(Kokkos::create_mirror_view(m_dp3d));
   auto w_h   = ekat::scalarize(Kokkos::create_mirror_view(m_w_i));
   auto phi_h = ekat::scalarize(Kokkos::create_mirror_view(m_phinh_i));
+  auto ps_h  = ekat::scalarize(Kokkos::create_mirror_view(m_ps_v));
 
-  Kokkos::deep_copy(v_h,  ekat::scalarize(m_v));        
-  Kokkos::deep_copy(vth_h,ekat::scalarize(m_vtheta_dp));
-  Kokkos::deep_copy(w_h,  ekat::scalarize(m_w_i));      
-  Kokkos::deep_copy(dp_h, ekat::scalarize(m_dp3d));     
-  Kokkos::deep_copy(phi_h,ekat::scalarize(m_phinh_i));  
+  Kokkos::deep_copy(v_h,  m_v);        
+  Kokkos::deep_copy(vth_h,m_vtheta_dp);
+  Kokkos::deep_copy(w_h,  m_w_i);      
+  Kokkos::deep_copy(dp_h, m_dp3d);     
+  Kokkos::deep_copy(phi_h,m_phinh_i);  
+  Kokkos::deep_copy(ps_h, m_ps_v);     
 
   for (int ie=0; ie<m_num_elems; ++ie)
     for (int ip=0; ip<NP; ++ip)
@@ -462,11 +469,12 @@ push_to_f90_pointers (F90Ptr& state_v, F90Ptr& state_w_i, F90Ptr& state_vtheta_d
         }
         phinh_i_f90(ie,itl,NUM_PHYSICAL_LEV,ip,jp) = phi_h(ie,ip,jp,NUM_PHYSICAL_LEV); 
         w_i_f90(ie,itl,NUM_PHYSICAL_LEV,ip,jp)     = w_h(ie,ip,jp,NUM_PHYSICAL_LEV)  ; 
+        ps_v_f90(ie,itl,ip,jp)                     = ps_h(ie,ip,jp)                  ; 
       }
 }
 
 template<typename ST>
-static bool all_good_elems (const ElementsStateST<ST>& s) {
+static bool all_good_elems (const ElementsStateST<ST>& s, const int tlvl) {
   using Kokkos::ALL;
   using Kokkos::parallel_for;
 
@@ -480,9 +488,9 @@ static bool all_good_elems (const ElementsStateST<ST>& s) {
       const int igp = idx / NP;
       const int jgp = idx % NP;
 
-      auto v = ekat::scalarize(Homme::subview(s.m_vtheta_dp,ie,igp,jgp));
-      auto p = ekat::scalarize(Homme::subview(s.m_dp3d,ie,igp,jgp));
-      auto h = ekat::scalarize(Homme::subview(s.m_phinh_i,ie,igp,jgp));
+      auto v = ekat::scalarize(Homme::subview(s.m_vtheta_dp,ie,tlvl,igp,jgp));
+      auto p = ekat::scalarize(Homme::subview(s.m_dp3d,ie,tlvl,igp,jgp));
+      auto h = ekat::scalarize(Homme::subview(s.m_phinh_i,ie,tlvl,igp,jgp));
       // Write races but doesn't matter since any single nerr = 1 write is
       // sufficient to conclude there is a problem.
       const auto f1 = [&] (const int k) { if (v[k] < 0 || isnan(ADValue(v[k]))) nerr = 1; };
@@ -505,10 +513,10 @@ static bool all_good_elems (const ElementsStateST<ST>& s) {
 
 template<typename ST>
 void ElementsStateST<ST>::
-check_print_abort_on_bad_elems (const std::string& label) const
+check_print_abort_on_bad_elems (const std::string& label, const int tlvl) const
 {
   // On device and, thus, efficient.
-  if (all_good_elems(*this)) return;
+  if (all_good_elems(*this, tlvl)) return;
 
   // Now that we know there is an error, we can do the rest inefficiently.
   const int nelem = num_elems();
@@ -542,10 +550,10 @@ check_print_abort_on_bad_elems (const std::string& label) const
         int k_bad = -1;
         bool v = true, d = true, p = true;
         for (int k = 0; k < nplev; ++k) {
-          v = isnan(vtheta_dp(ie,gi,gj,k)) || vtheta_dp(ie,gi,gj,k) < 0;
-          d = isnan(dp3d(ie,gi,gj,k)) || dp3d(ie,gi,gj,k) < 0;
-          p = (isnan(ADValue(phinh_i(ie,gi,gj,k))) || isnan(ADValue(phinh_i(ie,gi,gj,k+1))) ||
-               phinh_i(ie,gi,gj,k) < phinh_i(ie,gi,gj,k+1));
+          v = isnan(vtheta_dp(ie,tlvl,gi,gj,k)) || vtheta_dp(ie,tlvl,gi,gj,k) < 0;
+          d = isnan(dp3d(ie,tlvl,gi,gj,k)) || dp3d(ie,tlvl,gi,gj,k) < 0;
+          p = (isnan(ADValue(phinh_i(ie,tlvl,gi,gj,k))) || isnan(ADValue(phinh_i(ie,tlvl,gi,gj,k+1))) ||
+               phinh_i(ie,tlvl,gi,gj,k) < phinh_i(ie,tlvl,gi,gj,k+1));
           if (v || d || p) {
             k_bad = k;
             break;
@@ -557,7 +565,7 @@ check_print_abort_on_bad_elems (const std::string& label) const
                         std::to_string(comm.size()) + "." +
                         std::to_string(comm.rank()));
             fid = fopen(filename.c_str(), "w");
-            fprintf(fid, "label: %s\ntime-level %d\n", label.c_str());
+            fprintf(fid, "label: %s\ntime-level %d\n", label.c_str(), tlvl);
             first = false;
           }
           fprintf(fid, "lat %22.15e lon %22.15e\n",
@@ -570,8 +578,8 @@ check_print_abort_on_bad_elems (const std::string& label) const
           fprintf(fid, "level                   dphi                   dp3d              vtheta_dp\n");
           for (int k = 0; k < nplev; ++k)
             fprintf(fid, "%5d %22.15e %22.15e %22.15e\n",
-                    k, phinh_i(ie,gi,gj,k+1) - phinh_i(ie,gi,gj,k),
-                    dp3d(ie,gi,gj,k), vtheta_dp(ie,gi,gj,k));
+                    k, phinh_i(ie,tlvl,gi,gj,k+1) - phinh_i(ie,tlvl,gi,gj,k),
+                    dp3d(ie,tlvl,gi,gj,k), vtheta_dp(ie,tlvl,gi,gj,k));
         }
       }
   }
@@ -582,101 +590,155 @@ check_print_abort_on_bad_elems (const std::string& label) const
 }
 
 template<typename ST>
-HashType ElementsStateST<ST>::hash () const {
+HashType ElementsStateST<ST>::hash (const int tl) const {
   HashType accum = 0;
-  Homme::hash(m_v,         NUM_PHYSICAL_LEV, accum);
-  Homme::hash(m_w_i,       NUM_PHYSICAL_LEV, accum);
-  Homme::hash(m_vtheta_dp, NUM_PHYSICAL_LEV, accum);
-  Homme::hash(m_phinh_i,   NUM_PHYSICAL_LEV, accum);
-  Homme::hash(m_dp3d,      NUM_PHYSICAL_LEV, accum);
-  Homme::hash(m_ps_v,                        accum);
+  Homme::hash(tl, m_v,         NUM_PHYSICAL_LEV, accum);
+  Homme::hash(tl, m_w_i,       NUM_PHYSICAL_LEV, accum);
+  Homme::hash(tl, m_vtheta_dp, NUM_PHYSICAL_LEV, accum);
+  Homme::hash(tl, m_phinh_i,   NUM_PHYSICAL_LEV, accum);
+  Homme::hash(tl, m_dp3d,      NUM_PHYSICAL_LEV, accum);
+  Homme::hash(tl, m_ps_v,                        accum);
   return accum;
 }
 
-// Copy values from one ElementStateST struct to another. All derivs get set to 0.
 template<typename ST>
-void ElementsStateST<ST>::deep_copy (const ElementsStateST<ST>& rhs)
+StateSnapshot<ST> ElementsStateST<ST>::take_snapshot (int tl, bool do_ps)
 {
-  if (*rhs==this)
-    return;
+  StateSnapshot<ST> snap(m_num_elems,do_ps);
+  take_snapshot(snap,tl,do_ps);
+  return snap;
+}
 
-  auto lhs_v = ekat::scalarize(m_v);
-  auto lhs_dp = ekat::scalarize(m_dp3d);
-  auto lhs_phi = ekat::scalarize(m_phinh_i);
-  auto lhs_vth = ekat::scalarize(m_vtheta_dp);
-  auto lhs_w = ekat::scalarize(m_w_i);
-  auto lhs_ps = ekat::scalarize(m_ps_v);
+template<typename ST>
+void ElementsStateST<ST>::take_snapshot (StateSnapshot<ST>& snap, int tl, bool do_ps)
+{
+  EKAT_REQUIRE_MSG(snap.num_elems == m_num_elems,
+       "[ElementsStateST::take_snapshot] Error! Snapshot has wrong num_elems.\n");
+   EKAT_REQUIRE_MSG(!do_ps || snap.ps_v.data() != nullptr,
+       "[ElementsStateST::take_snapshot] Error! do_ps=true but snapshot.ps_v is not allocated.\n");
 
-  auto rhs_v = ekat::scalarize(rhs.m_v);
-  auto rhs_dp = ekat::scalarize(rhs.m_dp3d);
-  auto rhs_phi = ekat::scalarize(rhs.m_phinh_i);
-  auto rhs_vth = ekat::scalarize(rhs.m_vtheta_dp);
-  auto rhs_w = ekat::scalarize(rhs.m_w_i);
-  auto rhs_ps = ekat::scalarize(rhs.m_ps_v);
+  constexpr auto NPL = NUM_PHYSICAL_LEV;
 
-  int nlev = NUM_PHYSICAL_LEV;
-  auto copy = KOKKOS_LAMBDA(int ie, int ip, int jp, int k) {
-    lhs_v(ie,0,ip,jp,k) = ADValue(rhs_v(ie,0,ip,jp,k));
-    lhs_v(ie,1,ip,jp,k) = ADValue(rhs_v(ie,1,ip,jp,k));
-
-    lhs_w(ie,ip,jp,k)   = ADValue(rhs_w(ie,ip,jp,k));
-    lhs_dp(ie,ip,jp,k)  = ADValue(rhs_dp(ie,ip,jp,k));
-    lhs_vth(ie,ip,jp,k) = ADValue(rhs_vth(ie,ip,jp,k));
-    lhs_phi(ie,ip,jp,k) = ADValue(rhs_phi(ie,ip,jp,k));
-
-    if (k==0) {
-      lhs_ps(ie,ip,jp) = ADValue(rhs_ps(ie,ip,jp));
-      lhs_w(ie,ip,jp,nlev) = ADValue(rhs_w(ie,ip,jp,nlev));
-      lhs_phi(ie,ip,jp,nlev) = ADValue(rhs_phi(ie,ip,jp,nlev));
+  auto v   = ekat::scalarize(m_v);
+  auto vth = ekat::scalarize(m_vtheta_dp);
+  auto dp  = ekat::scalarize(m_dp3d);
+  auto w   = ekat::scalarize(m_w_i);
+  auto phi = ekat::scalarize(m_phinh_i);
+  auto ps  = ekat::scalarize(m_ps_v);
+  auto snap_v   = ekat::scalarize(snap.v);
+  auto snap_vth = ekat::scalarize(snap.vtheta_dp);
+  auto snap_dp  = ekat::scalarize(snap.dp3d);
+  auto snap_w   = ekat::scalarize(snap.w_i);
+  auto snap_phi = ekat::scalarize(snap.phinh_i);
+  auto snap_ps  = ekat::scalarize(snap.ps_v);
+  auto copy = KOKKOS_LAMBDA (int ie, int ip, int jp, int k) {
+    snap_v  (ie,0,ip,jp,k) = v  (ie,tl,0,ip,jp,k);
+    snap_v  (ie,1,ip,jp,k) = v  (ie,tl,1,ip,jp,k);
+    snap_vth(ie,  ip,jp,k) = vth(ie,tl  ,ip,jp,k);
+    snap_dp (ie,  ip,jp,k) = dp (ie,tl  ,ip,jp,k);
+    snap_w  (ie,  ip,jp,k) = w  (ie,tl  ,ip,jp,k);
+    snap_phi(ie,  ip,jp,k) = phi(ie,tl  ,ip,jp,k);
+    if (do_ps) {
+      snap_ps(ie,ip,jp) = ps(ie,tl,ip,jp);
+    }
+    if (k==NPL-1) {
+      snap_w  (ie,ip,jp,NPL) = w  (ie,tl,ip,jp,NPL);
+      snap_phi(ie,ip,jp,NPL) = phi(ie,tl,ip,jp,NPL);
     }
   };
-  Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>> p({0,0,0,0},{m_num_elems,NP,NP,nlev});
-  Kokkos::parallel_for(p,copy);
+
+  Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>> policy({0,0,0,0},{m_num_elems,NP,NP,NUM_PHYSICAL_LEV});
+  Kokkos::parallel_for(policy,copy);
+}
+
+template<typename ST>
+void ElementsStateST<ST>::import_snapshot (const StateSnapshot<ST>& snap, int tl, bool do_ps)
+{
+   EKAT_REQUIRE_MSG(snap.num_elems == m_num_elems,
+       "[ElementsStateST::import_snapshot] Error! Snapshot has wrong num_elems.\n");
+   EKAT_REQUIRE_MSG(!do_ps || snap.ps_v.data() != nullptr,
+       "[ElementsStateST::import_snapshot] Error! do_ps=true but snapshot.ps_v is not allocated.\n");
+
+  constexpr auto NPL = NUM_PHYSICAL_LEV;
+
+  auto v   = ekat::scalarize(m_v);
+  auto vth = ekat::scalarize(m_vtheta_dp);
+  auto dp  = ekat::scalarize(m_dp3d);
+  auto w   = ekat::scalarize(m_w_i);
+  auto phi = ekat::scalarize(m_phinh_i);
+  auto ps  = ekat::scalarize(m_ps_v);
+  auto snap_v   = ekat::scalarize(snap.v);
+  auto snap_vth = ekat::scalarize(snap.vtheta_dp);
+  auto snap_dp  = ekat::scalarize(snap.dp3d);
+  auto snap_w   = ekat::scalarize(snap.w_i);
+  auto snap_phi = ekat::scalarize(snap.phinh_i);
+  auto snap_ps  = ekat::scalarize(snap.ps_v);
+  auto copy = KOKKOS_LAMBDA (int ie, int ip, int jp, int k) {
+    v  (ie,tl,0,ip,jp,k) = snap_v  (ie,0,ip,jp,k);
+    v  (ie,tl,1,ip,jp,k) = snap_v  (ie,1,ip,jp,k);
+    vth(ie,tl  ,ip,jp,k) = snap_vth(ie,  ip,jp,k);
+    dp (ie,tl  ,ip,jp,k) = snap_dp (ie,  ip,jp,k);
+    w  (ie,tl  ,ip,jp,k) = snap_w  (ie,  ip,jp,k);
+    phi(ie,tl  ,ip,jp,k) = snap_phi(ie,  ip,jp,k);
+    if (do_ps) {
+      ps(ie,tl,ip,jp) = snap_ps(ie,ip,jp);
+    }
+    if (k==NPL-1) {
+      w  (ie,tl,ip,jp,NPL) = snap_w  (ie,ip,jp,NPL);
+      phi(ie,tl,ip,jp,NPL) = snap_phi(ie,ip,jp,NPL);
+    }
+  };
+
+  Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>> policy({0,0,0,0},{m_num_elems,NP,NP,NUM_PHYSICAL_LEV});
+  Kokkos::parallel_for(policy,copy);
 }
 
 #ifdef HOMMEXX_ENABLE_FAD_TYPES
 // Extract derivs from an ElementStateST templated on a Fad type into one that has ST=Real
 
 template<typename ST>
-ElementsStateST<Real> ElementsStateST<ST>::take_deriv_snapshot (int ider)
+StateSnapshot<Real> ElementsStateST<ST>::take_deriv_snapshot (int tl, int ider, bool do_ps)
 {
-  ElementsStateST<Real> snap;
-  snap.init(m_num_elems);
-  take_deriv_snapshot(snap,ider);
+  StateSnapshot<Real> snap(m_num_elems,do_ps);
+  take_deriv_snapshot(snap,tl,ider,do_ps);
   return snap;
 }
 
 template<typename ST>
-void ElementsStateST<ST>::take_deriv_snapshot (ElementsStateST<Real>& snap, int ider)
+void ElementsStateST<ST>::take_deriv_snapshot (StateSnapshot<Real>& snap, int tl, int ider, bool do_ps)
 {
   EKAT_REQUIRE_MSG (Sacado::IsFad<ST>::value,
       "[ElementsStateST::take_deriv_snapshot] Error! The template type ST is not a Sacado type.\n");
   EKAT_REQUIRE_MSG (ider>=0 and ider<DerivSz<ST>::value,
       "[ElementsStateST::take_deriv_snapshot] Error! Derivative index (" << ider << ") out of bounds.\n");
-  EKAT_REQUIRE_MSG(snap.m_num_elems == m_num_elems,
+  EKAT_REQUIRE_MSG(snap.num_elems == m_num_elems,
       "[ElementsStateST::take_deriv_snapshot] Error! Snapshot has wrong num_elems.\n");
+  EKAT_REQUIRE_MSG(!do_ps || snap.ps_v.data() != nullptr,
+      "[ElementsStateST::take_deriv_snapshot] Error! do_ps=true but snapshot.ps_v is not allocated.\n");
 
   // Note: we do need the generic lambda to go past the 1st template compilation pass.
   // Without, the method would not compiler when ST is not a Sacado type
   auto do_take = [&] (auto& v, auto& vth, auto& dp, auto& w, auto& phi, auto& ps) {
     constexpr auto NPL = NUM_PHYSICAL_LEV;
-    auto snap_v   = ekat::scalarize(snap.m_v);
-    auto snap_vth = ekat::scalarize(snap.m_vtheta_dp);
-    auto snap_dp  = ekat::scalarize(snap.m_dp3d);
-    auto snap_w   = ekat::scalarize(snap.m_w_i);
-    auto snap_phi = ekat::scalarize(snap.m_phinh_i);
-    auto snap_ps  = ekat::scalarize(snap.m_ps_v);
+    auto snap_v   = ekat::scalarize(snap.v);
+    auto snap_vth = ekat::scalarize(snap.vtheta_dp);
+    auto snap_dp  = ekat::scalarize(snap.dp3d);
+    auto snap_w   = ekat::scalarize(snap.w_i);
+    auto snap_phi = ekat::scalarize(snap.phinh_i);
+    auto snap_ps  = ekat::scalarize(snap.ps_v);
     auto copy = KOKKOS_LAMBDA (int ie, int ip, int jp, int k) {
-      snap_v  (ie,0,ip,jp,k) = v  (ie,0,ip,jp,k).fastAccessDx(ider);
-      snap_v  (ie,1,ip,jp,k) = v  (ie,1,ip,jp,k).fastAccessDx(ider);
-      snap_vth(ie,  ip,jp,k) = vth(ie  ,ip,jp,k).fastAccessDx(ider);
-      snap_dp (ie,  ip,jp,k) = dp (ie  ,ip,jp,k).fastAccessDx(ider);
-      snap_w  (ie,  ip,jp,k) = w  (ie  ,ip,jp,k).fastAccessDx(ider);
-      snap_phi(ie,  ip,jp,k) = phi(ie  ,ip,jp,k).fastAccessDx(ider);
-      snap_ps(ie,ip,jp) = ps(ie,ip,jp).fastAccessDx(ider);
+      snap_v  (ie,0,ip,jp,k) = v  (ie,tl,0,ip,jp,k).fastAccessDx(ider);
+      snap_v  (ie,1,ip,jp,k) = v  (ie,tl,1,ip,jp,k).fastAccessDx(ider);
+      snap_vth(ie,  ip,jp,k) = vth(ie,tl  ,ip,jp,k).fastAccessDx(ider);
+      snap_dp (ie,  ip,jp,k) = dp (ie,tl  ,ip,jp,k).fastAccessDx(ider);
+      snap_w  (ie,  ip,jp,k) = w  (ie,tl  ,ip,jp,k).fastAccessDx(ider);
+      snap_phi(ie,  ip,jp,k) = phi(ie,tl  ,ip,jp,k).fastAccessDx(ider);
+      if (do_ps) {
+        snap_ps(ie,ip,jp) = ps(ie,tl,ip,jp).fastAccessDx(ider);
+      }
       if (k==NPL-1) {
-        snap_w  (ie,ip,jp,NPL) = w  (ie,ip,jp,NPL).fastAccessDx(ider);
-        snap_phi(ie,ip,jp,NPL) = phi(ie,ip,jp,NPL).fastAccessDx(ider);
+        snap_w  (ie,ip,jp,NPL) = w  (ie,tl,ip,jp,NPL).fastAccessDx(ider);
+        snap_phi(ie,ip,jp,NPL) = phi(ie,tl,ip,jp,NPL).fastAccessDx(ider);
       }
     };
 
@@ -696,43 +758,47 @@ void ElementsStateST<ST>::take_deriv_snapshot (ElementsStateST<Real>& snap, int 
 }
 
 template<typename ST>
-ElementsStateST<Real> ElementsStateST<ST>::take_value_snapshot ()
+StateSnapshot<Real> ElementsStateST<ST>::take_value_snapshot (int tl, bool do_ps)
 {
-  ElementsStateST<Real> snap;
-  snap.init(m_num_elems);
-  take_value_snapshot(snap);
+  StateSnapshot<Real> snap(m_num_elems,do_ps);
+  take_value_snapshot(snap,tl,do_ps);
   return snap;
 }
 
+
 template<typename ST>
-void ElementsStateST<ST>::take_value_snapshot (ElementsStateST<Real>& snap)
+void ElementsStateST<ST>::take_value_snapshot (StateSnapshot<Real>& snap, int tl, bool do_ps)
 {
   EKAT_REQUIRE_MSG (Sacado::IsFad<ST>::value,
       "[ElementsStateST::take_value_snapshot] Error! The template type ST is not a Sacado type.\n");
-  EKAT_REQUIRE_MSG(snap.m_num_elems == m_num_elems,
+  EKAT_REQUIRE_MSG(snap.num_elems == m_num_elems,
       "[ElementsStateST::take_value_snapshot] Error! Snapshot has wrong num_elems.\n");
+  EKAT_REQUIRE_MSG(!do_ps || snap.ps_v.data() != nullptr,
+      "[ElementsStateST::take_value_snapshot] Error! do_ps=true but snapshot.ps_v is not allocated.\n");
 
   // Note: we do need the generic lambda to go past the 1st template compilation pass.
   // Without, the method would not compiler when ST is not a Sacado type
   auto do_take = [&] (auto& v, auto& vth, auto& dp, auto& w, auto& phi, auto& ps) {
     constexpr auto NPL = NUM_PHYSICAL_LEV;
-    auto snap_v   = ekat::scalarize(snap.m_v);
-    auto snap_vth = ekat::scalarize(snap.m_vtheta_dp);
-    auto snap_dp  = ekat::scalarize(snap.m_dp3d);
-    auto snap_w   = ekat::scalarize(snap.m_w_i);
-    auto snap_phi = ekat::scalarize(snap.m_phinh_i);
-    auto snap_ps  = ekat::scalarize(snap.m_ps_v);
+    auto snap_v   = ekat::scalarize(snap.v);
+    auto snap_vth = ekat::scalarize(snap.vtheta_dp);
+    auto snap_dp  = ekat::scalarize(snap.dp3d);
+    auto snap_w   = ekat::scalarize(snap.w_i);
+    auto snap_phi = ekat::scalarize(snap.phinh_i);
+    auto snap_ps  = ekat::scalarize(snap.ps_v);
     auto copy = KOKKOS_LAMBDA (int ie, int ip, int jp, int k) {
-      snap_v  (ie,0,ip,jp,k) = ADValue(v  (ie,0,ip,jp,k));
-      snap_v  (ie,1,ip,jp,k) = ADValue(v  (ie,1,ip,jp,k));
-      snap_vth(ie,  ip,jp,k) = ADValue(vth(ie  ,ip,jp,k));
-      snap_dp (ie,  ip,jp,k) = ADValue(dp (ie  ,ip,jp,k));
-      snap_w  (ie,  ip,jp,k) = ADValue(w  (ie  ,ip,jp,k));
-      snap_phi(ie,  ip,jp,k) = ADValue(phi(ie  ,ip,jp,k));
-      snap_ps(ie,ip,jp) = ADValue(ps(ie,ip,jp));
+      snap_v  (ie,0,ip,jp,k) = ADValue(v  (ie,tl,0,ip,jp,k));
+      snap_v  (ie,1,ip,jp,k) = ADValue(v  (ie,tl,1,ip,jp,k));
+      snap_vth(ie,  ip,jp,k) = ADValue(vth(ie,tl  ,ip,jp,k));
+      snap_dp (ie,  ip,jp,k) = ADValue(dp (ie,tl  ,ip,jp,k));
+      snap_w  (ie,  ip,jp,k) = ADValue(w  (ie,tl  ,ip,jp,k));
+      snap_phi(ie,  ip,jp,k) = ADValue(phi(ie,tl  ,ip,jp,k));
+      if (do_ps) {
+        snap_ps(ie,ip,jp) = ADValue(ps(ie,tl,ip,jp));
+      }
       if (k==NPL-1) {
-        snap_w  (ie,ip,jp,NPL) = ADValue(w  (ie,ip,jp,NPL));
-        snap_phi(ie,ip,jp,NPL) = ADValue(phi(ie,ip,jp,NPL));
+        snap_w  (ie,ip,jp,NPL) = ADValue(w  (ie,tl,ip,jp,NPL));
+        snap_phi(ie,ip,jp,NPL) = ADValue(phi(ie,tl,ip,jp,NPL));
       }
     };
 

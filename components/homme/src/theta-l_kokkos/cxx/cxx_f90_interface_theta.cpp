@@ -766,10 +766,10 @@ void init_reference_states_c (CF90Ptr& elem_theta_ref_ptr,
                               CF90Ptr& elem_dp_ref_ptr,
                               CF90Ptr& elem_phi_ref_ptr)
 {
-  auto& state = Context::singleton().get<ElementsState> ();
-  auto& ref_states = state.m_ref_states;
+  auto& geo = Context::singleton().get<ElementsGeometry> ();
+  auto& ref_states = Context::singleton().create_if_not_there<RefStates> ();
 
-  const int num_elems = state.m_ref_states.num_elems();
+  const int num_elems = geo.num_elems();
   assert(num_elems>0);
 
   HostViewUnmanaged<const Real*[NUM_PHYSICAL_LEV][NP][NP]>  theta_ref(elem_theta_ref_ptr,num_elems);
