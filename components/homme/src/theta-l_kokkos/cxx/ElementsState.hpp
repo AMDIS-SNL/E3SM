@@ -106,19 +106,8 @@ public:
 #ifdef HOMMEXX_ENABLE_FAD_TYPES
   void randomize_derivs(const int seed, const int itl);
 
-  template<typename MyST = ST>
-  std::enable_if_t<not Sacado::IsFad<MyST>::value,StateSnapshot>
-  take_deriv_snapshot (int tl, int ider, bool do_ps = false) = delete;
-  template<typename MyST = ST>
-  std::enable_if_t<not Sacado::IsFad<MyST>::value>
-  take_deriv_snapshot (StateSnapshot& snap, int tl, int ider, bool do_ps = false) = delete;
-
-  template<typename MyST = ST>
-  std::enable_if_t<Sacado::IsFad<MyST>::value,StateSnapshot>
-  take_deriv_snapshot (int tl, int ider, bool do_ps = false);
-  template<typename MyST = ST>
-  std::enable_if_t<Sacado::IsFad<MyST>::value>
-  take_deriv_snapshot (StateSnapshot& snap, int tl, int ider, bool do_ps = false);
+  StateSnapshot take_deriv_snapshot (int tl, int ider, bool do_ps = false);
+  void take_deriv_snapshot (StateSnapshot& snap, int tl, int ider, bool do_ps = false);
 #endif
 
 private:
