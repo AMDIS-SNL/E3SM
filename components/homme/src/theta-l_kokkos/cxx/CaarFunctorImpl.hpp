@@ -655,19 +655,24 @@ struct CaarFunctorImplST {
           auto pt_Jphi = Jphi + pt_offset;
           auto pt_Jw   = Jw   + pt_offset;
 
-          // Dependencies on k quantities
-          l_phi_new += pt_Jphi[u_curr]   * l_u_old  (mpt,npt,k)  // dphi(k)/du(k)
-                     + pt_Jphi[v_curr]   * l_v_old  (mpt,npt,k)  // dphi(k)/dv(k)
-                     + pt_Jphi[dp_curr]  * l_dp_old (mpt,npt,k)  // dphi(k)/ddp(k)
-                     + pt_Jphi[phi_curr] * l_phi_old(mpt,npt,k)  // dphi(k)/dphi(k)
+          // Dependencies on k-th int quantities
+          l_phi_new += pt_Jphi[phi_curr] * l_phi_old(mpt,npt,k)  // dphi(k)/dphi(k)
                      + pt_Jphi[w_curr]   * l_w_old  (mpt,npt,k); // dphi(k)/dw(k)
 
-          l_w_new += pt_Jw[u_curr]   * l_u_old  (mpt,npt,k)  // dw(k)/du(k)
-                   + pt_Jw[v_curr]   * l_v_old  (mpt,npt,k)  // dw(k)/dv(k)
-                   + pt_Jw[vth_curr] * l_vth_old(mpt,npt,k)  // dw(k)/dvth(k)
-                   + pt_Jw[dp_curr]  * l_dp_old (mpt,npt,k)  // dw(k)/ddp(k)
-                   + pt_Jw[phi_curr] * l_phi_old(mpt,npt,k)  // dw(k)/dphi(k)
+          l_w_new += pt_Jw[phi_curr] * l_phi_old(mpt,npt,k)  // dw(k)/dphi(k)
                    + pt_Jw[w_curr]   * l_w_old  (mpt,npt,k); // dw(k)/dw(k)
+
+          // Dependency on k-th mid quantities (not defined if k==last_int)
+          if (k<last_int) {
+            l_phi_new += pt_Jphi[u_curr]   * l_u_old  (mpt,npt,k)  // dphi(k)/du(k)
+                       + pt_Jphi[v_curr]   * l_v_old  (mpt,npt,k)  // dphi(k)/dv(k)
+                       + pt_Jphi[dp_curr]  * l_dp_old (mpt,npt,k); // dphi(k)/ddp(k)
+
+            l_w_new += pt_Jw[u_curr]   * l_u_old  (mpt,npt,k)  // dw(k)/du(k)
+                     + pt_Jw[v_curr]   * l_v_old  (mpt,npt,k)  // dw(k)/dv(k)
+                     + pt_Jw[vth_curr] * l_vth_old(mpt,npt,k)  // dw(k)/dvth(k)
+                     + pt_Jw[dp_curr]  * l_dp_old (mpt,npt,k); // dw(k)/ddp(k)
+          }
 
           // Dependencies on k-1 quantities
           if (k>0) {
