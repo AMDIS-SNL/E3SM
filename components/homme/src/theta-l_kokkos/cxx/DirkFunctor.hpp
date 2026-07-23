@@ -34,6 +34,7 @@ public:
   void run(int nm1, Real alphadt_nm1, int n0, Real alphadt_n0, int np1, Real dt2,
            const ElementsST<ST>& elements, const HybridVCoord& hvcoord);
 
+  std::any& impl () { return m_dirk_impl; }
 private:
   std::any m_dirk_impl;
 };

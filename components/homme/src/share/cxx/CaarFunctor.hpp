@@ -7,13 +7,14 @@
 #ifndef HOMMEXX_CAAR_FUNCTOR_HPP
 #define HOMMEXX_CAAR_FUNCTOR_HPP
 
-#include "CaarFunctorImpl.hpp"
 #include "Elements.hpp"
 #include "Tracers.hpp"
 #include "SphereOperators.hpp"
 #include "Types.hpp"
 #include "RKStageData.hpp"
+
 #include <memory>
+#include <any>
 
 namespace Homme {
 
@@ -51,8 +52,9 @@ public:
 
   void run(const RKStageData& data);
 
+  std::any& impl () { return m_caar_impl; }
 private:
-  std::unique_ptr<CaarFunctorImplST<ST>> m_caar_impl;
+  std::any m_caar_impl;
   bool is_setup;
 };
 

@@ -37,7 +37,7 @@ CaarFunctorST()
   auto& params     = Context::singleton().get<SimulationParams>();
 
   // Build functor impl
-  m_caar_impl.reset(new CaarFunctorImplST<ST>(elements,tracers,ref_FE,hvcoord,sphere_ops,params));
+  m_caar_impl = std::make_any<CaarFunctorImplST<ST>>(elements,tracers,ref_FE,hvcoord,sphere_ops,params);
 }
 
 template<typename ST>
@@ -50,7 +50,7 @@ CaarFunctorST(const ElementsST<ST> &elements, const TracersST<ST> &tracers,
   : is_setup(true)
 {
   // Build functor impl
-  m_caar_impl.reset(new CaarFunctorImplST<ST>(elements, tracers, ref_FE, hvcoord, sphere_ops, params));
+  m_caar_impl = std::make_any<CaarFunctorImplST<ST>>(elements, tracers, ref_FE, hvcoord, sphere_ops, params);
 }
 
 // This constructor is useful for using buffer functionality without
@@ -63,7 +63,7 @@ CaarFunctorST(const int num_elems, const SimulationParams& params)
   : is_setup(false)
 {
   // Build functor impl
-  m_caar_impl.reset(new CaarFunctorImplST<ST>(num_elems, params));
+  m_caar_impl = std::make_any<CaarFunctorImplST<ST>>(num_elems,params);
 }
 
 template<typename ST>
@@ -72,61 +72,50 @@ setup(const ElementsST<ST> &elements, const TracersST<ST> &tracers,
       const ReferenceElement &ref_FE, const HybridVCoord &hvcoord,
       const SphereOperatorsST<ST> &sphere_ops)
 {
-  assert (m_caar_impl);
-
   // Sanity check
   assert (!is_setup);
 
-  m_caar_impl->setup(elements, tracers, ref_FE, hvcoord, sphere_ops);
+  auto impl = std::any_cast<CaarFunctorImplST<ST>>(&m_caar_impl);
+  impl->setup(elements, tracers, ref_FE, hvcoord, sphere_ops);
   is_setup = true;
 }
 
 template<typename ST>
 int CaarFunctorST<ST>::requested_buffer_size () const {
-  assert (m_caar_impl);
-  return m_caar_impl->requested_buffer_size();
+  assert (is_setup);
+  auto impl = std::any_cast<CaarFunctorImplST<ST>>(&m_caar_impl);
+  return impl->requested_buffer_size();
 }
 
 template<typename ST>
 void CaarFunctorST<ST>::init_buffers(const FunctorsBuffersManager& fbm) {
-  assert (m_caar_impl);
-  m_caar_impl->init_buffers(fbm);
+  assert (is_setup);
+  auto impl = std::any_cast<CaarFunctorImplST<ST>>(&m_caar_impl);
+  impl->init_buffers(fbm);
 }
 
 template<typename ST>
 void CaarFunctorST<ST>::init_boundary_exchanges (const std::shared_ptr<MpiBuffersManager>& bm_exchange) {
-  assert (m_caar_impl);
-
   // The Functor needs to be fully setup to use this function
   assert (is_setup);
-
-  m_caar_impl->init_boundary_exchanges(bm_exchange);
+  auto impl = std::any_cast<CaarFunctorImplST<ST>>(&m_caar_impl);
+  impl->init_boundary_exchanges(bm_exchange);
 }
 
 template<typename ST>
 void CaarFunctorST<ST>::set_rk_stage_data (const RKStageData& data)
 {
-  // Sanity check (should NEVER happen)
-  assert (m_caar_impl);
-
-  // The Functor needs to be fully setup
   assert (is_setup);
-
-  // Forward inputs to impl
-  m_caar_impl->set_rk_stage_data(data);
+  auto impl = std::any_cast<CaarFunctorImplST<ST>>(&m_caar_impl);
+  impl->set_rk_stage_data(data);
 }
 
 template<typename ST>
 void CaarFunctorST<ST>::run (const RKStageData& data)
 {
-  // Sanity check (should NEVER happen)
-  assert (m_caar_impl);
-
-  // The Functor needs to be fully setup
   assert (is_setup);
-
-  // Run functor
-  m_caar_impl->run(data);
+  auto impl = std::any_cast<CaarFunctorImplST<ST>>(&m_caar_impl);
+  impl->run(data);
 }
 
 } // Namespace Homme
