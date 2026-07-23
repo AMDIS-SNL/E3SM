@@ -16,6 +16,14 @@ struct StateSnapshot {
 
   void deep_copy (const StateSnapshot& src);
 
+  void zero ();
+
+  void add (const StateSnapshot& x); // *this += x
+  void add_weighted (const StateSnapshot& x,                 // *this += scale * weight * x
+                     const ExecViewManaged<Real*[NP][NP]>& weight,
+                     const Real scale = 1.0);
+  void scale (const Real alpha);     // *this *= alpha
+
   StateSnapshot clone (const bool deep_copy = false) const;
 
   void randomize (const int seed, const Real p_max, const Real p0, const Real hyai0);
