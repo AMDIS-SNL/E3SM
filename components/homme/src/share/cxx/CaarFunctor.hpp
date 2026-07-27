@@ -43,6 +43,12 @@ public:
   void setup(const ElementsST<ST> &elements, const TracersST<ST> &tracers,
              const ReferenceElement &ref_FE, const HybridVCoord &hvcoord,
              const SphereOperatorsST<ST> &sphere_ops);
+  void setup(const ElementsST<ST> &elements,
+             const ReferenceElement &ref_FE, const HybridVCoord &hvcoord,
+             const SphereOperatorsST<ST> &sphere_ops)
+  {
+    setup(elements,{},ref_FE,hvcoord,sphere_ops);
+  }
 
   int requested_buffer_size () const;
   void init_buffers(const FunctorsBuffersManager& fbm);

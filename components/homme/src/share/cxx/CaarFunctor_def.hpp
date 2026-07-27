@@ -27,17 +27,13 @@ namespace Homme {
 template<typename ST>
 CaarFunctorST<ST>::
 CaarFunctorST()
-  : is_setup(true)
+  : is_setup(false)
 {
-  auto& elements   = Context::singleton().get<ElementsST<ST>>();
-  auto& tracers    = Context::singleton().get<TracersST<ST>>();
-  auto& ref_FE     = Context::singleton().get<ReferenceElement>();
-  auto& hvcoord    = Context::singleton().get<HybridVCoord>();
-  auto& sphere_ops = Context::singleton().get<SphereOperatorsST<ST>>();
-  auto& params     = Context::singleton().get<SimulationParams>();
+  auto& geo     = Context::singleton().get<ElementsGeometry>();
+  auto& params  = Context::singleton().get<SimulationParams>();
 
   // Build functor impl
-  m_caar_impl = std::make_any<CaarFunctorImplST<ST>>(elements,tracers,ref_FE,hvcoord,sphere_ops,params);
+  m_caar_impl = std::make_any<CaarFunctorImplST<ST>>(geo.num_elems(),params);
 }
 
 template<typename ST>

@@ -125,7 +125,7 @@ struct CaarFunctorImplST {
 
   Kokkos::Array<std::shared_ptr<BoundaryExchangeST<ST>>, NUM_TIME_LEVELS> m_bes;
 
-  CaarFunctorImplST(const ElementsST<ST> &elements, const TracersST<ST>&/* tracers */,
+  CaarFunctorImplST(const ElementsST<ST> &elements,
                     const ReferenceElement &ref_FE, const HybridVCoord &hvcoord,
                     const SphereOperatorsST<ST> &sphere_ops, const SimulationParams& params)
       : m_num_elems(elements.num_elems())
@@ -149,6 +149,12 @@ struct CaarFunctorImplST {
     // Make sure the buffers in sph op are large enough for this functor's needs
     m_sphere_ops.allocate_buffers(m_tu);
   }
+
+  CaarFunctorImplST(const ElementsST<ST> &elements, const TracersST<ST>&/* tracers */,
+                    const ReferenceElement &ref_FE, const HybridVCoord &hvcoord,
+                    const SphereOperatorsST<ST> &sphere_ops, const SimulationParams& params)
+      : CaarFunctorImplST(elements,ref_FE,hvcoord,sphere_ops,params)
+  {}
 
   CaarFunctorImplST(const int num_elems, const SimulationParams& params)
       : m_num_elems(num_elems)
