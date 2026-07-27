@@ -1218,6 +1218,61 @@ struct CaarFunctorImplST {
     Kokkos::parallel_for(p4_int,jtv_int);
   }
 
+  // The jacobian transpose of the surf boundary condition (the TagPostExchange in the fwd pass)
+  template<typename MyST = ST>
+  std::enable_if_t<not std::is_same_v<MyST,DxFadTypeCaar>>
+  run_JtV_surf_bc (const RKStageData& data, const StateSnapshot& x, StateSnapshot& y) = delete;
+
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST,DxFadTypeCaar>>
+  run_JtV_surf_bc (const RKStageData& data, const StateSnapshot& x, StateSnapshot& y)
+  {
+    using namespace PhysicalConstants;
+    using md_range_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<3>>;
+    auto policy = md_range_t({0,0,0},{m_num_elems,NP,NP});
+
+    auto& gradphis = m_geometry.m_gradphis;
+
+    // Start copying all the adjoint states
+    y.deep_copy(x);
+
+    auto v_in = ekat::scalarize(x.v);
+    auto w_in = ekat::scalarize(x.w_i);
+    auto v_out = ekat::scalarize(y.v);
+    auto w_out = ekat::scalarize(y.w_i);
+    auto phi_out = ekat::scalarize(y.phinh_i);
+
+    auto jtv = KOKKOS_LAMBDA (int ie, int ip, int jp) {
+      // Since we set phinh_i=phis at surface, lambda_phi==0 at surface
+      // Note: x_phi should have been 0 at entry, but just in case
+      phi_out(ie,ip,jp,NUM_INTERFACE_LEV-1) = 0;
+
+      // Process the adjoint of u,v,w bc
+      auto phis_x = gradphis(ie,0,ip,jp);
+      auto phis_y = gradphis(ie,1,ip,jp);
+
+      auto A = phis_x / g;
+      auto B = phis_y / g;
+      auto D = data.dt*(g + (phis_x*phis_x+phis_y*phis_y)/(2*g));
+      auto S = data.scale1*data.dt;
+
+      auto& x_u = v_in(ie,0,ip,jp,NUM_PHYSICAL_LEV-1);
+      auto& x_v = v_in(ie,1,ip,jp,NUM_PHYSICAL_LEV-1);
+      auto& x_w = w_in(ie,  ip,jp,NUM_INTERFACE_LEV-1);
+      auto& y_u = v_out(ie,0,ip,jp,NUM_PHYSICAL_LEV-1);
+      auto& y_v = v_out(ie,1,ip,jp,NUM_PHYSICAL_LEV-1);
+      auto& y_w = w_out(ie,  ip,jp,NUM_INTERFACE_LEV-1);
+
+      auto M = S/D * (-phis_x/2*x_u -phis_y/2*x_v + g*x_w);
+
+      y_u += A * M;
+      y_v += B * M;
+      y_w += -1* M;
+    };
+
+    Kokkos::parallel_for(policy,jtv);
+  }
+
   // A version of run_JVt that computes the full element Jacobian instead of using column compression to help debugging
   // Note, to run this you need to set DxFadTypeCaar correctly based on the number of levels.  The formula is:
   //      NP*NP*(NUM_PHYSICAL_LEV*4 + NUM_INTERFACE_LEV*2)
