@@ -936,6 +936,8 @@ TEST_CASE("caar_adjoint") {
 
         CaarFunctorImplST<DpFadType> caar_dp(elems_dp, ref_FE, hvcoord, sphop_dp, params);
         CaarFunctorImplST<DxFadType> caar_dx(elems_dx, ref_FE, hvcoord, sphop_dx, params);
+        caar_dx.m_run_limiter = false;
+        caar_dp.m_run_limiter = false;
 
         FunctorsBuffersManager fbm;
         fbm.request_size(caar_dp.requested_buffer_size());

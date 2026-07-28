@@ -94,6 +94,7 @@ struct CaarFunctorImplST {
   const bool          m_theta_hydrostatic_mode;
   const AdvectionForm m_theta_advection_form;
   const bool          m_pgrad_correction;
+        bool          m_run_limiter = true;
 
   HybridVCoord                m_hvcoord;
   ElementsStateST<ST>         m_state;
@@ -385,7 +386,8 @@ struct CaarFunctorImplST {
       GPTLstop("caar compute");
     }
 
-    limiter.run(data.np1);
+    if (m_run_limiter)
+      limiter.run(data.np1);
   }
 
 #ifdef HOMMEXX_ENABLE_FAD_TYPES
