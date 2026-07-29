@@ -6,6 +6,7 @@
 #include "SimulationParams.hpp"
 #include "Tracers.hpp"
 #include "PhysicalConstants.hpp"
+#include "prim_advance_adj.hpp"
 
 #include "utilities/TestUtils.hpp"
 
@@ -738,6 +739,271 @@ TEST_CASE("caar_jtv_check") {
           KOKKOS_LAMBDA(int ie, int ip, int jp, int k, Real2& acc) {
             acc.v[0] += sxa_w(ie, ip, jp, k) * syb_w(ie, ip, jp, k);
             acc.v[1] += sya_w(ie, ip, jp, k) * sxb_w(ie, ip, jp, k);
+          }, w_dot);
+
+        gdot += V_dot;
+        gdot += vth_dot;
+        gdot += dp_dot;
+        gdot += phi_dot;
+        gdot += w_dot;
+
+        CHECK_THAT(gdot.v[0], Catch::WithinRel(gdot.v[1], rtol) || Catch::WithinAbs(gdot.v[1], atol));
+
+        if (comm.am_i_root())
+          std::cout << std::setprecision(15)
+                    << "       <a, J*b> = " << gdot.v[0]
+                    << ",  <J^T*a, b> = " << gdot.v[1] << "\n";
+      }
+    }
+  }
+
+  cleanup_f90();
+  c.finalize_singleton();
+}
+
+TEST_CASE("caar_adjoint") {
+  using namespace PhysicalConstants;
+  using DxFadType = DxFadTypeCaar;
+
+  std::random_device rd;
+  using rngAlg = std::mt19937_64;
+  const unsigned int catchRngSeed = Catch::rngSeed();
+  const unsigned int seed = catchRngSeed==0 ? rd() : catchRngSeed;
+  std::cout << "seed: " << seed << (catchRngSeed==0 ? " (catch rng seed was 0)\n" : "\n");
+  rngAlg engine(seed);
+  using RPDF = std::uniform_real_distribution<Real>;
+
+  auto& c = Context::singleton();
+  c.create<ekat::Comm>(MPI_COMM_WORLD);
+
+  auto& params = c.create<SimulationParams>();
+
+  constexpr int ne = 2;
+  params.dp3d_thresh   = 0;
+  params.vtheta_thresh = 0;
+  params.params_set    = true;
+  params.rsplit        = 3;
+
+  auto& hvcoord = c.create<HybridVCoord>();
+  auto& ref_FE  = c.create<ReferenceElement>();
+  hvcoord.random_init(seed);
+
+  auto hyai = Kokkos::create_mirror_view(hvcoord.hybrid_ai);
+  auto hybi = Kokkos::create_mirror_view(hvcoord.hybrid_bi);
+  auto hyam = Kokkos::create_mirror_view(hvcoord.hybrid_am);
+  auto hybm = Kokkos::create_mirror_view(hvcoord.hybrid_bm);
+  Kokkos::deep_copy(hyai, hvcoord.hybrid_ai);
+  Kokkos::deep_copy(hybi, hvcoord.hybrid_bi);
+  Kokkos::deep_copy(hyam, hvcoord.hybrid_am);
+  Kokkos::deep_copy(hybm, hvcoord.hybrid_bm);
+
+  HostViewManaged<Real[NUM_PHYSICAL_LEV]> hyam_r(""), hybm_r("");
+  for (int i = 0; i < NUM_PHYSICAL_LEV; ++i) {
+    int ilev = i / VECTOR_SIZE;
+    int ivec = i % VECTOR_SIZE;
+    hyam_r(i) = ADValue(hyam(ilev)[ivec]);
+    hybm_r(i) = ADValue(hybm(ilev)[ivec]);
+  }
+
+  std::vector<Real> dvv(NP*NP), mp(NP*NP);
+  init_f90(ne, hyai.data(), hybi.data(), hyam_r.data(), hybm_r.data(),
+           dvv.data(), mp.data(), hvcoord.ps0);
+  ref_FE.init_mass(mp.data());
+  ref_FE.init_deriv(dvv.data());
+
+  const int  num_elems    = c.get<Connectivity>().get_num_local_elements();
+  const Real max_pressure = 1000.0 + hvcoord.ps0;
+
+  auto& geo = c.create<ElementsGeometry>();
+  geo.init(num_elems,false,true,rearth0,1/rearth0,true);
+  geo.randomize(seed);
+
+  auto& elems_dp = c.create<ElementsST<DpFadType>>();
+  auto& elems_dx = c.create<ElementsST<DxFadType>>();
+  elems_dp.init(num_elems, false, true, PhysicalConstants::rearth0);
+  elems_dx.init(num_elems, false, true, PhysicalConstants::rearth0);
+  elems_dx.m_geometry = elems_dp.m_geometry = geo;
+  Kokkos::deep_copy(elems_dp.m_derived.m_vn0,DpFadType(0));
+  Kokkos::deep_copy(elems_dp.m_derived.m_omega_p,DpFadType(0));
+  Kokkos::deep_copy(elems_dx.m_derived.m_vn0,DxFadType(0));
+  Kokkos::deep_copy(elems_dx.m_derived.m_omega_p,DxFadType(0));
+
+  auto& sphop_dp = c.create<SphereOperatorsST<DpFadType>>();
+  auto& sphop_dx = c.create<SphereOperatorsST<DxFadType>>();
+
+  auto& limiter_dp = c.create<LimiterFunctorST<DpFadType>>(elems_dp, hvcoord, params);
+  auto& limiter_dx = c.create<LimiterFunctorST<DxFadType>>(elems_dx, hvcoord, params);
+  limiter_dp.m_verbose = false;
+  limiter_dx.m_verbose = false;
+
+  sphop_dp.setup(geo, ref_FE);
+  sphop_dx.setup(geo, ref_FE);
+
+  auto& bmm  = c.create<MpiBuffersManagerMap>();
+  auto  bm   = bmm[MPI_EXCHANGE];
+  auto conn  = c.get_ptr<Connectivity>();
+  if (!bm->is_connectivity_set()) {
+    bm->set_connectivity(conn);
+  }
+
+  auto& comm    = c.get<ekat::Comm>();
+  const int nm1 = 0, n0 = 1, np1 = 2;
+
+  // StateSnapshot xa(num_elems), xb(num_elems), ya(num_elems), yb(num_elems);
+  StateSnapshot x_fwd (num_elems), y_fwd(num_elems);
+  StateSnapshot x_bwd (num_elems), y_bwd(num_elems), tmp_bwd(num_elems);
+
+  // Scalarized device views (share memory with the packed views above).
+  auto xfwd_v   = ekat::scalarize(x_fwd.v);
+  auto xfwd_vth = ekat::scalarize(x_fwd.vtheta_dp);
+  auto xfwd_dp  = ekat::scalarize(x_fwd.dp3d);
+  auto xfwd_phi = ekat::scalarize(x_fwd.phinh_i);
+  auto xfwd_w   = ekat::scalarize(x_fwd.w_i);
+
+  auto xbwd_v   = ekat::scalarize(x_bwd.v);
+  auto xbwd_vth = ekat::scalarize(x_bwd.vtheta_dp);
+  auto xbwd_dp  = ekat::scalarize(x_bwd.dp3d);
+  auto xbwd_phi = ekat::scalarize(x_bwd.phinh_i);
+  auto xbwd_w   = ekat::scalarize(x_bwd.w_i);
+
+  auto yfwd_v   = ekat::scalarize(y_fwd.v);
+  auto yfwd_vth = ekat::scalarize(y_fwd.vtheta_dp);
+  auto yfwd_dp  = ekat::scalarize(y_fwd.dp3d);
+  auto yfwd_phi = ekat::scalarize(y_fwd.phinh_i);
+  auto yfwd_w   = ekat::scalarize(y_fwd.w_i);
+
+  auto ybwd_v   = ekat::scalarize(y_bwd.v);
+  auto ybwd_vth = ekat::scalarize(y_bwd.vtheta_dp);
+  auto ybwd_dp  = ekat::scalarize(y_bwd.dp3d);
+  auto ybwd_phi = ekat::scalarize(y_bwd.phinh_i);
+  auto ybwd_w   = ekat::scalarize(y_bwd.w_i);
+
+  using p3_t = Kokkos::MDRangePolicy<ExecSpace, Kokkos::Rank<3>>;
+  using p4_t = Kokkos::MDRangePolicy<ExecSpace, Kokkos::Rank<4>>;
+  using p5_t = Kokkos::MDRangePolicy<ExecSpace, Kokkos::Rank<5>>;
+  const p4_t p4_mid({0,0,0,0}, {num_elems, NP, NP, NUM_PHYSICAL_LEV});
+  const p5_t p5_mid({0,0,0,0,0}, {num_elems, 2, NP, NP, NUM_PHYSICAL_LEV});
+  const p4_t p4_int({0,0,0,0}, {num_elems, NP, NP, NUM_INTERFACE_LEV});
+
+  const Real rtol = 1e-8;
+  const Real atol = 1e-8;
+
+  // Make rspheremp equal to 1/BE(spheremp) (needed to ensure adjoint works)
+  Kokkos::deep_copy(geo.m_rspheremp,geo.m_spheremp);
+  BoundaryExchangeST<Real> be_mass(conn,bm);
+  be_mass.set_num_fields(0,1,0);
+  be_mass.register_field(geo.m_rspheremp);
+  be_mass.registration_completed();
+  be_mass.exchange();
+  auto do_inverse = KOKKOS_LAMBDA (int ie, int ip, int jp) {
+    geo.m_rspheremp(ie,ip,jp) = 1 / geo.m_rspheremp(ie,ip,jp);
+  };
+  Kokkos::parallel_for(p3_t({0,0,0},{num_elems,NP,NP}),do_inverse);
+
+  // NOTE: cannot yet use hydrostatic=true (requires a scan sum not supported here)
+  for (const bool hydrostatic : {false}) {
+    params.theta_hydrostatic_mode       = hydrostatic;
+    limiter_dp.m_theta_hydrostatic_mode = hydrostatic;
+    limiter_dx.m_theta_hydrostatic_mode = hydrostatic;
+    if (comm.am_i_root())
+      std::cout << " -> " << (hydrostatic ? "Hydrostatic\n" : "Non-Hydrostatic\n");
+
+    for (const AdvectionForm adv_form : {AdvectionForm::Conservative,
+                                         AdvectionForm::NonConservative}) {
+      params.theta_adv_form = adv_form;
+      if (comm.am_i_root())
+        std::cout << "  -> " << (adv_form==AdvectionForm::Conservative
+                                 ? "Conservative" : "Non-Conservative")
+                  << " theta advection\n";
+
+      for (const int pgrad : {1, 0}) {
+        params.pgrad_correction = (pgrad != 0);
+        if (comm.am_i_root())
+          std::cout << "    -> pgrad_correction = " << pgrad << "\n";
+
+        Real dt        = RPDF(1.0, 10.0)(engine);
+        Real eta_ave_w = RPDF(0.1,  1.0)(engine);
+        Real scale1    = RPDF(1.0,  2.0)(engine);
+        Real scale2    = RPDF(1.0,  2.0)(engine);
+        Real scale3    = RPDF(1.0,  2.0)(engine);
+        comm.broadcast(&dt,        1, 0);
+        comm.broadcast(&scale1,    1, 0);
+        comm.broadcast(&scale2,    1, 0);
+        comm.broadcast(&scale3,    1, 0);
+        comm.broadcast(&eta_ave_w, 1, 0);
+
+        RKStageData data(nm1, n0, np1, 0, dt, eta_ave_w, scale1, scale2, scale3);
+
+        CaarFunctorImplST<DpFadType> caar_dp(elems_dp, ref_FE, hvcoord, sphop_dp, params);
+        CaarFunctorImplST<DxFadType> caar_dx(elems_dx, ref_FE, hvcoord, sphop_dx, params);
+        caar_dx.m_run_limiter = false;
+        caar_dp.m_run_limiter = false;
+
+        FunctorsBuffersManager fbm;
+        fbm.request_size(caar_dp.requested_buffer_size());
+        fbm.request_size(caar_dx.requested_buffer_size());
+        fbm.request_size(limiter_dp.requested_buffer_size());
+        fbm.request_size(limiter_dx.requested_buffer_size());
+        fbm.allocate();
+        caar_dp.init_buffers(fbm);
+        caar_dx.init_buffers(fbm);
+        limiter_dp.init_buffers(fbm);
+        limiter_dx.init_buffers(fbm);
+        caar_dp.init_boundary_exchanges(bm);
+
+        auto adj_bex = create_adj_bex(tmp_bwd);
+
+        // Randomize data: fwd sens state and bwd adjoint var
+        elems_dp.m_state.randomize(seed, max_pressure, hvcoord.ps0,
+                                   hvcoord.hybrid_ai0, geo.m_phis);
+        elems_dx.m_state.import_values(elems_dp.m_state,nm1);
+        elems_dx.m_state.import_values(elems_dp.m_state,n0);
+
+        elems_dp.m_state.randomize_derivs(seed, n0);
+        elems_dp.m_state.take_deriv_snapshot(x_fwd,n0,0);
+        x_bwd.randomize(seed, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geo.m_phis);
+
+        // Run fwd sens CAAR
+        caar_dp.run(data);
+        elems_dp.m_state.take_deriv_snapshot(y_fwd,np1,0);
+
+        // Run adj CAAR
+        caar_dx.run_JtV_surf_bc(data,x_bwd,tmp_bwd);
+        adj_bex->exchange(geo.m_rspheremp);
+        caar_dx.init_J(data);
+        caar_dx.run_pre_exchange(data);
+        caar_dx.run_JtV(data,tmp_bwd,y_bwd);
+
+        // Check that (x_fwd,y_bwd) = (y_fwd,x_bwd)
+        // Note: we must sum over all state vars, since J and J^T scramble them differently
+        //       The contributions of each vars are kept just for debugging weird vals (like nans)
+        Real2 V_dot, vth_dot, dp_dot, phi_dot, w_dot;
+        Real2 gdot;
+
+        Kokkos::parallel_reduce(p5_mid,
+          KOKKOS_LAMBDA(int ie, int icmp, int ip, int jp, int k, Real2& acc) {
+            acc.v[0] += xfwd_v(ie, icmp, ip, jp, k) * ybwd_v(ie, icmp, ip, jp, k);
+            acc.v[1] += yfwd_v(ie, icmp,  ip, jp, k) * xbwd_v(ie,icmp,  ip, jp, k);
+          }, V_dot);
+        Kokkos::parallel_reduce(p4_mid,
+          KOKKOS_LAMBDA(int ie, int ip, int jp, int k, Real2& acc) {
+            acc.v[0] += xfwd_vth(ie, ip, jp, k) * ybwd_vth(ie, ip, jp, k);
+            acc.v[1] += yfwd_vth(ie, ip, jp, k) * xbwd_vth(ie, ip, jp, k);
+          }, vth_dot);
+        Kokkos::parallel_reduce(p4_mid,
+          KOKKOS_LAMBDA(int ie, int ip, int jp, int k, Real2& acc) {
+            acc.v[0] += xfwd_dp(ie, ip, jp, k) * ybwd_dp(ie, ip, jp, k);
+            acc.v[1] += yfwd_dp(ie, ip, jp, k) * xbwd_dp(ie, ip, jp, k);
+          }, dp_dot);
+        Kokkos::parallel_reduce(p4_int,
+          KOKKOS_LAMBDA(int ie, int ip, int jp, int k, Real2& acc) {
+            acc.v[0] += xfwd_phi(ie, ip, jp, k) * ybwd_phi(ie, ip, jp, k);
+            acc.v[1] += yfwd_phi(ie, ip, jp, k) * xbwd_phi(ie, ip, jp, k);
+          }, phi_dot);
+        Kokkos::parallel_reduce(p4_int,
+          KOKKOS_LAMBDA(int ie, int ip, int jp, int k, Real2& acc) {
+            acc.v[0] += xfwd_w(ie, ip, jp, k) * ybwd_w(ie, ip, jp, k);
+            acc.v[1] += yfwd_w(ie, ip, jp, k) * xbwd_w(ie, ip, jp, k);
           }, w_dot);
 
         gdot += V_dot;

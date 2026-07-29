@@ -182,6 +182,12 @@ MACRO(THETAL_KOKKOS_SETUP)
     ${SRC_SHARE_DIR}/cxx/utilities/InternalDiagnostics.cpp
   )
 
+  if (HOMMEXX_ENABLE_FAD_TYPES)
+    list(APPEND THETAL_DEPS_CXX
+      ${TARGET_DIR}/cxx/prim_advance_adj.cpp
+    )
+  endif()
+
   IF (HOMME_USE_ARKODE)
     SET(THETAL_DEPS_F90
       ${THETAL_DEPS_F90}
