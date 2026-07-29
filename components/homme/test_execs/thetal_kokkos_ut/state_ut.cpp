@@ -33,13 +33,13 @@ TEST_CASE("state_tests")
   constexpr int num_elems = 4;
   constexpr auto A = Kokkos::ALL();
 
-  SECTION ("export") {
+  SECTION ("take_snapshot") {
     ElementsStateST<Real> state;
     state.init(num_elems);
     state.randomize(seed);
 
-    auto slice0 = state.export_values(0,false);
-    auto slice1 = state.export_values(1,true);
+    auto slice0 = state.take_snapshot(0,false);
+    auto slice1 = state.take_snapshot(1,true);
 
     REQUIRE (slice0.ps_v.data()==nullptr);
     REQUIRE (slice1.ps_v.data()!=nullptr);
@@ -55,27 +55,25 @@ TEST_CASE("state_tests")
   }
 
 #ifdef HOMMEXX_ENABLE_FAD_TYPES
-  SECTION ("import_from_deriv") {
+  SECTION ("take_deriv_snapshot") {
     using FadT = SFadN<Real,2>;
-    ElementsStateST<Real> state_real;
-    state_real.init(num_elems);
 
     ElementsStateST<FadT> state_fad;
     state_fad.init(num_elems);
     
     int tl =2;
     int ider = 1;
-    state_real.import_values_from_deriv (state_fad,tl,ider);
-    auto vrh = Kokkos::create_mirror_view(ekat::scalarize(state_real.m_v));
+    auto snap = state_fad.take_deriv_snapshot (tl,ider);
+    auto vrh = Kokkos::create_mirror_view(ekat::scalarize(snap.v));
     auto vfh = Kokkos::create_mirror_view(ekat::scalarize(state_fad.m_v));
-    Kokkos::deep_copy(vrh,ekat::scalarize(state_real.m_v));
+    Kokkos::deep_copy(vrh,ekat::scalarize(snap.v));
     Kokkos::deep_copy(vfh,ekat::scalarize(state_fad.m_v));
     for (int ie=0; ie<num_elems; ++ie)
       for (int ip=0; ip<NP; ++ip)
         for (int jp=0; jp<NP; ++jp)
           for (int k=0; k<NUM_PHYSICAL_LEV; ++k) {
-            REQUIRE (vrh(ie,tl,0,ip,jp,k)==vfh(ie,tl,0,ip,jp,k).fastAccessDx(ider));
-            REQUIRE (vrh(ie,tl,1,ip,jp,k)==vfh(ie,tl,1,ip,jp,k).fastAccessDx(ider));
+            REQUIRE (vrh(ie,0,ip,jp,k)==vfh(ie,tl,0,ip,jp,k).fastAccessDx(ider));
+            REQUIRE (vrh(ie,1,ip,jp,k)==vfh(ie,tl,1,ip,jp,k).fastAccessDx(ider));
           }
   }
 #endif

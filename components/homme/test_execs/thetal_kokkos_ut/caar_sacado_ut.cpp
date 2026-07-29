@@ -318,10 +318,9 @@ TEST_CASE("caar_dx_check") {
   const int num_elems = c.get<Connectivity>().get_num_local_elements();
   const auto max_pressure = 1000.0 + hvcoord.ps0; // This ensures max_p > ps0
 
-  // Create elements with Real scalar type
-  auto& elems = c.create<ElementsST<Real>>();
-  elems.init(num_elems,false,true,PhysicalConstants::rearth0);
-  auto& geo = elems.m_geometry;
+  // Create elements geometry
+  auto& geo = c.create<ElementsGeometry>();
+  geo.init(num_elems,false,true,PhysicalConstants::rearth0);
   geo.randomize(seed);
 
   // Create elements with DpFadType scalar type
@@ -336,7 +335,6 @@ TEST_CASE("caar_dx_check") {
 
   // Get or create and init other structures needed
   auto& bm = c.create<MpiBuffersManager>();
-  auto& sphop = c.create<SphereOperatorsST<Real>>();
   auto& sphop_dp = c.create<SphereOperatorsST<DpFadType>>();
   auto& sphop_dx = c.create<SphereOperatorsST<DxFadType>>();
   auto& tracers = c.create<TracersST<Real>>();
@@ -344,16 +342,13 @@ TEST_CASE("caar_dx_check") {
   auto& tracers_dx = c.create<TracersST<DxFadType>>();
 
   // The Caar functor also runs the limiter functor (bad design, imho)
-  auto& limiter = c.create<LimiterFunctorST<Real>>(elems,hvcoord,params);
   auto& limiter_dp = c.create<LimiterFunctorST<DpFadType>>(elems_dp,hvcoord,params);
   auto& limiter_dx = c.create<LimiterFunctorST<DxFadType>>(elems_dx,hvcoord,params);
-  limiter.m_verbose = false;
   limiter_dp.m_verbose = false;
   limiter_dx.m_verbose = false;
 
   sphop_dx.setup(geo,ref_FE);
   sphop_dp.setup(geo,ref_FE);
-  sphop.setup(geo,ref_FE);
   if (!bm.is_connectivity_set ()) {
     bm.set_connectivity(c.get_ptr<Connectivity>());
   }
@@ -371,8 +366,8 @@ TEST_CASE("caar_dx_check") {
       std::cout << " -> " << (hydrostatic ? "Hydrostatic\n" : "Non-Hydrostatic\n");
     }
     params.theta_hydrostatic_mode = hydrostatic;
-    limiter.m_theta_hydrostatic_mode = hydrostatic;
     limiter_dp.m_theta_hydrostatic_mode = hydrostatic;
+    limiter_dx.m_theta_hydrostatic_mode = hydrostatic;
     auto adv_forms = {AdvectionForm::Conservative, AdvectionForm::NonConservative};
     for (const AdvectionForm adv_form : adv_forms) {
       if (comm.am_i_root()) {
@@ -415,12 +410,7 @@ TEST_CASE("caar_dx_check") {
         elems_dp.m_state.randomize_derivs(seed,n0);
 
         // Extract derivs into a non-fad type for the Dp = Dx*Dp_old test
-        Kokkos::deep_copy(elems.m_state.m_v,0);
-        Kokkos::deep_copy(elems.m_state.m_vtheta_dp,0);
-        Kokkos::deep_copy(elems.m_state.m_dp3d,0);
-        Kokkos::deep_copy(elems.m_state.m_phinh_i,0);
-        Kokkos::deep_copy(elems.m_state.m_w_i,0);
-        elems.m_state.import_values_from_deriv(elems_dp.m_state,n0,0);
+        auto dxdp0 = elems_dp.m_state.take_deriv_snapshot(n0,0);
 
         // Init d/dx state
         elems_dx.m_state.import_values(elems_dp.m_state,n0);
@@ -454,7 +444,9 @@ TEST_CASE("caar_dx_check") {
         // RUN caar's J*V functor for ST=DxFadType
         caar_dx.init_J(data);
         caar_dx.run_pre_exchange(data);
-        caar_dx.run_JV(data,elems.m_state);
+        auto x = dxdp0.clone(true);
+        auto y = x.clone();
+        caar_dx.run_JV(data,x,y);
 
         // Check that dXnew/dp = dXnew/dXold * dXold/dp. dXnew/dp is in elems_dp.m_state at slice np1
         // while dXnew/dXold is in elems_dx.m_state at slice np1
@@ -475,11 +467,11 @@ TEST_CASE("caar_dx_check") {
         Kokkos::deep_copy(phi_dp_h, phi_dp);
         Kokkos::deep_copy(w_dp_h,   w_dp);
 
-        auto v_JV   = ekat::scalarize(elems.m_state.m_v);
-        auto vth_JV = ekat::scalarize(elems.m_state.m_vtheta_dp);
-        auto dp_JV  = ekat::scalarize(elems.m_state.m_dp3d);
-        auto phi_JV = ekat::scalarize(elems.m_state.m_phinh_i);
-        auto w_JV   = ekat::scalarize(elems.m_state.m_w_i);
+        auto v_JV   = ekat::scalarize(y.v);
+        auto vth_JV = ekat::scalarize(y.vtheta_dp);
+        auto dp_JV  = ekat::scalarize(y.dp3d);
+        auto phi_JV = ekat::scalarize(y.phinh_i);
+        auto w_JV   = ekat::scalarize(y.w_i);
         auto v_JV_h   = Kokkos::create_mirror_view(v_JV);
         auto vth_JV_h = Kokkos::create_mirror_view(vth_JV);
         auto dp_JV_h  = Kokkos::create_mirror_view(dp_JV);
@@ -495,30 +487,30 @@ TEST_CASE("caar_dx_check") {
           for (int igp=0; igp<NP; ++igp) {
             for (int jgp=0; jgp<NP; ++jgp) {
               for (int k=0; k<NUM_PHYSICAL_LEV; ++k) {
-                auto du_src = v_JV_h(ie,np1,0,igp,jgp,k), du_tgt = v_dp_h(ie,np1,0,igp,jgp,k).dx(0);
+                auto du_src = v_JV_h(ie,0,igp,jgp,k), du_tgt = v_dp_h(ie,np1,0,igp,jgp,k).dx(0);
                 CHECK_THAT (du_src, Catch::WithinRel(du_tgt,rtol) || Catch::WithinAbs(du_tgt,atol));
 
-                auto dv_src = v_JV_h(ie,np1,1,igp,jgp,k), dv_tgt = v_dp_h(ie,np1,1,igp,jgp,k).dx(0);
+                auto dv_src = v_JV_h(ie,1,igp,jgp,k), dv_tgt = v_dp_h(ie,np1,1,igp,jgp,k).dx(0);
                 CHECK_THAT (dv_src, Catch::WithinRel(dv_tgt,rtol) || Catch::WithinAbs(dv_tgt,atol));
 
-                auto dvth_src = vth_JV_h(ie,np1,igp,jgp,k), dvth_tgt = vth_dp_h(ie,np1,igp,jgp,k).dx(0);
+                auto dvth_src = vth_JV_h(ie,igp,jgp,k), dvth_tgt = vth_dp_h(ie,np1,igp,jgp,k).dx(0);
                 CHECK_THAT (dvth_src, Catch::WithinRel(dvth_tgt,rtol) || Catch::WithinAbs(dvth_tgt,atol));
 
-                auto ddp_src = dp_JV_h(ie,np1,igp,jgp,k), ddp_tgt = dp_dp_h(ie,np1,igp,jgp,k).dx(0);
+                auto ddp_src = dp_JV_h(ie,igp,jgp,k), ddp_tgt = dp_dp_h(ie,np1,igp,jgp,k).dx(0);
                 CHECK_THAT (ddp_src, Catch::WithinRel(ddp_tgt,rtol) || Catch::WithinAbs(ddp_tgt,atol));
 
-                auto dphi_src = phi_JV_h(ie,np1,igp,jgp,k), dphi_tgt = phi_dp_h(ie,np1,igp,jgp,k).dx(0);
+                auto dphi_src = phi_JV_h(ie,igp,jgp,k), dphi_tgt = phi_dp_h(ie,np1,igp,jgp,k).dx(0);
                 CHECK_THAT (dphi_src, Catch::WithinRel(dphi_tgt,rtol) || Catch::WithinAbs(dphi_tgt,atol));
 
-                auto dw_src = w_JV_h(ie,np1,igp,jgp,k), dw_tgt = w_dp_h(ie,np1,igp,jgp,k).dx(0);
+                auto dw_src = w_JV_h(ie,igp,jgp,k), dw_tgt = w_dp_h(ie,np1,igp,jgp,k).dx(0);
                 CHECK_THAT (dw_src, Catch::WithinRel(dw_tgt,rtol) || Catch::WithinAbs(dw_tgt,atol));
               }
               int k = NUM_PHYSICAL_LEV;
 
-              auto dphi_src = phi_JV_h(ie,np1,igp,jgp,k), dphi_tgt = phi_dp_h(ie,np1,igp,jgp,k).dx(0);
+              auto dphi_src = phi_JV_h(ie,igp,jgp,k), dphi_tgt = phi_dp_h(ie,np1,igp,jgp,k).dx(0);
               CHECK_THAT (dphi_src, Catch::WithinRel(dphi_tgt,rtol) || Catch::WithinAbs(dphi_tgt,atol));
 
-              auto dw_src = w_JV_h(ie,np1,igp,jgp,k), dw_tgt = w_dp_h(ie,np1,igp,jgp,k).dx(0);
+              auto dw_src = w_JV_h(ie,igp,jgp,k), dw_tgt = w_dp_h(ie,np1,igp,jgp,k).dx(0);
               CHECK_THAT (dw_src, Catch::WithinRel(dw_tgt,rtol) || Catch::WithinAbs(dw_tgt,atol));
             }
           }
@@ -616,23 +608,32 @@ TEST_CASE("caar_jtv_check") {
 
   const int nm1 = 0, n0 = 1, np1 = 2;
 
-  // Two adjoint vectors, created independently of the Context.
-  ElementsStateST<Real> adj_a, adj_b;
-  adj_a.init(num_elems);
-  adj_b.init(num_elems);
+  StateSnapshot xa(num_elems), xb(num_elems), ya(num_elems), yb(num_elems);
 
   // Scalarized device views (share memory with the packed views above).
-  auto sa_v   = ekat::scalarize(adj_a.m_v);
-  auto sa_vth = ekat::scalarize(adj_a.m_vtheta_dp);
-  auto sa_dp  = ekat::scalarize(adj_a.m_dp3d);
-  auto sa_phi = ekat::scalarize(adj_a.m_phinh_i);
-  auto sa_w   = ekat::scalarize(adj_a.m_w_i);
+  auto sxa_v   = ekat::scalarize(xa.v);
+  auto sxa_vth = ekat::scalarize(xa.vtheta_dp);
+  auto sxa_dp  = ekat::scalarize(xa.dp3d);
+  auto sxa_phi = ekat::scalarize(xa.phinh_i);
+  auto sxa_w   = ekat::scalarize(xa.w_i);
 
-  auto sb_v   = ekat::scalarize(adj_b.m_v);
-  auto sb_vth = ekat::scalarize(adj_b.m_vtheta_dp);
-  auto sb_dp  = ekat::scalarize(adj_b.m_dp3d);
-  auto sb_phi = ekat::scalarize(adj_b.m_phinh_i);
-  auto sb_w   = ekat::scalarize(adj_b.m_w_i);
+  auto sxb_v   = ekat::scalarize(xb.v);
+  auto sxb_vth = ekat::scalarize(xb.vtheta_dp);
+  auto sxb_dp  = ekat::scalarize(xb.dp3d);
+  auto sxb_phi = ekat::scalarize(xb.phinh_i);
+  auto sxb_w   = ekat::scalarize(xb.w_i);
+
+  auto sya_v   = ekat::scalarize(ya.v);
+  auto sya_vth = ekat::scalarize(ya.vtheta_dp);
+  auto sya_dp  = ekat::scalarize(ya.dp3d);
+  auto sya_phi = ekat::scalarize(ya.phinh_i);
+  auto sya_w   = ekat::scalarize(ya.w_i);
+
+  auto syb_v   = ekat::scalarize(yb.v);
+  auto syb_vth = ekat::scalarize(yb.vtheta_dp);
+  auto syb_dp  = ekat::scalarize(yb.dp3d);
+  auto syb_phi = ekat::scalarize(yb.phinh_i);
+  auto syb_w   = ekat::scalarize(yb.w_i);
 
   using p4_mid_t = Kokkos::MDRangePolicy<ExecSpace, Kokkos::Rank<4>>;
   using p5_mid_t = Kokkos::MDRangePolicy<ExecSpace, Kokkos::Rank<5>>;
@@ -693,9 +694,8 @@ TEST_CASE("caar_jtv_check") {
         caar_dx.init_boundary_exchanges(c.get_ptr<MpiBuffersManager>());
 
         // Randomize adj_state a and b (make them equal);
-        adj_a.randomize(seed, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geo.m_phis);
-        adj_b.import_values(adj_a,n0);
-        adj_b.import_values(adj_a,nm1);
+        xa.randomize(seed, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geo.m_phis);
+        xb.randomize(seed, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geo.m_phis);
 
         // Init d/dx(n0) structures
         caar_dx.init_J(data);
@@ -704,40 +704,40 @@ TEST_CASE("caar_jtv_check") {
         caar_dx.run_pre_exchange(data);
 
         // J*b   -> adj_b[np1]
-        caar_dx.run_JV(data, adj_b);
+        caar_dx.run_JV(data, xb, yb);
         // J^T*a -> adj_a[np1]
-        caar_dx.run_JtV(data, adj_a);
+        caar_dx.run_JtV(data, xa, ya);
 
-        // dot1 = <a[n0], (J*b)[np1]>
-        // dot2 = <(J^T*a)[np1], b[n0]>
+        // (xa,yb) = (xa,J*xb) = (J^T*xa,xb) = (ya,xb)
         // Note: we must sum over all state vars, since J and J^T scramble them differently
+        //       The contributions of each vars are kept just for debugging weird vals (like nans)
         Real2 V_dot, vth_dot, dp_dot, phi_dot, w_dot;
         Real2 gdot;
 
         Kokkos::parallel_reduce(p5_mid,
           KOKKOS_LAMBDA(int ie, int icmp, int ip, int jp, int k, Real2& acc) {
-            acc.v[0] += sa_v(ie, n0,  icmp, ip, jp, k) * sb_v(ie, np1, icmp, ip, jp, k);
-            acc.v[1] += sa_v(ie, np1, icmp,  ip, jp, k) * sb_v(ie, n0, icmp,  ip, jp, k);
+            acc.v[0] += sxa_v(ie, icmp, ip, jp, k) * syb_v(ie, icmp, ip, jp, k);
+            acc.v[1] += sya_v(ie, icmp,  ip, jp, k) * sxb_v(ie,icmp,  ip, jp, k);
           }, V_dot);
         Kokkos::parallel_reduce(p4_mid,
           KOKKOS_LAMBDA(int ie, int ip, int jp, int k, Real2& acc) {
-            acc.v[0] += sa_vth(ie, n0,  ip, jp, k) * sb_vth(ie, np1, ip, jp, k);
-            acc.v[1] += sa_vth(ie, np1, ip, jp, k) * sb_vth(ie, n0,  ip, jp, k);
+            acc.v[0] += sxa_vth(ie, ip, jp, k) * syb_vth(ie, ip, jp, k);
+            acc.v[1] += sya_vth(ie, ip, jp, k) * sxb_vth(ie, ip, jp, k);
           }, vth_dot);
         Kokkos::parallel_reduce(p4_mid,
           KOKKOS_LAMBDA(int ie, int ip, int jp, int k, Real2& acc) {
-            acc.v[0] += sa_dp(ie, n0,  ip, jp, k) * sb_dp(ie, np1, ip, jp, k);
-            acc.v[1] += sa_dp(ie, np1, ip, jp, k) * sb_dp(ie, n0,  ip, jp, k);
+            acc.v[0] += sxa_dp(ie, ip, jp, k) * syb_dp(ie, ip, jp, k);
+            acc.v[1] += sya_dp(ie, ip, jp, k) * sxb_dp(ie, ip, jp, k);
           }, dp_dot);
         Kokkos::parallel_reduce(p4_int,
           KOKKOS_LAMBDA(int ie, int ip, int jp, int k, Real2& acc) {
-            acc.v[0] += sa_phi(ie, n0,  ip, jp, k) * sb_phi(ie, np1, ip, jp, k);
-            acc.v[1] += sa_phi(ie, np1, ip, jp, k) * sb_phi(ie, n0,  ip, jp, k);
+            acc.v[0] += sxa_phi(ie, ip, jp, k) * syb_phi(ie, ip, jp, k);
+            acc.v[1] += sya_phi(ie, ip, jp, k) * sxb_phi(ie, ip, jp, k);
           }, phi_dot);
         Kokkos::parallel_reduce(p4_int,
           KOKKOS_LAMBDA(int ie, int ip, int jp, int k, Real2& acc) {
-            acc.v[0] += sa_w(ie, n0,  ip, jp, k) * sb_w(ie, np1, ip, jp, k);
-            acc.v[1] += sa_w(ie, np1, ip, jp, k) * sb_w(ie, n0,  ip, jp, k);
+            acc.v[0] += sxa_w(ie, ip, jp, k) * syb_w(ie, ip, jp, k);
+            acc.v[1] += sya_w(ie, ip, jp, k) * sxb_w(ie, ip, jp, k);
           }, w_dot);
 
         gdot += V_dot;

@@ -565,10 +565,22 @@ HashType ElementsStateST<ST>::hash (const int tl) const {
 }
 
 template<typename ST>
-StateSnapshot ElementsStateST<ST>::export_values (int tl, bool do_ps)
+StateSnapshot ElementsStateST<ST>::take_snapshot (int tl, bool do_ps)
 {
-  constexpr auto NPL = NUM_PHYSICAL_LEV;
   StateSnapshot snap(m_num_elems,do_ps);
+  take_snapshot(snap,tl,do_ps);
+  return snap;
+}
+
+template<typename ST>
+void ElementsStateST<ST>::take_snapshot (StateSnapshot& snap, int tl, bool do_ps)
+{
+  EKAT_REQUIRE_MSG(snap.num_elems == m_num_elems,
+       "[ElementsStateST::take_snapshot] Error! Snapshot has wrong num_elems.\n");
+   EKAT_REQUIRE_MSG(!do_ps || snap.ps_v.data() != nullptr,
+       "[ElementsStateST::take_snapshot] Error! do_ps=true but snapshot.ps_v is not allocated.\n");
+
+  constexpr auto NPL = NUM_PHYSICAL_LEV;
 
   auto v   = ekat::scalarize(m_v);
   auto vth = ekat::scalarize(m_vtheta_dp);
@@ -600,8 +612,114 @@ StateSnapshot ElementsStateST<ST>::export_values (int tl, bool do_ps)
 
   Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>> policy({0,0,0,0},{m_num_elems,NP,NP,NUM_PHYSICAL_LEV});
   Kokkos::parallel_for(policy,copy);
+}
+
+template<typename ST>
+void ElementsStateST<ST>::import_snapshot (const StateSnapshot& snap, int tl, bool do_ps)
+{
+   EKAT_REQUIRE_MSG(snap.num_elems == m_num_elems,
+       "[ElementsStateST::import_snapshot] Error! Snapshot has wrong num_elems.\n");
+   EKAT_REQUIRE_MSG(!do_ps || snap.ps_v.data() != nullptr,
+       "[ElementsStateST::import_snapshot] Error! do_ps=true but snapshot.ps_v is not allocated.\n");
+
+  constexpr auto NPL = NUM_PHYSICAL_LEV;
+
+  auto v   = ekat::scalarize(m_v);
+  auto vth = ekat::scalarize(m_vtheta_dp);
+  auto dp  = ekat::scalarize(m_dp3d);
+  auto w   = ekat::scalarize(m_w_i);
+  auto phi = ekat::scalarize(m_phinh_i);
+  auto ps  = ekat::scalarize(m_ps_v);
+  auto snap_v   = ekat::scalarize(snap.v);
+  auto snap_vth = ekat::scalarize(snap.vtheta_dp);
+  auto snap_dp  = ekat::scalarize(snap.dp3d);
+  auto snap_w   = ekat::scalarize(snap.w_i);
+  auto snap_phi = ekat::scalarize(snap.phinh_i);
+  auto snap_ps  = ekat::scalarize(snap.ps_v);
+  auto copy = KOKKOS_LAMBDA (int ie, int ip, int jp, int k) {
+    v  (ie,tl,0,ip,jp,k) = snap_v  (ie,0,ip,jp,k);
+    v  (ie,tl,1,ip,jp,k) = snap_v  (ie,1,ip,jp,k);
+    vth(ie,tl  ,ip,jp,k) = snap_vth(ie,  ip,jp,k);
+    dp (ie,tl  ,ip,jp,k) = snap_dp (ie,  ip,jp,k);
+    w  (ie,tl  ,ip,jp,k) = snap_w  (ie,  ip,jp,k);
+    phi(ie,tl  ,ip,jp,k) = snap_phi(ie,  ip,jp,k);
+    if (do_ps) {
+      ps(ie,tl,ip,jp) = snap_ps(ie,ip,jp);
+    }
+    if (k==NPL-1) {
+      w  (ie,tl,ip,jp,NPL) = snap_w  (ie,ip,jp,NPL);
+      phi(ie,tl,ip,jp,NPL) = snap_phi(ie,ip,jp,NPL);
+    }
+  };
+
+  Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>> policy({0,0,0,0},{m_num_elems,NP,NP,NUM_PHYSICAL_LEV});
+  Kokkos::parallel_for(policy,copy);
+}
+
+#ifdef HOMMEXX_ENABLE_FAD_TYPES
+// Extract derivs from an ElementStateST templated on a Fad type into one that has ST=Real
+
+template<typename ST>
+StateSnapshot ElementsStateST<ST>::take_deriv_snapshot (int tl, int ider, bool do_ps)
+{
+  StateSnapshot snap(m_num_elems,do_ps);
+  take_deriv_snapshot(snap,tl,ider,do_ps);
   return snap;
 }
+
+template<typename ST>
+void ElementsStateST<ST>::take_deriv_snapshot (StateSnapshot& snap, int tl, int ider, bool do_ps)
+{
+  EKAT_REQUIRE_MSG (Sacado::IsFad<ST>::value,
+      "[ElementsStateST::take_deriv_snapshot] Error! The template type ST is not a Sacado type.\n");
+  EKAT_REQUIRE_MSG (ider>=0 and ider<DerivSz<ST>::value,
+      "[ElementsStateST::take_deriv_snapshot] Error! Derivative index (" << ider << ") out of bounds.\n");
+  EKAT_REQUIRE_MSG(snap.num_elems == m_num_elems,
+      "[ElementsStateST::take_deriv_snapshot] Error! Snapshot has wrong num_elems.\n");
+  EKAT_REQUIRE_MSG(!do_ps || snap.ps_v.data() != nullptr,
+      "[ElementsStateST::take_deriv_snapshot] Error! do_ps=true but snapshot.ps_v is not allocated.\n");
+
+  // Note: we do need the generic lambda to go past the 1st template compilation pass.
+  // Without, the method would not compiler when ST is not a Sacado type
+  auto do_take = [&] (auto& v, auto& vth, auto& dp, auto& w, auto& phi, auto& ps) {
+    constexpr auto NPL = NUM_PHYSICAL_LEV;
+    auto snap_v   = ekat::scalarize(snap.v);
+    auto snap_vth = ekat::scalarize(snap.vtheta_dp);
+    auto snap_dp  = ekat::scalarize(snap.dp3d);
+    auto snap_w   = ekat::scalarize(snap.w_i);
+    auto snap_phi = ekat::scalarize(snap.phinh_i);
+    auto snap_ps  = ekat::scalarize(snap.ps_v);
+    auto copy = KOKKOS_LAMBDA (int ie, int ip, int jp, int k) {
+      snap_v  (ie,0,ip,jp,k) = v  (ie,tl,0,ip,jp,k).fastAccessDx(ider);
+      snap_v  (ie,1,ip,jp,k) = v  (ie,tl,1,ip,jp,k).fastAccessDx(ider);
+      snap_vth(ie,  ip,jp,k) = vth(ie,tl  ,ip,jp,k).fastAccessDx(ider);
+      snap_dp (ie,  ip,jp,k) = dp (ie,tl  ,ip,jp,k).fastAccessDx(ider);
+      snap_w  (ie,  ip,jp,k) = w  (ie,tl  ,ip,jp,k).fastAccessDx(ider);
+      snap_phi(ie,  ip,jp,k) = phi(ie,tl  ,ip,jp,k).fastAccessDx(ider);
+      if (do_ps) {
+        snap_ps(ie,ip,jp) = ps(ie,tl,ip,jp).fastAccessDx(ider);
+      }
+      if (k==NPL-1) {
+        snap_w  (ie,ip,jp,NPL) = w  (ie,tl,ip,jp,NPL).fastAccessDx(ider);
+        snap_phi(ie,ip,jp,NPL) = phi(ie,tl,ip,jp,NPL).fastAccessDx(ider);
+      }
+    };
+
+    Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>> policy({0,0,0,0},{m_num_elems,NP,NP,NUM_PHYSICAL_LEV});
+    Kokkos::parallel_for(policy,copy);
+  };
+
+  if constexpr (Sacado::IsFad<ST>::value) {
+    auto v   = ekat::scalarize(m_v);
+    auto vth = ekat::scalarize(m_vtheta_dp);
+    auto dp  = ekat::scalarize(m_dp3d);
+    auto w   = ekat::scalarize(m_w_i);
+    auto phi = ekat::scalarize(m_phinh_i);
+    auto ps  = ekat::scalarize(m_ps_v);
+    do_take(v,vth,dp,w,phi,ps);
+  }
+}
+#endif // HOMMEXX_ENABLE_FAD_TYPES
 
 } // namespace Homme
 

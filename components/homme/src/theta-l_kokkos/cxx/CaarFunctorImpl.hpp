@@ -472,11 +472,11 @@ struct CaarFunctorImplST {
 
   template<typename MyST = ST>
   std::enable_if_t<not std::is_same_v<MyST,DxFadTypeCaar>>
-  run_JV (const RKStageData& data, ElementsStateST<Real>& adj_state) = delete;
+  run_JV (const RKStageData& data, const StateSnapshot& x, StateSnapshot& y) = delete;
 
   template<typename MyST = ST>
   std::enable_if_t<std::is_same_v<MyST,DxFadTypeCaar>>
-  run_JV (const RKStageData& data, ElementsStateST<Real>& adj_state)
+  run_JV (const RKStageData& data, const StateSnapshot& x, StateSnapshot& y)
   {
     constexpr int stencil_sz = 16;
 
@@ -497,29 +497,35 @@ struct CaarFunctorImplST {
     auto dphidx_v = ekat::scalarize(m_state.m_phinh_i);
     auto dwdx_v = ekat::scalarize(m_state.m_w_i);
 
-    // Compute dxnew/dp = dxnew/dxold * dxold/dp
-    int n0 = data.n0;
+    // Compute Y = dxnew/dxold * X
     int np1 = data.np1;
 
-    auto l_V = ekat::scalarize(adj_state.m_v);
-    auto l_vth = ekat::scalarize(adj_state.m_vtheta_dp);
-    auto l_dp = ekat::scalarize(adj_state.m_dp3d);
-    auto l_phi = ekat::scalarize(adj_state.m_phinh_i);
-    auto l_w = ekat::scalarize(adj_state.m_w_i);
-    
+    auto x_V = ekat::scalarize(x.v);
+    auto x_vth = ekat::scalarize(x.vtheta_dp);
+    auto x_dp = ekat::scalarize(x.dp3d);
+    auto x_phi = ekat::scalarize(x.phinh_i);
+    auto x_w = ekat::scalarize(x.w_i);
+
+    auto y_V = ekat::scalarize(y.v);
+    auto y_vth = ekat::scalarize(y.vtheta_dp);
+    auto y_dp = ekat::scalarize(y.dp3d);
+    auto y_phi = ekat::scalarize(y.phinh_i);
+    auto y_w = ekat::scalarize(y.w_i);
+
     constexpr int last_mid = NUM_PHYSICAL_LEV-1;
     auto prod_rule_mid = KOKKOS_LAMBDA (const int ie, const int ipt, const int jpt, const int k) {
-      const auto& l_u_old   = Homme::subview(l_V,ie,n0,0);
-      const auto& l_v_old   = Homme::subview(l_V,ie,n0,1);
-      const auto& l_vth_old = Homme::subview(l_vth,ie,n0);
-      const auto& l_dp_old  = Homme::subview(l_dp,ie,n0);
-      const auto& l_phi_old = Homme::subview(l_phi,ie,n0);
-      const auto& l_w_old   = Homme::subview(l_w,ie,n0);
 
-      auto& l_u_new   = l_V(ie,np1,0,ipt,jpt,k);
-      auto& l_v_new   = l_V(ie,np1,1,ipt,jpt,k);
-      auto& l_vth_new = l_vth(ie,np1,ipt,jpt,k);
-      auto& l_dp_new  = l_dp(ie,np1,ipt,jpt,k);
+      const auto& x_u_ie   = Homme::subview(x_V,ie,0);
+      const auto& x_v_ie   = Homme::subview(x_V,ie,1);
+      const auto& x_vth_ie = Homme::subview(x_vth,ie);
+      const auto& x_dp_ie  = Homme::subview(x_dp,ie);
+      const auto& x_phi_ie = Homme::subview(x_phi,ie);
+      const auto& x_w_ie   = Homme::subview(x_w,ie);
+
+      auto& y_u_val   = y_V(ie,0,ipt,jpt,k);
+      auto& y_v_val   = y_V(ie,1,ipt,jpt,k);
+      auto& y_vth_val = y_vth(ie,ipt,jpt,k);
+      auto& y_dp_val  = y_dp(ie,ipt,jpt,k);
 
       // Jacobians
       const auto& Ju   = dvdx_v(ie,np1,0,ipt,jpt,k).dx();
@@ -529,10 +535,10 @@ struct CaarFunctorImplST {
       const auto& Jphi = dphidx_v(ie,np1,ipt,jpt,k).dx();
       const auto& Jw   = dwdx_v(ie,np1,ipt,jpt,k).dx();
 
-      l_u_new = 0;
-      l_v_new = 0;
-      l_dp_new = 0;
-      l_vth_new = 0;
+      y_u_val = 0;
+      y_v_val = 0;
+      y_dp_val = 0;
+      y_vth_val = 0;
 
       // offsets of each var in the deriv vector
       int u_prev    = offset_u   + (k-1) % 2;
@@ -562,54 +568,54 @@ struct CaarFunctorImplST {
           auto pt_Jdp  = Jdp  + pt_offset;
 
           // Dependencies on k quantities
-          l_u_new += pt_Ju[u_curr]   * l_u_old  (mpt,npt,k)  // du(k)/du(k)
-                   + pt_Ju[v_curr]   * l_v_old  (mpt,npt,k)  // du(k)/dv(k)
-                   + pt_Ju[vth_curr] * l_vth_old(mpt,npt,k)  // du(k)/dvth(k)
-                   + pt_Ju[dp_curr]  * l_dp_old (mpt,npt,k)  // du(k)/ddp(k)
-                   + pt_Ju[phi_curr] * l_phi_old(mpt,npt,k)  // du(k)/dphi(k)
-                   + pt_Ju[w_curr]   * l_w_old  (mpt,npt,k); // du(k)/dw(k)
+          y_u_val += pt_Ju[u_curr]   * x_u_ie  (mpt,npt,k)  // du(k)/du(k)
+                   + pt_Ju[v_curr]   * x_v_ie  (mpt,npt,k)  // du(k)/dv(k)
+                   + pt_Ju[vth_curr] * x_vth_ie(mpt,npt,k)  // du(k)/dvth(k)
+                   + pt_Ju[dp_curr]  * x_dp_ie (mpt,npt,k)  // du(k)/ddp(k)
+                   + pt_Ju[phi_curr] * x_phi_ie(mpt,npt,k)  // du(k)/dphi(k)
+                   + pt_Ju[w_curr]   * x_w_ie  (mpt,npt,k); // du(k)/dw(k)
 
-          l_v_new += pt_Jv[u_curr]   * l_u_old  (mpt,npt,k)  // dv(k)/du(k)
-                   + pt_Jv[v_curr]   * l_v_old  (mpt,npt,k)  // dv(k)/dv(k)
-                   + pt_Jv[vth_curr] * l_vth_old(mpt,npt,k)  // dv(k)/dvth(k)
-                   + pt_Jv[dp_curr]  * l_dp_old (mpt,npt,k)  // dv(k)/ddp(k)
-                   + pt_Jv[phi_curr] * l_phi_old(mpt,npt,k)  // dv(k)/dphi(k)
-                   + pt_Jv[w_curr]   * l_w_old  (mpt,npt,k); // dv(k)/dw(k)
+          y_v_val += pt_Jv[u_curr]   * x_u_ie  (mpt,npt,k)  // dv(k)/du(k)
+                   + pt_Jv[v_curr]   * x_v_ie  (mpt,npt,k)  // dv(k)/dv(k)
+                   + pt_Jv[vth_curr] * x_vth_ie(mpt,npt,k)  // dv(k)/dvth(k)
+                   + pt_Jv[dp_curr]  * x_dp_ie (mpt,npt,k)  // dv(k)/ddp(k)
+                   + pt_Jv[phi_curr] * x_phi_ie(mpt,npt,k)  // dv(k)/dphi(k)
+                   + pt_Jv[w_curr]   * x_w_ie  (mpt,npt,k); // dv(k)/dw(k)
 
-          l_vth_new += pt_Jvth[u_curr]   * l_u_old  (mpt,npt,k)  // dvth(k)/du(k)
-                     + pt_Jvth[v_curr]   * l_v_old  (mpt,npt,k)  // dvth(k)/dv(k)
-                     + pt_Jvth[vth_curr] * l_vth_old(mpt,npt,k)  // dvth(k)/dvth(k)
-                     + pt_Jvth[dp_curr]  * l_dp_old (mpt,npt,k); // dvth(k)/ddp(k)
+          y_vth_val += pt_Jvth[u_curr]   * x_u_ie  (mpt,npt,k)  // dvth(k)/du(k)
+                     + pt_Jvth[v_curr]   * x_v_ie  (mpt,npt,k)  // dvth(k)/dv(k)
+                     + pt_Jvth[vth_curr] * x_vth_ie(mpt,npt,k)  // dvth(k)/dvth(k)
+                     + pt_Jvth[dp_curr]  * x_dp_ie (mpt,npt,k); // dvth(k)/ddp(k)
 
-          l_dp_new += pt_Jdp[u_curr]  * l_u_old  (mpt,npt,k)  // ddp(k)/du(k)
-                    + pt_Jdp[v_curr]  * l_v_old  (mpt,npt,k)  // ddp(k)/dv(k)
-                    + pt_Jdp[dp_curr] * l_dp_old (mpt,npt,k); // ddp(k)/dp(k)
+          y_dp_val += pt_Jdp[u_curr]  * x_u_ie  (mpt,npt,k)  // ddp(k)/du(k)
+                    + pt_Jdp[v_curr]  * x_v_ie  (mpt,npt,k)  // ddp(k)/dv(k)
+                    + pt_Jdp[dp_curr] * x_dp_ie (mpt,npt,k); // ddp(k)/dp(k)
 
           // Dependencies on k-1 quantities
           if (k>0) {
-            l_u_new += pt_Ju[vth_prev] * l_vth_old(mpt,npt,k-1)  // du(k)/dvth(k-1)
-                     + pt_Ju[dp_prev]  * l_dp_old (mpt,npt,k-1)  // du(k)/ddp(k-1)
-                     + pt_Ju[phi_prev] * l_phi_old(mpt,npt,k-1); // du(k)/dphi(k-1)
+            y_u_val += pt_Ju[vth_prev] * x_vth_ie(mpt,npt,k-1)  // du(k)/dvth(k-1)
+                     + pt_Ju[dp_prev]  * x_dp_ie (mpt,npt,k-1)  // du(k)/ddp(k-1)
+                     + pt_Ju[phi_prev] * x_phi_ie(mpt,npt,k-1); // du(k)/dphi(k-1)
 
-            l_v_new += pt_Jv[vth_prev] * l_vth_old(mpt,npt,k-1)  // dv(k)/dvth(k-1)
-                     + pt_Jv[dp_prev]  * l_dp_old (mpt,npt,k-1)  // dv(k)/ddp(k-1)
-                     + pt_Jv[phi_prev] * l_phi_old(mpt,npt,k-1); // dv(k)/dphi(k-1)
+            y_v_val += pt_Jv[vth_prev] * x_vth_ie(mpt,npt,k-1)  // dv(k)/dvth(k-1)
+                     + pt_Jv[dp_prev]  * x_dp_ie (mpt,npt,k-1)  // dv(k)/ddp(k-1)
+                     + pt_Jv[phi_prev] * x_phi_ie(mpt,npt,k-1); // dv(k)/dphi(k-1)
           }
 
           // Dependencies on k+1 quantities
-          l_u_new += pt_Ju[phi_next] * l_phi_old(mpt,npt,k+1)  // du(k)/dphi(k+1)
-                   + pt_Ju[w_next]   * l_w_old  (mpt,npt,k+1); // du(k)/dw(k+1)
+          y_u_val += pt_Ju[phi_next] * x_phi_ie(mpt,npt,k+1)  // du(k)/dphi(k+1)
+                   + pt_Ju[w_next]   * x_w_ie  (mpt,npt,k+1); // du(k)/dw(k+1)
 
-          l_v_new += pt_Jv[phi_next] * l_phi_old(mpt,npt,k+1)  // dv(k)/dphi(k+1)
-                   + pt_Jv[w_next]   * l_w_old  (mpt,npt,k+1); // dv(k)/dw(k+1)
+          y_v_val += pt_Jv[phi_next] * x_phi_ie(mpt,npt,k+1)  // dv(k)/dphi(k+1)
+                   + pt_Jv[w_next]   * x_w_ie  (mpt,npt,k+1); // dv(k)/dw(k+1)
           if (k<last_mid) {
-            l_u_new += pt_Ju[vth_next]  * l_vth_old(mpt,npt,k+1)  // du(k)/dvth(k+1)
-                     + pt_Ju[dp_next]   * l_dp_old (mpt,npt,k+1)  // du(k)/ddp(k+1)
-                     + pt_Ju[phi_next2] * l_phi_old(mpt,npt,k+2); // du(k)/dphi(k+2)
+            y_u_val += pt_Ju[vth_next]  * x_vth_ie(mpt,npt,k+1)  // du(k)/dvth(k+1)
+                     + pt_Ju[dp_next]   * x_dp_ie (mpt,npt,k+1)  // du(k)/ddp(k+1)
+                     + pt_Ju[phi_next2] * x_phi_ie(mpt,npt,k+2); // du(k)/dphi(k+2)
 
-            l_v_new += pt_Jv[vth_next]  * l_vth_old(mpt,npt,k+1)  // dv(k)/dvth(k+1)
-                     + pt_Jv[dp_next]   * l_dp_old (mpt,npt,k+1)  // dv(k)/ddp(k+1)
-                     + pt_Jv[phi_next2] * l_phi_old(mpt,npt,k+2); // dv(k)/dphi(k+2)
+            y_v_val += pt_Jv[vth_next]  * x_vth_ie(mpt,npt,k+1)  // dv(k)/dvth(k+1)
+                     + pt_Jv[dp_next]   * x_dp_ie (mpt,npt,k+1)  // dv(k)/ddp(k+1)
+                     + pt_Jv[phi_next2] * x_phi_ie(mpt,npt,k+2); // dv(k)/dphi(k+2)
           }
         }
       }
@@ -617,22 +623,22 @@ struct CaarFunctorImplST {
 
     constexpr int last_int = NUM_INTERFACE_LEV-1;
     auto prod_rule_int = KOKKOS_LAMBDA (const int ie, const int ipt, const int jpt, const int k) {
-      const auto& l_u_old   = Homme::subview(l_V,ie,n0,0);
-      const auto& l_v_old   = Homme::subview(l_V,ie,n0,1);
-      const auto& l_vth_old = Homme::subview(l_vth,ie,n0);
-      const auto& l_dp_old  = Homme::subview(l_dp,ie,n0);
-      const auto& l_phi_old = Homme::subview(l_phi,ie,n0);
-      const auto& l_w_old   = Homme::subview(l_w,ie,n0);
+      const auto& x_u_ie   = Homme::subview(x_V,ie,0);
+      const auto& x_v_ie   = Homme::subview(x_V,ie,1);
+      const auto& x_vth_ie = Homme::subview(x_vth,ie);
+      const auto& x_dp_ie  = Homme::subview(x_dp,ie);
+      const auto& x_phi_ie = Homme::subview(x_phi,ie);
+      const auto& x_w_ie   = Homme::subview(x_w,ie);
 
-      auto& l_phi_new = l_phi(ie,np1,ipt,jpt,k);
-      auto& l_w_new   = l_w(ie,np1,ipt,jpt,k);
+      auto& y_phi_val = y_phi(ie,ipt,jpt,k);
+      auto& y_w_val   = y_w(ie,ipt,jpt,k);
 
       // Jacobians
       const auto& Jphi = dphidx_v(ie,np1,ipt,jpt,k).dx();
       const auto& Jw   = dwdx_v(ie,np1,ipt,jpt,k).dx();
 
-      l_phi_new = 0;
-      l_w_new = 0;
+      y_phi_val = 0;
+      y_w_val = 0;
 
       // offsets of each var in the deriv vector
       int u_prev    = offset_u   + (k-1) % 2;
@@ -656,39 +662,39 @@ struct CaarFunctorImplST {
           auto pt_Jw   = Jw   + pt_offset;
 
           // Dependencies on k-th int quantities
-          l_phi_new += pt_Jphi[phi_curr] * l_phi_old(mpt,npt,k)  // dphi(k)/dphi(k)
-                     + pt_Jphi[w_curr]   * l_w_old  (mpt,npt,k); // dphi(k)/dw(k)
+          y_phi_val += pt_Jphi[phi_curr] * x_phi_ie(mpt,npt,k)  // dphi(k)/dphi(k)
+                     + pt_Jphi[w_curr]   * x_w_ie  (mpt,npt,k); // dphi(k)/dw(k)
 
-          l_w_new += pt_Jw[phi_curr] * l_phi_old(mpt,npt,k)  // dw(k)/dphi(k)
-                   + pt_Jw[w_curr]   * l_w_old  (mpt,npt,k); // dw(k)/dw(k)
+          y_w_val += pt_Jw[phi_curr] * x_phi_ie(mpt,npt,k)  // dw(k)/dphi(k)
+                   + pt_Jw[w_curr]   * x_w_ie  (mpt,npt,k); // dw(k)/dw(k)
 
           // Dependency on k-th mid quantities (not defined if k==last_int)
           if (k<last_int) {
-            l_phi_new += pt_Jphi[u_curr]   * l_u_old  (mpt,npt,k)  // dphi(k)/du(k)
-                       + pt_Jphi[v_curr]   * l_v_old  (mpt,npt,k)  // dphi(k)/dv(k)
-                       + pt_Jphi[dp_curr]  * l_dp_old (mpt,npt,k); // dphi(k)/ddp(k)
+            y_phi_val += pt_Jphi[u_curr]   * x_u_ie  (mpt,npt,k)  // dphi(k)/du(k)
+                       + pt_Jphi[v_curr]   * x_v_ie  (mpt,npt,k)  // dphi(k)/dv(k)
+                       + pt_Jphi[dp_curr]  * x_dp_ie (mpt,npt,k); // dphi(k)/ddp(k)
 
-            l_w_new += pt_Jw[u_curr]   * l_u_old  (mpt,npt,k)  // dw(k)/du(k)
-                     + pt_Jw[v_curr]   * l_v_old  (mpt,npt,k)  // dw(k)/dv(k)
-                     + pt_Jw[vth_curr] * l_vth_old(mpt,npt,k)  // dw(k)/dvth(k)
-                     + pt_Jw[dp_curr]  * l_dp_old (mpt,npt,k); // dw(k)/ddp(k)
+            y_w_val += pt_Jw[u_curr]   * x_u_ie  (mpt,npt,k)  // dw(k)/du(k)
+                     + pt_Jw[v_curr]   * x_v_ie  (mpt,npt,k)  // dw(k)/dv(k)
+                     + pt_Jw[vth_curr] * x_vth_ie(mpt,npt,k)  // dw(k)/dvth(k)
+                     + pt_Jw[dp_curr]  * x_dp_ie (mpt,npt,k); // dw(k)/ddp(k)
           }
 
           // Dependencies on k-1 quantities
           if (k>0) {
-            l_phi_new += pt_Jphi[u_prev]  * l_u_old  (mpt,npt,k-1)  // dphi(k)/du(k-1)
-                       + pt_Jphi[v_prev]  * l_v_old  (mpt,npt,k-1)  // dphi(k)/dv(k-1)
-                       + pt_Jphi[dp_prev] * l_dp_old (mpt,npt,k-1); // dphi(k)/ddp(k-1)
+            y_phi_val += pt_Jphi[u_prev]  * x_u_ie  (mpt,npt,k-1)  // dphi(k)/du(k-1)
+                       + pt_Jphi[v_prev]  * x_v_ie  (mpt,npt,k-1)  // dphi(k)/dv(k-1)
+                       + pt_Jphi[dp_prev] * x_dp_ie (mpt,npt,k-1); // dphi(k)/ddp(k-1)
 
-            l_w_new += pt_Jw[u_prev]   * l_u_old  (mpt,npt,k-1)  // dw(k)/du(k-1)
-                     + pt_Jw[v_prev]   * l_v_old  (mpt,npt,k-1)  // dw(k)/dv(k-1)
-                     + pt_Jw[vth_prev] * l_vth_old(mpt,npt,k-1)  // dw(k)/dvth(k-1)
-                     + pt_Jw[dp_prev]  * l_dp_old (mpt,npt,k-1)  // dw(k)/ddp(k-1)
-                     + pt_Jw[phi_prev] * l_phi_old(mpt,npt,k-1); // dw(k)/dphi(k-1)
+            y_w_val += pt_Jw[u_prev]   * x_u_ie  (mpt,npt,k-1)  // dw(k)/du(k-1)
+                     + pt_Jw[v_prev]   * x_v_ie  (mpt,npt,k-1)  // dw(k)/dv(k-1)
+                     + pt_Jw[vth_prev] * x_vth_ie(mpt,npt,k-1)  // dw(k)/dvth(k-1)
+                     + pt_Jw[dp_prev]  * x_dp_ie (mpt,npt,k-1)  // dw(k)/ddp(k-1)
+                     + pt_Jw[phi_prev] * x_phi_ie(mpt,npt,k-1); // dw(k)/dphi(k-1)
           }
           // Dependency on k+1 quantities
           if (k<last_int) {
-            l_w_new += pt_Jw[phi_next] * l_phi_old (mpt,npt,k+1); // dw(k)/dphi(k+1)
+            y_w_val += pt_Jw[phi_next] * x_phi_ie (mpt,npt,k+1); // dw(k)/dphi(k+1)
           }
         }
       }
@@ -757,11 +763,11 @@ struct CaarFunctorImplST {
   //      NP*NP*(NUM_PHYSICAL_LEV*4 + NUM_INTERFACE_LEV*2)
   template<typename MyST = ST>
   std::enable_if_t<not std::is_same_v<MyST,DxFadTypeCaar>>
-  run_JV_full (const RKStageData& data, ElementsStateST<Real>& adj_state) = delete;
+  run_JV_full (const RKStageData& data, const StateSnapshot& x, StateSnapshot& y) = delete;
 
   template<typename MyST = ST>
   std::enable_if_t<std::is_same_v<MyST,DxFadTypeCaar>>
-  run_JV_full (const RKStageData& data, ElementsStateST<Real>& adj_state)
+  run_JV_full (const RKStageData& data, const StateSnapshot& x, StateSnapshot& y)
   {
     // First, init d/dx derivs
     auto dvdx_v = ekat::scalarize(m_state.m_v);
@@ -777,12 +783,17 @@ struct CaarFunctorImplST {
     // Then compute dxnew/dp = dxnew/dxold * dxold/dp
     int np1 = data.np1;
 
-    auto l_V = ekat::scalarize(adj_state.m_v);
-    auto l_vth = ekat::scalarize(adj_state.m_vtheta_dp);
-    auto l_dp = ekat::scalarize(adj_state.m_dp3d);
-    auto l_w = ekat::scalarize(adj_state.m_w_i);
-    auto l_phi = ekat::scalarize(adj_state.m_phinh_i);
+    auto x_V = ekat::scalarize(x.v);
+    auto x_vth = ekat::scalarize(x.vtheta_dp);
+    auto x_dp = ekat::scalarize(x.dp3d);
+    auto x_w = ekat::scalarize(x.w_i);
+    auto x_phi = ekat::scalarize(x.phinh_i);
 
+    auto y_V = ekat::scalarize(y.v);
+    auto y_vth = ekat::scalarize(y.vtheta_dp);
+    auto y_dp = ekat::scalarize(y.dp3d);
+    auto y_w = ekat::scalarize(y.w_i);
+    auto y_phi = ekat::scalarize(y.phinh_i);
     // std::ofstream uf("u.txt");
     // std::ofstream vf("v.txt");
     // std::ofstream vthf("vth.txt");
@@ -808,10 +819,10 @@ struct CaarFunctorImplST {
             // }
 
             // Zero Fad components
-            l_V(ie,np1,0,igp,jgp,lvl) = 0;
-            l_V(ie,np1,1,igp,jgp,lvl) = 0;
-            l_vth(ie,np1,igp,jgp,lvl) = 0;
-            l_dp(ie,np1,igp,jgp,lvl) = 0;
+            y_V(ie,0,igp,jgp,lvl) = 0;
+            y_V(ie,1,igp,jgp,lvl) = 0;
+            y_vth(ie,igp,jgp,lvl) = 0;
+            y_dp(ie,igp,jgp,lvl) = 0;
 
             // Compute mat-vec one row at a time
             int fad_idx = 0;
@@ -819,34 +830,16 @@ struct CaarFunctorImplST {
             for (int sigp=0; sigp<NP; ++sigp) {
               for (int sjgp=0; sjgp<NP; ++sjgp) {
                 for (int slvl=0; slvl<NUM_PHYSICAL_LEV; ++slvl) {
-                  l_V(ie,np1,0,igp,jgp,lvl) +=
-                    dvdx_v(ie,np1,0,igp,jgp,lvl).dx(fad_idx++) * l_V(ie,n0,0,sigp,sjgp,slvl) + 
-                    dvdx_v(ie,np1,0,igp,jgp,lvl).dx(fad_idx++) * l_V(ie,n0,1,sigp,sjgp,slvl) + 
-                    dvdx_v(ie,np1,0,igp,jgp,lvl).dx(fad_idx++) * l_vth(ie,n0,sigp,sjgp,slvl) + 
-                    dvdx_v(ie,np1,0,igp,jgp,lvl).dx(fad_idx++) * l_dp(ie,n0,sigp,sjgp,slvl);
+                  y_V(ie,0,igp,jgp,lvl) +=
+                    dvdx_v(ie,np1,0,igp,jgp,lvl).dx(fad_idx++) * x_V(ie,0,sigp,sjgp,slvl) +
+                    dvdx_v(ie,np1,0,igp,jgp,lvl).dx(fad_idx++) * x_V(ie,1,sigp,sjgp,slvl) +
+                    dvdx_v(ie,np1,0,igp,jgp,lvl).dx(fad_idx++) * x_vth(ie,sigp,sjgp,slvl) +
+                    dvdx_v(ie,np1,0,igp,jgp,lvl).dx(fad_idx++) * x_dp(ie,sigp,sjgp,slvl);
                 }
                 for (int slvl=0; slvl<NUM_INTERFACE_LEV; ++slvl) {
-                  l_V(ie,np1,0,igp,jgp,lvl) +=
-                    dvdx_v(ie,np1,0,igp,jgp,lvl).dx(fad_idx++) * l_w(ie,n0,sigp,sjgp,slvl) +
-                    dvdx_v(ie,np1,0,igp,jgp,lvl).dx(fad_idx++) * l_phi(ie,n0,sigp,sjgp,slvl);
-                }
-              }
-            }
-              
-            fad_idx = 0;
-            for (int sigp=0; sigp<NP; ++sigp) {
-              for (int sjgp=0; sjgp<NP; ++sjgp) {
-                for (int slvl=0; slvl<NUM_PHYSICAL_LEV; ++slvl) {
-                  l_V(ie,np1,1,igp,jgp,lvl) +=
-                    dvdx_v(ie,np1,1,igp,jgp,lvl).dx(fad_idx++) * l_V(ie,n0,0,sigp,sjgp,slvl) + 
-                    dvdx_v(ie,np1,1,igp,jgp,lvl).dx(fad_idx++) * l_V(ie,n0,1,sigp,sjgp,slvl) + 
-                    dvdx_v(ie,np1,1,igp,jgp,lvl).dx(fad_idx++) * l_vth(ie,n0,sigp,sjgp,slvl) + 
-                    dvdx_v(ie,np1,1,igp,jgp,lvl).dx(fad_idx++) * l_dp(ie,n0,sigp,sjgp,slvl);
-                }
-                for (int slvl=0; slvl<NUM_INTERFACE_LEV; ++slvl) {
-                  l_V(ie,np1,1,igp,jgp,lvl) +=
-                    dvdx_v(ie,np1,1,igp,jgp,lvl).dx(fad_idx++) * l_w(ie,n0,sigp,sjgp,slvl) +
-                    dvdx_v(ie,np1,1,igp,jgp,lvl).dx(fad_idx++) * l_phi(ie,n0,sigp,sjgp,slvl);
+                  y_V(ie,0,igp,jgp,lvl) +=
+                    dvdx_v(ie,np1,0,igp,jgp,lvl).dx(fad_idx++) * x_w(ie,sigp,sjgp,slvl) +
+                    dvdx_v(ie,np1,0,igp,jgp,lvl).dx(fad_idx++) * x_phi(ie,sigp,sjgp,slvl);
                 }
               }
             }
@@ -855,16 +848,16 @@ struct CaarFunctorImplST {
             for (int sigp=0; sigp<NP; ++sigp) {
               for (int sjgp=0; sjgp<NP; ++sjgp) {
                 for (int slvl=0; slvl<NUM_PHYSICAL_LEV; ++slvl) {
-                  l_vth(ie,np1,igp,jgp,lvl) +=
-                    dvthdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_V(ie,n0,0,sigp,sjgp,slvl) + 
-                    dvthdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_V(ie,n0,1,sigp,sjgp,slvl) + 
-                    dvthdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_vth(ie,n0,sigp,sjgp,slvl) + 
-                    dvthdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_dp(ie,n0,sigp,sjgp,slvl);
+                  y_V(ie,1,igp,jgp,lvl) +=
+                    dvdx_v(ie,np1,1,igp,jgp,lvl).dx(fad_idx++) * x_V(ie,0,sigp,sjgp,slvl) +
+                    dvdx_v(ie,np1,1,igp,jgp,lvl).dx(fad_idx++) * x_V(ie,1,sigp,sjgp,slvl) +
+                    dvdx_v(ie,np1,1,igp,jgp,lvl).dx(fad_idx++) * x_vth(ie,sigp,sjgp,slvl) +
+                    dvdx_v(ie,np1,1,igp,jgp,lvl).dx(fad_idx++) * x_dp(ie,sigp,sjgp,slvl);
                 }
                 for (int slvl=0; slvl<NUM_INTERFACE_LEV; ++slvl) {
-                  l_vth(ie,np1,igp,jgp,lvl) +=
-                    dvthdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_w(ie,n0,sigp,sjgp,slvl) +
-                    dvthdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_phi(ie,n0,sigp,sjgp,slvl);
+                  y_V(ie,1,igp,jgp,lvl) +=
+                    dvdx_v(ie,np1,1,igp,jgp,lvl).dx(fad_idx++) * x_w(ie,sigp,sjgp,slvl) +
+                    dvdx_v(ie,np1,1,igp,jgp,lvl).dx(fad_idx++) * x_phi(ie,sigp,sjgp,slvl);
                 }
               }
             }
@@ -873,21 +866,38 @@ struct CaarFunctorImplST {
             for (int sigp=0; sigp<NP; ++sigp) {
               for (int sjgp=0; sjgp<NP; ++sjgp) {
                 for (int slvl=0; slvl<NUM_PHYSICAL_LEV; ++slvl) {
-                  l_dp(ie,np1,igp,jgp,lvl) +=
-                    ddpdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_V(ie,n0,0,sigp,sjgp,slvl) + 
-                    ddpdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_V(ie,n0,1,sigp,sjgp,slvl) + 
-                    ddpdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_vth(ie,n0,sigp,sjgp,slvl) + 
-                    ddpdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_dp(ie,n0,sigp,sjgp,slvl);
+                  y_vth(ie,igp,jgp,lvl) +=
+                    dvthdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_V(ie,0,sigp,sjgp,slvl) +
+                    dvthdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_V(ie,1,sigp,sjgp,slvl) +
+                    dvthdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_vth(ie,sigp,sjgp,slvl) +
+                    dvthdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_dp(ie,sigp,sjgp,slvl);
                 }
                 for (int slvl=0; slvl<NUM_INTERFACE_LEV; ++slvl) {
-                  l_dp(ie,np1,igp,jgp,lvl) +=
-                    ddpdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_w(ie,n0,sigp,sjgp,slvl) +
-                    ddpdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_phi(ie,n0,sigp,sjgp,slvl);
+                  y_vth(ie,igp,jgp,lvl) +=
+                    dvthdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_w(ie,sigp,sjgp,slvl) +
+                    dvthdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_phi(ie,sigp,sjgp,slvl);
+                }
+              }
+            }
+
+            fad_idx = 0;
+            for (int sigp=0; sigp<NP; ++sigp) {
+              for (int sjgp=0; sjgp<NP; ++sjgp) {
+                for (int slvl=0; slvl<NUM_PHYSICAL_LEV; ++slvl) {
+                  y_dp(ie,igp,jgp,lvl) +=
+                    ddpdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_V(ie,0,sigp,sjgp,slvl) +
+                    ddpdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_V(ie,1,sigp,sjgp,slvl) +
+                    ddpdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_vth(ie,sigp,sjgp,slvl) +
+                    ddpdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_dp(ie,sigp,sjgp,slvl);
+                }
+                for (int slvl=0; slvl<NUM_INTERFACE_LEV; ++slvl) {
+                  y_dp(ie,igp,jgp,lvl) +=
+                    ddpdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_w(ie,sigp,sjgp,slvl) +
+                    ddpdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_phi(ie,sigp,sjgp,slvl);
                 }
               }
             }
           } // lvl
-        
 
           for (int lvl=0; lvl<NUM_INTERFACE_LEV; ++lvl) {
 
@@ -900,8 +910,8 @@ struct CaarFunctorImplST {
             // }
 
             // Zero Fad components
-            l_w(ie,np1,igp,jgp,lvl) = 0;
-            l_phi(ie,np1,igp,jgp,lvl) = 0;
+            y_w(ie,np1,igp,jgp,lvl) = 0;
+            y_phi(ie,np1,igp,jgp,lvl) = 0;
 
             // Compute mat-vec one row at a time
             int fad_idx = 0;
@@ -909,34 +919,34 @@ struct CaarFunctorImplST {
             for (int sigp=0; sigp<NP; ++sigp) {
               for (int sjgp=0; sjgp<NP; ++sjgp) {
                 for (int slvl=0; slvl<NUM_PHYSICAL_LEV; ++slvl) {
-                  l_w(ie,np1,igp,jgp,lvl) +=
-                    dwdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_V(ie,n0,0,sigp,sjgp,slvl) + 
-                    dwdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_V(ie,n0,1,sigp,sjgp,slvl) + 
-                    dwdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_vth(ie,n0,sigp,sjgp,slvl) + 
-                    dwdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_dp(ie,n0,sigp,sjgp,slvl);
-                } 
+                  y_w(ie,igp,jgp,lvl) +=
+                    dwdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_V(ie,0,sigp,sjgp,slvl) +
+                    dwdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_V(ie,1,sigp,sjgp,slvl) +
+                    dwdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_vth(ie,sigp,sjgp,slvl) +
+                    dwdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_dp(ie,sigp,sjgp,slvl);
+                }
                 for (int slvl=0; slvl<NUM_INTERFACE_LEV; ++slvl) {
-                  l_w(ie,np1,igp,jgp,lvl) +=
-                    dwdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_w(ie,n0,sigp,sjgp,slvl) +
-                    dwdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_phi(ie,n0,sigp,sjgp,slvl);
+                  y_w(ie,igp,jgp,lvl) +=
+                    dwdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_w(ie,sigp,sjgp,slvl) +
+                    dwdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_phi(ie,sigp,sjgp,slvl);
                 }
               }
             }
-          
+
             fad_idx = 0;
             for (int sigp=0; sigp<NP; ++sigp) {
               for (int sjgp=0; sjgp<NP; ++sjgp) {
                 for (int slvl=0; slvl<NUM_PHYSICAL_LEV; ++slvl) {
-                  l_phi(ie,np1,igp,jgp,lvl) +=
-                    dphidx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_V(ie,n0,0,sigp,sjgp,slvl) + 
-                    dphidx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_V(ie,n0,1,sigp,sjgp,slvl) + 
-                    dphidx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_vth(ie,n0,sigp,sjgp,slvl) + 
-                    dphidx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_dp(ie,n0,sigp,sjgp,slvl);
-                } 
+                  y_phi(ie,igp,jgp,lvl) +=
+                    dphidx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_V(ie,0,sigp,sjgp,slvl) +
+                    dphidx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_V(ie,1,sigp,sjgp,slvl) +
+                    dphidx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_vth(ie,sigp,sjgp,slvl) +
+                    dphidx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_dp(ie,sigp,sjgp,slvl);
+                }
                 for (int slvl=0; slvl<NUM_INTERFACE_LEV; ++slvl) {
-                  l_phi(ie,np1,igp,jgp,lvl) +=
-                    dphidx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_w(ie,n0,sigp,sjgp,slvl) +
-                    dphidx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * l_phi(ie,n0,sigp,sjgp,slvl);
+                  y_phi(ie,igp,jgp,lvl) +=
+                    dphidx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_w(ie,sigp,sjgp,slvl) +
+                    dphidx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_phi(ie,sigp,sjgp,slvl);
                 }
               }
             }
@@ -956,24 +966,24 @@ struct CaarFunctorImplST {
 
   template<typename MyST = ST>
   std::enable_if_t<not std::is_same_v<MyST,DxFadTypeCaar>>
-  run_JtV (const RKStageData& data, ElementsStateST<Real>& adj_state) = delete;
+  run_JtV (const RKStageData& data, const StateSnapshot& x, StateSnapshot& y) = delete;
 
-  // Computes the transpose Jacobian-vector product: l_new = J^T * l_old,
+  // Computes the transpose Jacobian-vector product: y = J^T * x,
   // where J = d(x_new)/d(x_old) is the same Jacobian used in run_JV.
   // Uses the identical column-compressed stencil (stencil_sz=16), but reverses
   // the accumulation: for each input point (mpt,npt,m) we sum over all Jacobian
   // rows (ipt,jpt,k) whose stencil includes that input point.
   template<typename MyST = ST>
   std::enable_if_t<std::is_same_v<MyST,DxFadTypeCaar>>
-  run_JtV (const RKStageData& data, ElementsStateST<Real>& adj_state)
+  run_JtV (const RKStageData& data, const StateSnapshot& x, StateSnapshot& y)
   {
     // The same compressed-column consideration as in run_JV holds, and everything looks "the same".
-    // There is one important distinction. The indices (i,j,k) for l_new must now match the indices
+    // There is one important distinction. The indices (i,j,k) for y must now match the indices
     // in the deriv, rather than the indices of the var beeing differentiated. That's b/c
     //
     //  [J *v]_i = J_ij * v_j = d(x_i)/d(x_j) * v_j
     //  [J'*v]_i = J_ji * v_j = d(x_j)/d(x_i) * v_j
-    // 
+    //
     // For the gauss points, this is easy to do, as all GPs are coupled with all GPs.
     // For the levels, since we are doing compression, we need to be careful: while in J*v
     // we considered v_j at the levels that can affect x_i, in J'*v we have to consider
@@ -997,29 +1007,34 @@ struct CaarFunctorImplST {
     auto dphidx_v = ekat::scalarize(m_state.m_phinh_i);
     auto dwdx_v = ekat::scalarize(m_state.m_w_i);
 
-    // Compute dxnew/dp = dxnew/dxold * dxold/dp
-    int n0 = data.n0;
+    // Compute Y = J^T * X
     int np1 = data.np1;
 
-    auto l_V = ekat::scalarize(adj_state.m_v);
-    auto l_vth = ekat::scalarize(adj_state.m_vtheta_dp);
-    auto l_dp = ekat::scalarize(adj_state.m_dp3d);
-    auto l_phi = ekat::scalarize(adj_state.m_phinh_i);
-    auto l_w = ekat::scalarize(adj_state.m_w_i);
-    
+    auto x_V = ekat::scalarize(x.v);
+    auto x_vth = ekat::scalarize(x.vtheta_dp);
+    auto x_dp = ekat::scalarize(x.dp3d);
+    auto x_phi = ekat::scalarize(x.phinh_i);
+    auto x_w = ekat::scalarize(x.w_i);
+
+    auto y_V = ekat::scalarize(y.v);
+    auto y_vth = ekat::scalarize(y.vtheta_dp);
+    auto y_dp = ekat::scalarize(y.dp3d);
+    auto y_phi = ekat::scalarize(y.phinh_i);
+    auto y_w = ekat::scalarize(y.w_i);
+
     constexpr int last_mid = NUM_PHYSICAL_LEV-1;
     auto jtv_mid = KOKKOS_LAMBDA (const int ie, const int ipt, const int jpt, const int k) {
-      const auto& l_u_old   = Homme::subview(l_V,ie,n0,0);
-      const auto& l_v_old   = Homme::subview(l_V,ie,n0,1);
-      const auto& l_vth_old = Homme::subview(l_vth,ie,n0);
-      const auto& l_dp_old  = Homme::subview(l_dp,ie,n0);
-      const auto& l_phi_old = Homme::subview(l_phi,ie,n0);
-      const auto& l_w_old   = Homme::subview(l_w,ie,n0);
+      const auto& x_u_ie   = Homme::subview(x_V,ie,0);
+      const auto& x_v_ie   = Homme::subview(x_V,ie,1);
+      const auto& x_vth_ie = Homme::subview(x_vth,ie);
+      const auto& x_dp_ie  = Homme::subview(x_dp,ie);
+      const auto& x_phi_ie = Homme::subview(x_phi,ie);
+      const auto& x_w_ie   = Homme::subview(x_w,ie);
 
-      auto& l_u_new   = l_V(ie,np1,0,ipt,jpt,k);
-      auto& l_v_new   = l_V(ie,np1,1,ipt,jpt,k);
-      auto& l_vth_new = l_vth(ie,np1,ipt,jpt,k);
-      auto& l_dp_new  = l_dp(ie,np1,ipt,jpt,k);
+      auto& y_u_val   = y_V(ie,0,ipt,jpt,k);
+      auto& y_v_val   = y_V(ie,1,ipt,jpt,k);
+      auto& y_vth_val = y_vth(ie,ipt,jpt,k);
+      auto& y_dp_val  = y_dp(ie,ipt,jpt,k);
 
       // Jacobians
       const auto& Ju   = Homme::subview(dvdx_v,ie,np1,0);
@@ -1029,10 +1044,10 @@ struct CaarFunctorImplST {
       const auto& Jphi = Homme::subview(dphidx_v,ie,np1);
       const auto& Jw   = Homme::subview(dwdx_v,ie,np1);
 
-      l_u_new = 0;
-      l_v_new = 0;
-      l_dp_new = 0;
-      l_vth_new = 0;
+      y_u_val = 0;
+      y_v_val = 0;
+      y_dp_val = 0;
+      y_vth_val = 0;
 
       // offsets of each var in the deriv vector
       // NOTE: to do (X-m) mod n, do (X-m+n) mod n, since the mod of a neg number is not what you think
@@ -1055,59 +1070,59 @@ struct CaarFunctorImplST {
           auto pt_Jw   = Homme::subview(Jw   ,mpt,npt);
 
           // Impacts on k quantities
-          l_u_new += pt_Ju(k).dx(u_curr)   * l_u_old   (mpt,npt,k)  // du(k)/du(k)
-                   + pt_Jv(k).dx(u_curr)   * l_v_old   (mpt,npt,k)  // dv(k)/du(k)
-                   + pt_Jvth(k).dx(u_curr) * l_vth_old (mpt,npt,k)  // dvth(k)/du(k)
-                   + pt_Jdp(k).dx(u_curr)  * l_dp_old  (mpt,npt,k)  // ddp(k)/du(k)
-                   + pt_Jphi(k).dx(u_curr) * l_phi_old (mpt,npt,k)  // dphi(k)/du(k)
-                   + pt_Jw(k).dx(u_curr)   * l_w_old   (mpt,npt,k); // dw(k)/du(k)
+          y_u_val += pt_Ju(k).dx(u_curr)   * x_u_ie  (mpt,npt,k)  // du(k)/du(k)
+                   + pt_Jv(k).dx(u_curr)   * x_v_ie  (mpt,npt,k)  // dv(k)/du(k)
+                   + pt_Jvth(k).dx(u_curr) * x_vth_ie(mpt,npt,k)  // dvth(k)/du(k)
+                   + pt_Jdp(k).dx(u_curr)  * x_dp_ie (mpt,npt,k)  // ddp(k)/du(k)
+                   + pt_Jphi(k).dx(u_curr) * x_phi_ie(mpt,npt,k)  // dphi(k)/du(k)
+                   + pt_Jw(k).dx(u_curr)   * x_w_ie  (mpt,npt,k); // dw(k)/du(k)
 
-          l_v_new += pt_Ju(k).dx(v_curr)   * l_u_old   (mpt,npt,k)  // du(k)/du(k)
-                   + pt_Jv(k).dx(v_curr)   * l_v_old   (mpt,npt,k)  // dv(k)/du(k)
-                   + pt_Jvth(k).dx(v_curr) * l_vth_old (mpt,npt,k)  // dvth(k)/du(k)
-                   + pt_Jdp(k).dx(v_curr)  * l_dp_old  (mpt,npt,k)  // ddp(k)/du(k)
-                   + pt_Jphi(k).dx(v_curr) * l_phi_old (mpt,npt,k)  // dphi(k)/du(k)
-                   + pt_Jw(k).dx(v_curr)   * l_w_old   (mpt,npt,k); // dw(k)/du(k)
+          y_v_val += pt_Ju(k).dx(v_curr)   * x_u_ie  (mpt,npt,k)  // du(k)/du(k)
+                   + pt_Jv(k).dx(v_curr)   * x_v_ie  (mpt,npt,k)  // dv(k)/du(k)
+                   + pt_Jvth(k).dx(v_curr) * x_vth_ie(mpt,npt,k)  // dvth(k)/du(k)
+                   + pt_Jdp(k).dx(v_curr)  * x_dp_ie (mpt,npt,k)  // ddp(k)/du(k)
+                   + pt_Jphi(k).dx(v_curr) * x_phi_ie(mpt,npt,k)  // dphi(k)/du(k)
+                   + pt_Jw(k).dx(v_curr)   * x_w_ie  (mpt,npt,k); // dw(k)/du(k)
 
-          l_vth_new += pt_Ju(k).dx(vth_curr)   * l_u_old   (mpt,npt,k)  // du(k)/dvth(k)
-                    +  pt_Jv(k).dx(vth_curr)   * l_v_old   (mpt,npt,k)  // dv(k)/dvth(k)
-                    +  pt_Jvth(k).dx(vth_curr) * l_vth_old (mpt,npt,k)  // dvth(k)/dvth(k)
-                    +  pt_Jw(k).dx(vth_curr)   * l_w_old   (mpt,npt,k); // dw(k)/dvth(k)
+          y_vth_val += pt_Ju(k).dx(vth_curr)   * x_u_ie  (mpt,npt,k)  // du(k)/dvth(k)
+                    +  pt_Jv(k).dx(vth_curr)   * x_v_ie  (mpt,npt,k)  // dv(k)/dvth(k)
+                    +  pt_Jvth(k).dx(vth_curr) * x_vth_ie(mpt,npt,k)  // dvth(k)/dvth(k)
+                    +  pt_Jw(k).dx(vth_curr)   * x_w_ie  (mpt,npt,k); // dw(k)/dvth(k)
 
-          l_dp_new += pt_Ju(k).dx(dp_curr)   * l_u_old   (mpt,npt,k)  // du(k)/ddp(k)
-                   +  pt_Jv(k).dx(dp_curr)   * l_v_old   (mpt,npt,k)  // dv(k)/ddp(k)
-                   +  pt_Jvth(k).dx(dp_curr) * l_vth_old (mpt,npt,k)  // dvth(k)/ddp(k)
-                   +  pt_Jdp(k).dx(dp_curr)  * l_dp_old  (mpt,npt,k)  // ddp(k)/ddp(k)
-                   +  pt_Jphi(k).dx(dp_curr) * l_phi_old (mpt,npt,k)  // dphi(k)/ddp(k)
-                   +  pt_Jw(k).dx(dp_curr)   * l_w_old   (mpt,npt,k); // dw(k)/ddp(k)
+          y_dp_val += pt_Ju(k).dx(dp_curr)   * x_u_ie  (mpt,npt,k)  // du(k)/ddp(k)
+                   +  pt_Jv(k).dx(dp_curr)   * x_v_ie  (mpt,npt,k)  // dv(k)/ddp(k)
+                   +  pt_Jvth(k).dx(dp_curr) * x_vth_ie(mpt,npt,k)  // dvth(k)/ddp(k)
+                   +  pt_Jdp(k).dx(dp_curr)  * x_dp_ie (mpt,npt,k)  // ddp(k)/ddp(k)
+                   +  pt_Jphi(k).dx(dp_curr) * x_phi_ie(mpt,npt,k)  // dphi(k)/ddp(k)
+                   +  pt_Jw(k).dx(dp_curr)   * x_w_ie  (mpt,npt,k); // dw(k)/ddp(k)
 
           // Impacts on k+1 quantities
-          l_u_new += pt_Jphi(k+1).dx(u_curr) * l_phi_old (mpt,npt,k+1)  // dphi(k+1)/du(k)
-                   + pt_Jw(k+1).dx(u_curr)   * l_w_old   (mpt,npt,k+1); // dw(k+1)/du(k)
+          y_u_val += pt_Jphi(k+1).dx(u_curr) * x_phi_ie(mpt,npt,k+1)  // dphi(k+1)/du(k)
+                   + pt_Jw(k+1).dx(u_curr)   * x_w_ie  (mpt,npt,k+1); // dw(k+1)/du(k)
 
-          l_v_new += pt_Jphi(k+1).dx(v_curr) * l_phi_old (mpt,npt,k+1)  // dphi(k+1)/dv(k)
-                   + pt_Jw(k+1).dx(v_curr)   * l_w_old   (mpt,npt,k+1); // dw(k+1)/dv(k)
+          y_v_val += pt_Jphi(k+1).dx(v_curr) * x_phi_ie(mpt,npt,k+1)  // dphi(k+1)/dv(k)
+                   + pt_Jw(k+1).dx(v_curr)   * x_w_ie  (mpt,npt,k+1); // dw(k+1)/dv(k)
 
-          l_vth_new += pt_Jw(k+1).dx(vth_curr) * l_w_old (mpt,npt,k+1); // dw(k+1)/dvth(k)
+          y_vth_val += pt_Jw(k+1).dx(vth_curr) * x_w_ie(mpt,npt,k+1); // dw(k+1)/dvth(k)
 
-          l_dp_new += pt_Jphi(k+1).dx(dp_curr) * l_phi_old (mpt,npt,k+1)  // dphi(k+1)/ddp(k)
-                    + pt_Jw(k+1).dx(dp_curr)   * l_w_old   (mpt,npt,k+1); // dw(k+1)/ddp(k)
+          y_dp_val += pt_Jphi(k+1).dx(dp_curr) * x_phi_ie(mpt,npt,k+1)  // dphi(k+1)/ddp(k)
+                    + pt_Jw(k+1).dx(dp_curr)   * x_w_ie  (mpt,npt,k+1); // dw(k+1)/ddp(k)
 
           if (k<last_mid) {
-            l_vth_new += pt_Ju(k+1).dx(vth_curr) * l_u_old (mpt,npt,k+1)  // du(k+1)/dvth(k)
-                       + pt_Jv(k+1).dx(vth_curr) * l_v_old (mpt,npt,k+1); // dv(k+1)/dvth(k)
+            y_vth_val += pt_Ju(k+1).dx(vth_curr) * x_u_ie(mpt,npt,k+1)  // du(k+1)/dvth(k)
+                       + pt_Jv(k+1).dx(vth_curr) * x_v_ie(mpt,npt,k+1); // dv(k+1)/dvth(k)
 
-            l_dp_new += pt_Ju(k+1).dx(dp_curr) * l_u_old (mpt,npt,k+1)  // du(k+1)/ddp(k)
-                      + pt_Jv(k+1).dx(dp_curr) * l_v_old (mpt,npt,k+1); // dv(k+1)/ddp(k)
+            y_dp_val += pt_Ju(k+1).dx(dp_curr) * x_u_ie(mpt,npt,k+1)  // du(k+1)/ddp(k)
+                      + pt_Jv(k+1).dx(dp_curr) * x_v_ie(mpt,npt,k+1); // dv(k+1)/ddp(k)
           }
 
           // Impacts on k-1 quantities
           if (k>0) {
-            l_vth_new += pt_Ju(k-1).dx(vth_curr) * l_u_old (mpt,npt,k-1)  // du(k-1)/dvth(k)
-                       + pt_Jv(k-1).dx(vth_curr) * l_v_old (mpt,npt,k-1); // dv(k-1)/dvth(k)
+            y_vth_val += pt_Ju(k-1).dx(vth_curr) * x_u_ie(mpt,npt,k-1)  // du(k-1)/dvth(k)
+                       + pt_Jv(k-1).dx(vth_curr) * x_v_ie(mpt,npt,k-1); // dv(k-1)/dvth(k)
 
-            l_dp_new += pt_Ju(k-1).dx(dp_curr) * l_u_old (mpt,npt,k-1)  // du(k-1)/ddp(k)
-                      + pt_Jv(k-1).dx(dp_curr) * l_v_old (mpt,npt,k-1); // dv(k-1)/ddp(k)
+            y_dp_val += pt_Ju(k-1).dx(dp_curr) * x_u_ie(mpt,npt,k-1)  // du(k-1)/ddp(k)
+                      + pt_Jv(k-1).dx(dp_curr) * x_v_ie(mpt,npt,k-1); // dv(k-1)/ddp(k)
           }
         }
       }
@@ -1115,15 +1130,15 @@ struct CaarFunctorImplST {
 
     constexpr int last_int = NUM_INTERFACE_LEV-1;
     auto jtv_int = KOKKOS_LAMBDA (const int ie, const int ipt, const int jpt, const int k) {
-      const auto& l_u_old   = Homme::subview(l_V,ie,n0,0);
-      const auto& l_v_old   = Homme::subview(l_V,ie,n0,1);
-      const auto& l_vth_old = Homme::subview(l_vth,ie,n0);
-      const auto& l_dp_old  = Homme::subview(l_dp,ie,n0);
-      const auto& l_phi_old = Homme::subview(l_phi,ie,n0);
-      const auto& l_w_old   = Homme::subview(l_w,ie,n0);
+      const auto& x_u_ie   = Homme::subview(x_V,ie,0);
+      const auto& x_v_ie   = Homme::subview(x_V,ie,1);
+      const auto& x_vth_ie = Homme::subview(x_vth,ie);
+      const auto& x_dp_ie  = Homme::subview(x_dp,ie);
+      const auto& x_phi_ie = Homme::subview(x_phi,ie);
+      const auto& x_w_ie   = Homme::subview(x_w,ie);
 
-      auto& l_phi_new = l_phi(ie,np1,ipt,jpt,k);
-      auto& l_w_new   = l_w(ie,np1,ipt,jpt,k);
+      auto& y_phi_val = y_phi(ie,ipt,jpt,k);
+      auto& y_w_val   = y_w(ie,ipt,jpt,k);
 
       // Jacobians
       const auto& Ju   = Homme::subview(dvdx_v,ie,np1,0);
@@ -1133,8 +1148,8 @@ struct CaarFunctorImplST {
       const auto& Jphi = Homme::subview(dphidx_v,ie,np1);
       const auto& Jw   = Homme::subview(dwdx_v,ie,np1);
 
-      l_phi_new = 0;
-      l_w_new = 0;
+      y_phi_val = 0;
+      y_w_val = 0;
 
       int pt_offset = ipt*NP*stencil_sz + jpt*stencil_sz;
 
@@ -1153,40 +1168,40 @@ struct CaarFunctorImplST {
           auto pt_Jw   = Homme::subview(Jw   ,mpt,npt);
 
           // Impacts on k interfaces
-          l_phi_new += pt_Jphi(k).dx(phi_curr) * l_phi_old (mpt,npt,k)  // dphi(k)/dphi(k)
-                     + pt_Jw(k).dx(phi_curr)   * l_w_old   (mpt,npt,k); // dw(k)/dphi(k)
+          y_phi_val += pt_Jphi(k).dx(phi_curr) * x_phi_ie(mpt,npt,k)  // dphi(k)/dphi(k)
+                     + pt_Jw(k).dx(phi_curr)   * x_w_ie  (mpt,npt,k); // dw(k)/dphi(k)
 
-          l_w_new += pt_Jphi(k).dx(w_curr) * l_phi_old (mpt,npt,k)  // dphi(k)/dw(k)
-                   + pt_Jw(k).dx(w_curr)   * l_w_old   (mpt,npt,k); // dw(k)/dw(k)
+          y_w_val += pt_Jphi(k).dx(w_curr) * x_phi_ie(mpt,npt,k)  // dphi(k)/dw(k)
+                   + pt_Jw(k).dx(w_curr)   * x_w_ie  (mpt,npt,k); // dw(k)/dw(k)
 
           // Impacts on k+1 interfaces and k midpoints
           if (k<last_int) {
-            l_phi_new += pt_Ju(k).dx(phi_curr)   * l_u_old (mpt,npt,k)  // du(k)/dphi(k)
-                       + pt_Jv(k).dx(phi_curr)   * l_v_old (mpt,npt,k)  // dv(k)/dphi(k)
-                       + pt_Jw(k+1).dx(phi_curr) * l_w_old (mpt,npt,k+1); // dw(k+1)/dphi(k)
+            y_phi_val += pt_Ju(k).dx(phi_curr)   * x_u_ie(mpt,npt,k)  // du(k)/dphi(k)
+                       + pt_Jv(k).dx(phi_curr)   * x_v_ie(mpt,npt,k)  // dv(k)/dphi(k)
+                       + pt_Jw(k+1).dx(phi_curr) * x_w_ie(mpt,npt,k+1); // dw(k+1)/dphi(k)
 
-            l_w_new += pt_Ju(k).dx(w_curr) * l_u_old (mpt,npt,k)  // du(k)/dw(k)
-                     + pt_Jv(k).dx(w_curr) * l_v_old (mpt,npt,k); // dv(k)/dw(k)
+            y_w_val += pt_Ju(k).dx(w_curr) * x_u_ie(mpt,npt,k)  // du(k)/dw(k)
+                     + pt_Jv(k).dx(w_curr) * x_v_ie(mpt,npt,k); // dv(k)/dw(k)
 
             if (k<last_mid) {
-              l_phi_new += pt_Ju(k+1).dx(phi_curr) * l_u_old (mpt,npt,k+1)  // du(k+1)/dphi(k)
-                         + pt_Jv(k+1).dx(phi_curr) * l_v_old (mpt,npt,k+1); // dv(k+1)/dphi(k)
+              y_phi_val += pt_Ju(k+1).dx(phi_curr) * x_u_ie(mpt,npt,k+1)  // du(k+1)/dphi(k)
+                         + pt_Jv(k+1).dx(phi_curr) * x_v_ie(mpt,npt,k+1); // dv(k+1)/dphi(k)
             }
           }
 
           // Impacts on k-1 quantities
           if (k>0) {
-            l_phi_new += pt_Ju(k-1).dx(phi_curr) * l_u_old  (mpt,npt,k-1)  // du(k-1)/dphi(k)
-                       + pt_Jv(k-1).dx(phi_curr) * l_v_old  (mpt,npt,k-1)  // dv(k-1)/dphi(k)
-                       + pt_Jw(k-1).dx(phi_curr) * l_w_old  (mpt,npt,k-1); // dw(k-1)/dphi(k)
+            y_phi_val += pt_Ju(k-1).dx(phi_curr) * x_u_ie(mpt,npt,k-1)  // du(k-1)/dphi(k)
+                       + pt_Jv(k-1).dx(phi_curr) * x_v_ie(mpt,npt,k-1)  // dv(k-1)/dphi(k)
+                       + pt_Jw(k-1).dx(phi_curr) * x_w_ie(mpt,npt,k-1); // dw(k-1)/dphi(k)
 
-            l_w_new += pt_Ju(k-1).dx(w_curr) * l_u_old  (mpt,npt,k-1)  // du(k-1)/dw(k)
-                     + pt_Jv(k-1).dx(w_curr) * l_v_old  (mpt,npt,k-1); // dv(k-1)/dw(k)
+            y_w_val += pt_Ju(k-1).dx(w_curr) * x_u_ie(mpt,npt,k-1)  // du(k-1)/dw(k)
+                     + pt_Jv(k-1).dx(w_curr) * x_v_ie(mpt,npt,k-1); // dv(k-1)/dw(k)
 
             // Impacts on k-2 quantities
             if (k>1) {
-              l_phi_new += pt_Ju(k-2).dx(phi_curr) * l_u_old  (mpt,npt,k-2)  // du(k-2)/dphi(k)
-                         + pt_Jv(k-2).dx(phi_curr) * l_v_old  (mpt,npt,k-2); // dv(k-2)/dphi(k)
+              y_phi_val += pt_Ju(k-2).dx(phi_curr) * x_u_ie(mpt,npt,k-2)  // du(k-2)/dphi(k)
+                         + pt_Jv(k-2).dx(phi_curr) * x_v_ie(mpt,npt,k-2); // dv(k-2)/dphi(k)
             }
           }
         }
@@ -1202,11 +1217,11 @@ struct CaarFunctorImplST {
   //      NP*NP*(NUM_PHYSICAL_LEV*4 + NUM_INTERFACE_LEV*2)
   template<typename MyST = ST>
   std::enable_if_t<not std::is_same_v<MyST,DxFadTypeCaar>>
-  run_JtV_full (const RKStageData& data, ElementsStateST<Real>& adj_state) = delete;
+  run_JtV_full (const RKStageData& data, const StateSnapshot& x, StateSnapshot& y) = delete;
 
   template<typename MyST = ST>
   std::enable_if_t<std::is_same_v<MyST,DxFadTypeCaar>>
-  run_JtV_full (const RKStageData& data, ElementsStateST<Real>& adj_state)
+  run_JtV_full (const RKStageData& data, const StateSnapshot& x, StateSnapshot& y)
   {
     // First, init d/dx derivs
     auto dvdx_v = ekat::scalarize(m_state.m_v);
@@ -1222,11 +1237,17 @@ struct CaarFunctorImplST {
     // Then compute dxnew/dp = dxnew/dxold * dxold/dp
     int np1 = data.np1;
 
-    auto l_V = ekat::scalarize(adj_state.m_v);
-    auto l_vth = ekat::scalarize(adj_state.m_vtheta_dp);
-    auto l_dp = ekat::scalarize(adj_state.m_dp3d);
-    auto l_w = ekat::scalarize(adj_state.m_w_i);
-    auto l_phi = ekat::scalarize(adj_state.m_phinh_i);
+    auto x_V = ekat::scalarize(x.v);
+    auto x_vth = ekat::scalarize(x.vtheta_dp);
+    auto x_dp = ekat::scalarize(x.dp3d);
+    auto x_w = ekat::scalarize(x.w_i);
+    auto x_phi = ekat::scalarize(x.phinh_i);
+
+    auto y_V = ekat::scalarize(y.v);
+    auto y_vth = ekat::scalarize(y.vtheta_dp);
+    auto y_dp = ekat::scalarize(y.dp3d);
+    auto y_w = ekat::scalarize(y.w_i);
+    auto y_phi = ekat::scalarize(y.phinh_i);
 
     for (int ie=0; ie<m_num_elems; ++ie) {
       int fad_idx = 0;
@@ -1236,44 +1257,25 @@ struct CaarFunctorImplST {
           for (int lvl=0; lvl<NUM_PHYSICAL_LEV; ++lvl) {
 
             // Zero Fad components
-            l_V(ie,np1,0,igp,jgp,lvl) = 0;
-            l_V(ie,np1,1,igp,jgp,lvl) = 0;
-            l_vth(ie,np1,igp,jgp,lvl) = 0;
-            l_dp(ie,np1,igp,jgp,lvl) = 0;
+            y_V(ie,0,igp,jgp,lvl) = 0;
+            y_V(ie,1,igp,jgp,lvl) = 0;
+            y_vth(ie,igp,jgp,lvl) = 0;
+            y_dp(ie,igp,jgp,lvl) = 0;
 
             // Compute mat-trans-vec one column at a time
             for (int sigp=0; sigp<NP; ++sigp) {
               for (int sjgp=0; sjgp<NP; ++sjgp) {
                 for (int slvl=0; slvl<NUM_PHYSICAL_LEV; ++slvl) {
-                  l_V(ie,np1,0,igp,jgp,lvl) +=
-                    dvdx_v(ie,np1,0,sigp,sjgp,slvl).dx(fad_idx) * l_V(ie,n0,0,sigp,sjgp,slvl) + 
-                    dvdx_v(ie,np1,1,sigp,sjgp,slvl).dx(fad_idx) * l_V(ie,n0,1,sigp,sjgp,slvl) + 
-                    dvthdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_vth(ie,n0,sigp,sjgp,slvl) + 
-                    ddpdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_dp(ie,n0,sigp,sjgp,slvl);
+                  y_V(ie,0,igp,jgp,lvl) +=
+                    dvdx_v(ie,np1,0,sigp,sjgp,slvl).dx(fad_idx) * x_V(ie,0,sigp,sjgp,slvl) +
+                    dvdx_v(ie,np1,1,sigp,sjgp,slvl).dx(fad_idx) * x_V(ie,1,sigp,sjgp,slvl) +
+                    dvthdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_vth(ie,sigp,sjgp,slvl) +
+                    ddpdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_dp(ie,sigp,sjgp,slvl);
                 }
                 for (int slvl=0; slvl<NUM_INTERFACE_LEV; ++slvl) {
-                  l_V(ie,np1,0,igp,jgp,lvl) +=
-                    dwdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_w(ie,n0,sigp,sjgp,slvl) +
-                    dphidx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_phi(ie,n0,sigp,sjgp,slvl);
-                }
-              }
-            }
-
-            ++fad_idx;
-            
-            for (int sigp=0; sigp<NP; ++sigp) {
-              for (int sjgp=0; sjgp<NP; ++sjgp) {
-                for (int slvl=0; slvl<NUM_PHYSICAL_LEV; ++slvl) {
-                  l_V(ie,np1,1,igp,jgp,lvl) +=
-                    dvdx_v(ie,np1,0,sigp,sjgp,slvl).dx(fad_idx) * l_V(ie,n0,0,sigp,sjgp,slvl) + 
-                    dvdx_v(ie,np1,1,sigp,sjgp,slvl).dx(fad_idx) * l_V(ie,n0,1,sigp,sjgp,slvl) + 
-                    dvthdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_vth(ie,n0,sigp,sjgp,slvl) + 
-                    ddpdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_dp(ie,n0,sigp,sjgp,slvl);
-                }
-                for (int slvl=0; slvl<NUM_INTERFACE_LEV; ++slvl) {
-                  l_V(ie,np1,1,igp,jgp,lvl) +=
-                    dwdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_w(ie,n0,sigp,sjgp,slvl) +
-                    dphidx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_phi(ie,n0,sigp,sjgp,slvl);
+                  y_V(ie,0,igp,jgp,lvl) +=
+                    dwdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_w(ie,sigp,sjgp,slvl) +
+                    dphidx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_phi(ie,sigp,sjgp,slvl);
                 }
               }
             }
@@ -1283,16 +1285,16 @@ struct CaarFunctorImplST {
             for (int sigp=0; sigp<NP; ++sigp) {
               for (int sjgp=0; sjgp<NP; ++sjgp) {
                 for (int slvl=0; slvl<NUM_PHYSICAL_LEV; ++slvl) {
-                  l_vth(ie,np1,igp,jgp,lvl) +=
-                    dvdx_v(ie,np1,0,sigp,sjgp,slvl).dx(fad_idx) * l_V(ie,n0,0,sigp,sjgp,slvl) + 
-                    dvdx_v(ie,np1,1,sigp,sjgp,slvl).dx(fad_idx) * l_V(ie,n0,1,sigp,sjgp,slvl) + 
-                    dvthdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_vth(ie,n0,sigp,sjgp,slvl) + 
-                    ddpdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_dp(ie,n0,sigp,sjgp,slvl);
+                  y_V(ie,1,igp,jgp,lvl) +=
+                    dvdx_v(ie,np1,0,sigp,sjgp,slvl).dx(fad_idx) * x_V(ie,0,sigp,sjgp,slvl) +
+                    dvdx_v(ie,np1,1,sigp,sjgp,slvl).dx(fad_idx) * x_V(ie,1,sigp,sjgp,slvl) +
+                    dvthdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_vth(ie,sigp,sjgp,slvl) +
+                    ddpdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_dp(ie,sigp,sjgp,slvl);
                 }
                 for (int slvl=0; slvl<NUM_INTERFACE_LEV; ++slvl) {
-                  l_vth(ie,np1,igp,jgp,lvl) +=
-                    dwdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_w(ie,n0,sigp,sjgp,slvl) +
-                    dphidx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_phi(ie,n0,sigp,sjgp,slvl);
+                  y_V(ie,1,igp,jgp,lvl) +=
+                    dwdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_w(ie,sigp,sjgp,slvl) +
+                    dphidx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_phi(ie,sigp,sjgp,slvl);
                 }
               }
             }
@@ -1302,16 +1304,35 @@ struct CaarFunctorImplST {
             for (int sigp=0; sigp<NP; ++sigp) {
               for (int sjgp=0; sjgp<NP; ++sjgp) {
                 for (int slvl=0; slvl<NUM_PHYSICAL_LEV; ++slvl) {
-                  l_dp(ie,np1,igp,jgp,lvl) +=
-                    dvdx_v(ie,np1,0,sigp,sjgp,slvl).dx(fad_idx) * l_V(ie,n0,0,sigp,sjgp,slvl) + 
-                    dvdx_v(ie,np1,1,sigp,sjgp,slvl).dx(fad_idx) * l_V(ie,n0,1,sigp,sjgp,slvl) + 
-                    dvthdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_vth(ie,n0,sigp,sjgp,slvl) + 
-                    ddpdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_dp(ie,n0,sigp,sjgp,slvl);
+                  y_vth(ie,igp,jgp,lvl) +=
+                    dvdx_v(ie,np1,0,sigp,sjgp,slvl).dx(fad_idx) * x_V(ie,0,sigp,sjgp,slvl) +
+                    dvdx_v(ie,np1,1,sigp,sjgp,slvl).dx(fad_idx) * x_V(ie,1,sigp,sjgp,slvl) +
+                    dvthdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_vth(ie,sigp,sjgp,slvl) +
+                    ddpdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_dp(ie,sigp,sjgp,slvl);
                 }
                 for (int slvl=0; slvl<NUM_INTERFACE_LEV; ++slvl) {
-                  l_dp(ie,np1,igp,jgp,lvl) +=
-                    dwdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_w(ie,n0,sigp,sjgp,slvl) +
-                    dphidx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_phi(ie,n0,sigp,sjgp,slvl);
+                  y_vth(ie,igp,jgp,lvl) +=
+                    dwdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_w(ie,sigp,sjgp,slvl) +
+                    dphidx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_phi(ie,sigp,sjgp,slvl);
+                }
+              }
+            }
+
+            ++fad_idx;
+
+            for (int sigp=0; sigp<NP; ++sigp) {
+              for (int sjgp=0; sjgp<NP; ++sjgp) {
+                for (int slvl=0; slvl<NUM_PHYSICAL_LEV; ++slvl) {
+                  y_dp(ie,igp,jgp,lvl) +=
+                    dvdx_v(ie,np1,0,sigp,sjgp,slvl).dx(fad_idx) * x_V(ie,0,sigp,sjgp,slvl) +
+                    dvdx_v(ie,np1,1,sigp,sjgp,slvl).dx(fad_idx) * x_V(ie,1,sigp,sjgp,slvl) +
+                    dvthdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_vth(ie,sigp,sjgp,slvl) +
+                    ddpdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_dp(ie,sigp,sjgp,slvl);
+                }
+                for (int slvl=0; slvl<NUM_INTERFACE_LEV; ++slvl) {
+                  y_dp(ie,igp,jgp,lvl) +=
+                    dwdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_w(ie,sigp,sjgp,slvl) +
+                    dphidx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_phi(ie,sigp,sjgp,slvl);
                 }
               }
             }
@@ -1323,42 +1344,42 @@ struct CaarFunctorImplST {
           for (int lvl=0; lvl<NUM_INTERFACE_LEV; ++lvl) {
 
             // Zero Fad components
-            l_w(ie,np1,igp,jgp,lvl) = 0;
-            l_phi(ie,np1,igp,jgp,lvl) = 0;
+            y_w(ie,igp,jgp,lvl) = 0;
+            y_phi(ie,igp,jgp,lvl) = 0;
 
             // Compute mat-trans-vec one column at a time
             for (int sigp=0; sigp<NP; ++sigp) {
               for (int sjgp=0; sjgp<NP; ++sjgp) {
                 for (int slvl=0; slvl<NUM_PHYSICAL_LEV; ++slvl) {
-                  l_w(ie,np1,igp,jgp,lvl) +=
-                    dvdx_v(ie,np1,0,sigp,sjgp,slvl).dx(fad_idx) * l_V(ie,n0,0,sigp,sjgp,slvl) + 
-                    dvdx_v(ie,np1,1,sigp,sjgp,slvl).dx(fad_idx) * l_V(ie,n0,1,sigp,sjgp,slvl) + 
-                    dvthdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_vth(ie,n0,sigp,sjgp,slvl) + 
-                    ddpdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_dp(ie,n0,sigp,sjgp,slvl);
-                } 
+                  y_w(ie,igp,jgp,lvl) +=
+                    dvdx_v(ie,np1,0,sigp,sjgp,slvl).dx(fad_idx) * x_V(ie,0,sigp,sjgp,slvl) +
+                    dvdx_v(ie,np1,1,sigp,sjgp,slvl).dx(fad_idx) * x_V(ie,1,sigp,sjgp,slvl) +
+                    dvthdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_vth(ie,sigp,sjgp,slvl) +
+                    ddpdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_dp(ie,sigp,sjgp,slvl);
+                }
                 for (int slvl=0; slvl<NUM_INTERFACE_LEV; ++slvl) {
-                  l_w(ie,np1,igp,jgp,lvl) +=
-                    dwdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_w(ie,n0,sigp,sjgp,slvl) +
-                    dphidx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_phi(ie,n0,sigp,sjgp,slvl);
+                  y_w(ie,igp,jgp,lvl) +=
+                    dwdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_w(ie,sigp,sjgp,slvl) +
+                    dphidx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_phi(ie,sigp,sjgp,slvl);
                 }
               }
             }
-          
+
             ++fad_idx;
 
             for (int sigp=0; sigp<NP; ++sigp) {
               for (int sjgp=0; sjgp<NP; ++sjgp) {
                 for (int slvl=0; slvl<NUM_PHYSICAL_LEV; ++slvl) {
-                  l_phi(ie,np1,igp,jgp,lvl) +=
-                    dvdx_v(ie,np1,0,sigp,sjgp,slvl).dx(fad_idx) * l_V(ie,n0,0,sigp,sjgp,slvl) + 
-                    dvdx_v(ie,np1,1,sigp,sjgp,slvl).dx(fad_idx) * l_V(ie,n0,1,sigp,sjgp,slvl) + 
-                    dvthdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_vth(ie,n0,sigp,sjgp,slvl) + 
-                    ddpdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_dp(ie,n0,sigp,sjgp,slvl);
-                } 
+                  y_phi(ie,igp,jgp,lvl) +=
+                    dvdx_v(ie,np1,0,sigp,sjgp,slvl).dx(fad_idx) * x_V(ie,0,sigp,sjgp,slvl) +
+                    dvdx_v(ie,np1,1,sigp,sjgp,slvl).dx(fad_idx) * x_V(ie,1,sigp,sjgp,slvl) +
+                    dvthdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_vth(ie,sigp,sjgp,slvl) +
+                    ddpdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_dp(ie,sigp,sjgp,slvl);
+                }
                 for (int slvl=0; slvl<NUM_INTERFACE_LEV; ++slvl) {
-                  l_phi(ie,np1,igp,jgp,lvl) +=
-                    dwdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_w(ie,n0,sigp,sjgp,slvl) +
-                    dphidx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * l_phi(ie,n0,sigp,sjgp,slvl);
+                  y_phi(ie,igp,jgp,lvl) +=
+                    dwdx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_w(ie,sigp,sjgp,slvl) +
+                    dphidx_v(ie,np1,sigp,sjgp,slvl).dx(fad_idx) * x_phi(ie,sigp,sjgp,slvl);
                 }
               }
             }
@@ -1415,7 +1436,7 @@ struct CaarFunctorImplST {
     compute_dp_and_theta_tens (kv);
 
     // ============= EPOCH 4 =========== //
-    // compute_v_tens reuses some buffers used by compute_dp_and_theta_tens 
+    // compute_v_tens reuses some buffers used by compute_dp_and_theta_tens
     kv.team_barrier();
     compute_v_tens (kv);
 
@@ -1526,7 +1547,7 @@ struct CaarFunctorImplST {
   KOKKOS_INLINE_FUNCTION
   bool compute_scan_quantities (KernelVariables &kv) const {
     bool ok = true;
-    
+
     kv.team_barrier();
     Kokkos::parallel_for(Kokkos::TeamThreadRange(kv.team,NP*NP),
                          [&](const int idx) {
