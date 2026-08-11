@@ -35,8 +35,6 @@
 
 #include <assert.h>
 
-#include <fstream>
-
 namespace Homme {
 
 template<typename ST>
