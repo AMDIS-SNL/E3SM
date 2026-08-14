@@ -2090,15 +2090,15 @@ struct CaarFunctorImplST {
         m_eos.compute_exner(kv,Homme::subview(m_buffers.pnh,kv.team_idx,igp,jgp),
                                Homme::subview(m_buffers.exner,kv.team_idx,igp,jgp));
 
-        m_eos.compute_phi_i(kv, m_geometry.m_phis(kv.ie,igp,jgp),
-                            Homme::subview(m_state.m_vtheta_dp,kv.ie,m_data.n0,igp,jgp),
-                            Homme::subview(m_buffers.exner,kv.team_idx,igp,jgp),
-                            Homme::subview(m_buffers.pnh,kv.team_idx,igp,jgp),
-                            Homme::subview(m_state.m_phinh_i,kv.ie,m_data.n0,igp,jgp),
-                            Homme::subview(m_buffers.phi_int_all,kv.ie,igp,jgp));
-
         if constexpr (std::is_same_v<ST,DxFadTypeCaar>) {
           auto phinh_is = ekat::scalarize(Homme::subview(m_state.m_phinh_i,kv.ie,m_data.n0,igp,jgp));
+
+          m_eos.compute_phi_i(kv, m_geometry.m_phis(kv.ie,igp,jgp),
+                              Homme::subview(m_state.m_vtheta_dp,kv.ie,m_data.n0,igp,jgp),
+                              Homme::subview(m_buffers.exner,kv.team_idx,igp,jgp),
+                              Homme::subview(m_buffers.pnh,kv.team_idx,igp,jgp),
+                              Homme::subview(m_state.m_phinh_i,kv.ie,m_data.n0,igp,jgp),
+                              Homme::subview(m_buffers.phi_int_all,kv.ie,igp,jgp));
 
           // Reset derivatives of phinh_i to treat it as a new independent variable
 
@@ -2118,6 +2118,13 @@ struct CaarFunctorImplST {
               phinh_is(lvl).fastAccessDx(offset + lvl%2) = 1.0;
             }
           });
+        }
+        else {
+          m_eos.compute_phi_i(kv, m_geometry.m_phis(kv.ie,igp,jgp),
+                              Homme::subview(m_state.m_vtheta_dp,kv.ie,m_data.n0,igp,jgp),
+                              Homme::subview(m_buffers.exner,kv.team_idx,igp,jgp),
+                              Homme::subview(m_buffers.pnh,kv.team_idx,igp,jgp),
+                              Homme::subview(m_state.m_phinh_i,kv.ie,m_data.n0,igp,jgp));
         }
       } else {
         const bool ok1 =
