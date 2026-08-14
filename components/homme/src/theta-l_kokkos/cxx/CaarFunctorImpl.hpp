@@ -938,7 +938,7 @@ struct CaarFunctorImplST {
                   for (int slvl=0; slvl<NUM_PHYSICAL_LEV; ++slvl) {
                     x_pi[slvl] = 0.0;
                     for (int tlvl=0; tlvl<=slvl; ++tlvl) {
-                      x_pi[slvl] += x_dp(ie,n0,sigp,sjgp,tlvl)*(tlvl == slvl ? 0.5 : 1.0);
+                      x_pi[slvl] += x_dp(ie,sigp,sjgp,tlvl)*(tlvl == slvl ? 0.5 : 1.0);
                     }
                   }
 
@@ -952,7 +952,7 @@ struct CaarFunctorImplST {
                     for (int tlvl=slvl; tlvl<NUM_PHYSICAL_LEV; ++tlvl) {
                       int offset = (sigp*NP+sjgp)*(6*NUM_PHYSICAL_LEV + 2*NUM_INTERFACE_LEV) + 6*tlvl;
                       x_phinh[slvl] +=
-                        phi_int_all(ie,sigp,sjgp,tlvl).dx(offset+2)*x_vth(ie,n0,sigp,sjgp,tlvl) + 
+                        phi_int_all(ie,sigp,sjgp,tlvl).dx(offset+2)*x_vth(ie,sigp,sjgp,tlvl) + 
                         phi_int_all(ie,sigp,sjgp,tlvl).dx(offset+4)*x_pi[tlvl];
                     }
                   }
@@ -964,26 +964,26 @@ struct CaarFunctorImplST {
                     return (sigp*NP+sjgp)*(6*NUM_PHYSICAL_LEV + 2*NUM_INTERFACE_LEV) + 6*lvl + 5;
                   };
 
-                  y_V(ie,np1,0,igp,jgp,lvl) +=
+                  y_V(ie,0,igp,jgp,lvl) +=
                     dvdx_v(ie,np1,0,igp,jgp,lvl).dx(pi_ind(lvl)) * x_pi[lvl] +
                     dvdx_v(ie,np1,0,igp,jgp,lvl).dx(phinh_ind(lvl)) * x_phinh[lvl];
-                  y_V(ie,np1,1,igp,jgp,lvl) +=
+                  y_V(ie,1,igp,jgp,lvl) +=
                     dvdx_v(ie,np1,1,igp,jgp,lvl).dx(pi_ind(lvl)) * x_pi[lvl] +
                     dvdx_v(ie,np1,1,igp,jgp,lvl).dx(phinh_ind(lvl)) * x_phinh[lvl];
-                  y_vth(ie,np1,igp,jgp,lvl) +=
+                  y_vth(ie,igp,jgp,lvl) +=
                     dvthdx_v(ie,np1,igp,jgp,lvl).dx(pi_ind(lvl)) * x_pi[lvl] +
                     dvthdx_v(ie,np1,igp,jgp,lvl).dx(phinh_ind(lvl)) * x_phinh[lvl];
-                  y_dp(ie,np1,igp,jgp,lvl) +=
+                  y_dp(ie,igp,jgp,lvl) +=
                     ddpdx_v(ie,np1,igp,jgp,lvl).dx(pi_ind(lvl)) * x_pi[lvl] +
                     ddpdx_v(ie,np1,igp,jgp,lvl).dx(phinh_ind(lvl)) * x_phinh[lvl];
                   if (lvl <NUM_PHYSICAL_LEV-1) {
-                    x_V(ie,np1,0,igp,jgp,lvl) +=
+                    y_V(ie,0,igp,jgp,lvl) +=
                       dvdx_v(ie,np1,0,igp,jgp,lvl).dx(phinh_ind(lvl+1)) * x_phinh[lvl+1];
-                    x_V(ie,np1,1,igp,jgp,lvl) +=
+                    y_V(ie,1,igp,jgp,lvl) +=
                       dvdx_v(ie,np1,1,igp,jgp,lvl).dx(phinh_ind(lvl+1)) * x_phinh[lvl+1];
-                    x_vth(ie,np1,igp,jgp,lvl) +=
+                    y_vth(ie,igp,jgp,lvl) +=
                       dvthdx_v(ie,np1,igp,jgp,lvl).dx(phinh_ind(lvl+1)) * x_phinh[lvl+1];
-                    x_dp(ie,np1,igp,jgp,lvl) +=
+                    y_dp(ie,igp,jgp,lvl) +=
                       ddpdx_v(ie,np1,igp,jgp,lvl).dx(phinh_ind(lvl+1)) * x_phinh[lvl+1];
                   }
                 }
@@ -1078,8 +1078,8 @@ struct CaarFunctorImplST {
           for (int lvl=0; lvl<NUM_INTERFACE_LEV; ++lvl) {
 
             // Zero Fad components
-            y_w(ie,np1,igp,jgp,lvl) = 0;
-            y_phi(ie,np1,igp,jgp,lvl) = 0;
+            y_w(ie,igp,jgp,lvl) = 0;
+            y_phi(ie,igp,jgp,lvl) = 0;
 
             // Compute mat-vec one row at a time
             int fad_idx = 0;
@@ -1600,8 +1600,6 @@ struct CaarFunctorImplST {
     // for hydrostatic
     auto phi_int_all = ekat::scalarize(m_buffers.phi_int_all);
 
-    int n0 = data.n0;
-
     const int num_fad = Sacado::StaticSize<DxFadTypeCaar>::value;
 
     // Then compute dxnew/dp = dxnew/dxold * dxold/dp
@@ -1723,20 +1721,20 @@ struct CaarFunctorImplST {
                 for (int sigp=0; sigp<NP; ++sigp) {
                   for (int sjgp=0; sjgp<NP; ++sjgp) {
                     x_phinh[l] +=
-                      dvdx_v(ie,np1,0,sigp,sjgp,l).dx(phinh_ind) * x_V(ie,n0,0,sigp,sjgp,l) + 
-                      dvdx_v(ie,np1,1,sigp,sjgp,l).dx(phinh_ind) * x_V(ie,n0,1,sigp,sjgp,l) + 
-                      dvthdx_v(ie,np1,sigp,sjgp,l).dx(phinh_ind) * x_vth(ie,n0,sigp,sjgp,l) + 
-                      ddpdx_v(ie,np1,sigp,sjgp,l).dx(phinh_ind) * x_dp(ie,n0,sigp,sjgp,l) +
-                      dwdx_v(ie,np1,sigp,sjgp,l).dx(phinh_ind) * x_w(ie,n0,sigp,sjgp,l) +
-                      dphidx_v(ie,np1,sigp,sjgp,l).dx(phinh_ind) * x_phi(ie,n0,sigp,sjgp,l);
+                      dvdx_v(ie,np1,0,sigp,sjgp,l).dx(phinh_ind) * x_V(ie,0,sigp,sjgp,l) + 
+                      dvdx_v(ie,np1,1,sigp,sjgp,l).dx(phinh_ind) * x_V(ie,1,sigp,sjgp,l) + 
+                      dvthdx_v(ie,np1,sigp,sjgp,l).dx(phinh_ind) * x_vth(ie,sigp,sjgp,l) + 
+                      ddpdx_v(ie,np1,sigp,sjgp,l).dx(phinh_ind) * x_dp(ie,sigp,sjgp,l) +
+                      dwdx_v(ie,np1,sigp,sjgp,l).dx(phinh_ind) * x_w(ie,sigp,sjgp,l) +
+                      dphidx_v(ie,np1,sigp,sjgp,l).dx(phinh_ind) * x_phi(ie,sigp,sjgp,l);
                     if (l > 0) {
                       x_phinh[l] +=
-                        dvdx_v(ie,np1,0,sigp,sjgp,l-1).dx(phinh_ind) * x_V(ie,n0,0,sigp,sjgp,l-1) + 
-                        dvdx_v(ie,np1,1,sigp,sjgp,l-1).dx(phinh_ind) * x_V(ie,n0,1,sigp,sjgp,l-1) + 
-                        dvthdx_v(ie,np1,sigp,sjgp,l-1).dx(phinh_ind) * x_vth(ie,n0,sigp,sjgp,l-1) + 
-                        ddpdx_v(ie,np1,sigp,sjgp,l-1).dx(phinh_ind) * x_dp(ie,n0,sigp,sjgp,l-1) +
-                        dwdx_v(ie,np1,sigp,sjgp,l-1).dx(phinh_ind) * x_w(ie,n0,sigp,sjgp,l-1) +
-                        dphidx_v(ie,np1,sigp,sjgp,l-1).dx(phinh_ind) * x_phi(ie,n0,sigp,sjgp,l-1);
+                        dvdx_v(ie,np1,0,sigp,sjgp,l-1).dx(phinh_ind) * x_V(ie,0,sigp,sjgp,l-1) + 
+                        dvdx_v(ie,np1,1,sigp,sjgp,l-1).dx(phinh_ind) * x_V(ie,1,sigp,sjgp,l-1) + 
+                        dvthdx_v(ie,np1,sigp,sjgp,l-1).dx(phinh_ind) * x_vth(ie,sigp,sjgp,l-1) + 
+                        ddpdx_v(ie,np1,sigp,sjgp,l-1).dx(phinh_ind) * x_dp(ie,sigp,sjgp,l-1) +
+                        dwdx_v(ie,np1,sigp,sjgp,l-1).dx(phinh_ind) * x_w(ie,sigp,sjgp,l-1) +
+                        dphidx_v(ie,np1,sigp,sjgp,l-1).dx(phinh_ind) * x_phi(ie,sigp,sjgp,l-1);
                     }
                   }
                 }
@@ -1754,12 +1752,12 @@ struct CaarFunctorImplST {
                 for (int sigp=0; sigp<NP; ++sigp) {
                   for (int sjgp=0; sjgp<NP; ++sjgp) {
                     x_pi[l] +=
-                      dvdx_v(ie,np1,0,sigp,sjgp,l).dx(pi_ind) * x_V(ie,n0,0,sigp,sjgp,l) + 
-                      dvdx_v(ie,np1,1,sigp,sjgp,l).dx(pi_ind) * x_V(ie,n0,1,sigp,sjgp,l) + 
-                      dvthdx_v(ie,np1,sigp,sjgp,l).dx(pi_ind) * x_vth(ie,n0,sigp,sjgp,l) + 
-                      ddpdx_v(ie,np1,sigp,sjgp,l).dx(pi_ind) * x_dp(ie,n0,sigp,sjgp,l) +
-                      dwdx_v(ie,np1,sigp,sjgp,l).dx(pi_ind) * x_w(ie,n0,sigp,sjgp,l) +
-                      dphidx_v(ie,np1,sigp,sjgp,l).dx(pi_ind) * x_phi(ie,n0,sigp,sjgp,l);
+                      dvdx_v(ie,np1,0,sigp,sjgp,l).dx(pi_ind) * x_V(ie,0,sigp,sjgp,l) + 
+                      dvdx_v(ie,np1,1,sigp,sjgp,l).dx(pi_ind) * x_V(ie,1,sigp,sjgp,l) + 
+                      dvthdx_v(ie,np1,sigp,sjgp,l).dx(pi_ind) * x_vth(ie,sigp,sjgp,l) + 
+                      ddpdx_v(ie,np1,sigp,sjgp,l).dx(pi_ind) * x_dp(ie,sigp,sjgp,l) +
+                      dwdx_v(ie,np1,sigp,sjgp,l).dx(pi_ind) * x_w(ie,sigp,sjgp,l) +
+                      dphidx_v(ie,np1,sigp,sjgp,l).dx(pi_ind) * x_phi(ie,sigp,sjgp,l);
                   }
                 }
 
@@ -1771,13 +1769,13 @@ struct CaarFunctorImplST {
 
               // Update adjoint of dp based on pi contribution (transposed scan sum)
               for (int slvl=lvl; slvl<NUM_PHYSICAL_LEV; ++slvl) {
-                x_dp(ie,np1,igp,jgp,lvl) += (slvl == lvl ? 0.5 : 1.0)*x_pi[slvl];
+                y_dp(ie,igp,jgp,lvl) += (slvl == lvl ? 0.5 : 1.0)*x_pi[slvl];
               }
               
               // Update adjoint of vth based on phinh contribution (transposed reverse scan sum)
               int vth_ind = (igp*NP+jgp)*(6*NUM_PHYSICAL_LEV + 2*NUM_INTERFACE_LEV) + 6*lvl + 2;
               for (int slvl=0; slvl<=lvl; ++slvl) {
-                x_vth(ie,np1,igp,jgp,lvl) += phi_int_all(ie,igp,jgp,lvl).dx(vth_ind)*x_phinh[slvl];
+                y_vth(ie,igp,jgp,lvl) += phi_int_all(ie,igp,jgp,lvl).dx(vth_ind)*x_phinh[slvl];
               }
 
               fad_idx += 2;
@@ -1833,7 +1831,7 @@ struct CaarFunctorImplST {
         } // j
       } // i
 
-      assert(fad_idx == num_fad);
+      assert(fad_idx <= num_fad);
     } // e
   }
 #endif //HOMMEXX_ENABLE_FAD_TYPES

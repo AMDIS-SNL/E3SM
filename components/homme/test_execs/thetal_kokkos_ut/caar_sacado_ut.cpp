@@ -455,7 +455,9 @@ TEST_CASE("caar_dx_check") {
 
         // caar_dx.init_J_full(data);
         // caar_dx.run_pre_exchange(data);
-        // caar_dx.run_JV_full(data,elems.m_state);
+        // auto x = dxdp0.clone(true);
+        // auto y = x.clone();
+        // caar_dx.run_JV_full(data,x,y);
 
         // Check that dXnew/dp = dXnew/dXold * dXold/dp. dXnew/dp is in elems_dp.m_state at slice np1
         // while dXnew/dXold is in elems_dx.m_state at slice np1
