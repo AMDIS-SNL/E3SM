@@ -69,14 +69,23 @@ public:
   static void finalize_singleton() {
     singleton().clear();
   }
+
+  const std::map<std::string,std::any>& any_map () const {
+    return m_any_map;
+  }
+  std::map<std::string,std::any>& any_map () {
+    return m_any_map;
+  }
 private:
 
+  std::map<std::string,std::any> m_any_map;
   std::map<std::string,std::any> m_members;
   std::map<std::string, bool>    m_is_ref_wrapper;
 
   // Clear the objects Context manages.
   void clear() {
     m_members.clear();
+    m_any_map.clear();
     m_is_ref_wrapper.clear();
   }
 };
