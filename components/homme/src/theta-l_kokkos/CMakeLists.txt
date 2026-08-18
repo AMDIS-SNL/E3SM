@@ -180,6 +180,7 @@ MACRO(THETAL_KOKKOS_SETUP)
     ${SRC_SHARE_DIR}/cxx/mpi/mpi_cxx_f90_interface.cpp
     ${SRC_SHARE_DIR}/cxx/utilities/BfbUtils.cpp
     ${SRC_SHARE_DIR}/cxx/utilities/InternalDiagnostics.cpp
+    ${SRC_SHARE_DIR}/cxx/utilities/IOUtils.cpp
   )
 
   if (HOMMEXX_ENABLE_FAD_TYPES)
