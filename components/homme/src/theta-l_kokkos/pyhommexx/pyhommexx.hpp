@@ -44,6 +44,18 @@ void perturb_state_var (const nb::str& name,
                         const double factor,
                         const nb::str& dtype);
 
+// Forcing handling utils. Recognized names: fm, fm_x, fm_y, fm_z, fvtheta, fphi.
+// ElementsForcingST<ST> has no time-level dimension. Values persist across
+// forward()/apply_dynamics_forcing() calls until overwritten from Python.
+void get_forcing (nb::ndarray<double>& arr, const nb::str& name, const nb::str& dtype);
+void set_forcing (const nb::ndarray<double>& arr, const nb::str& name, const nb::str& dtype);
+void set_forcing_value (const double value, const nb::str& name, const nb::str& dtype);
+
+// Apply the (states, i.e. non-tracer) forcing arrays to the state at tl.n0.
+// Equivalent to CamForcing.cpp's apply_cam_forcing_dynamics for Real, and
+// analogous for DpFadType.
+void apply_dynamics_forcing (const double dt, const nb::str& dtype);
+
 // Init/run a functor or the whole model
 void run_functor(const nb::str& name,const nb::dict& params,const nb::str& dtype);
 void model_init ();

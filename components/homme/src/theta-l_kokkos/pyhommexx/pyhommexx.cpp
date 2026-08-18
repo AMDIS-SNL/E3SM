@@ -65,6 +65,35 @@ NB_MODULE (pyhommexx,m) {
         nb::arg("factor"),
         nb::arg("dtype") = "real");
 
+  // Forcing handling
+  m.def("get_forcing",&get_forcing,
+      "Retrieves a forcing array from ElementsForcingST<ST>.\n"
+      "Recognized names: fm (vector), fm_x/fm_y/fm_z (scalar components), fvtheta, fphi.\n"
+      "fphi is at interfaces; the rest are at midpoints.",
+        nb::arg("arr"),
+        nb::arg("name"),
+        nb::arg("dtype") = "real");
+  m.def("set_forcing",&set_forcing,
+      "Writes a forcing array into ElementsForcingST<ST>.\n"
+      "Values persist across forward()/apply_dynamics_forcing() calls until overwritten.",
+        nb::arg("arr"),
+        nb::arg("name"),
+        nb::arg("dtype") = "real");
+  m.def("set_forcing_value",&set_forcing_value,
+      "Fills a forcing array with a single constant value.",
+        nb::arg("value"),
+        nb::arg("name"),
+        nb::arg("dtype") = "real");
+  m.def("apply_dynamics_forcing",&apply_dynamics_forcing,
+      "Apply the (non-tracer) forcing arrays to the state at tl.n0 in-place:\n"
+      "  u,v,w      += dt * fm\n"
+      "  vtheta_dp  += dt * fvtheta\n"
+      "  phi        += dt * fphi\n"
+      "then re-imposes the surface w boundary condition. Isolates the states_forcing\n"
+      "portion of apply_cam_forcing (bypasses the tracer path and the RK loop).",
+        nb::arg("dt"),
+        nb::arg("dtype") = "real");
+
   // Init/run a functor or the whole model
   m.def("model_init",&model_init);
   m.def("run_functor",&run_functor,
