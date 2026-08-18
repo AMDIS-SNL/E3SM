@@ -258,6 +258,29 @@ public:
     ColumnOps::column_scan_mid_to_int<false>(kv,integrand_provider,phi_i);
   }
 
+  template<typename VThetaProvider, typename ExnerProvider, typename PProvider, typename ST, typename PhiIntBuffer>
+  KOKKOS_INLINE_FUNCTION
+  void compute_phi_i (const KernelVariables& kv, const Real phis,
+                      const VThetaProvider& vtheta_dp,
+                      const ExnerProvider& exner,
+                      const PProvider& p,
+                      const ExecViewUnmanaged<PackType<ST>[NUM_LEV_P]>& phi_i,
+                      const PhiIntBuffer& phi_int) const
+  {
+    // Init phi on surface with phis
+    phi_i(LAST_INT_PACK)[LAST_INT_PACK_END] = phis;
+
+    // Use ColumnOps to do the scan sum
+    const auto Rgas  = m_constants.Rgas();
+    auto integrand_provider = [&](const int ilev) {
+      auto tmp = Rgas*vtheta_dp(ilev)*exner(ilev)/p(ilev);
+      phi_int(ilev) = tmp;
+      return tmp;
+    };
+
+    ColumnOps::column_scan_mid_to_int<false>(kv,integrand_provider,phi_i);
+  }
+
 public:
 
   bool            m_theta_hydrostatic_mode;

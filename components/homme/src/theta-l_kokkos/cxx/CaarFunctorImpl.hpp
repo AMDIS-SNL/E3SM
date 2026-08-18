@@ -46,6 +46,7 @@ struct CaarFunctorImplST {
     static constexpr int num_3d_vector_mid_buf =  5;
     static constexpr int num_3d_scalar_int_buf =  6;
     static constexpr int num_3d_vector_int_buf =  3;
+    static constexpr int num_3d_scalar_mid_all =  1; // all elements
 
     ExecViewUnmanaged<PT*    [NP][NP][NUM_LEV]  >   temp;
 
@@ -53,6 +54,7 @@ struct CaarFunctorImplST {
     ExecViewUnmanaged<PT*    [NP][NP][NUM_LEV]  >   pi;
     ExecViewUnmanaged<PT*    [NP][NP][NUM_LEV]  >   exner;
     ExecViewUnmanaged<PT*    [NP][NP][NUM_LEV]  >   div_vdp;
+    ExecViewUnmanaged<PT*    [NP][NP][NUM_LEV]  >   phi_int_all;
     ExecViewUnmanaged<PT*    [NP][NP][NUM_LEV]  >   phi;
     ExecViewUnmanaged<PT*    [NP][NP][NUM_LEV]  >   omega_p;
     ExecViewUnmanaged<PT*    [NP][NP][NUM_LEV]  >   vort;
@@ -195,6 +197,7 @@ struct CaarFunctorImplST {
     int num_scalar_int_buf = Buffers::num_3d_scalar_int_buf;
     int num_vector_mid_buf = Buffers::num_3d_vector_mid_buf;
     int num_vector_int_buf = Buffers::num_3d_vector_int_buf;
+    int num_scalar_mid_all = Buffers::num_3d_scalar_mid_all;
 
     // Depending on rsplit/hydro-mode, we may remove some
     // buffers that are not needed from the counters above.
@@ -205,6 +208,9 @@ struct CaarFunctorImplST {
 
       // No grad_w_i/v_i
       num_vector_int_buf -= 2;
+    }
+    else {
+      num_scalar_mid_all -= 1;
     }
     if (m_rsplit>0) {
       // No theta_i/eta_dot_dpdn
@@ -220,7 +226,8 @@ struct CaarFunctorImplST {
     return (num_scalar_mid_buf  *NP*NP*NUM_LEV  *VECTOR_SIZE*nslots +
             num_scalar_int_buf  *NP*NP*NUM_LEV_P*VECTOR_SIZE*nslots +
             num_vector_mid_buf*2*NP*NP*NUM_LEV  *VECTOR_SIZE*nslots +
-            num_vector_int_buf*2*NP*NP*NUM_LEV_P*VECTOR_SIZE*nslots) * scl_sz;
+            num_vector_int_buf*2*NP*NP*NUM_LEV_P*VECTOR_SIZE*nslots + 
+            num_scalar_mid_all  *NP*NP*NUM_LEV  *VECTOR_SIZE*m_num_elems) * scl_sz;
   }
 
   void init_buffers (const FunctorsBuffersManager& fbm) {
@@ -248,6 +255,10 @@ struct CaarFunctorImplST {
     mem += m_buffers.phi.size();
     m_buffers.div_vdp    = decltype(m_buffers.div_vdp   )(mem,nslots);
     mem += m_buffers.div_vdp.size();
+    if (m_theta_hydrostatic_mode) {
+      m_buffers.phi_int_all= decltype(m_buffers.phi_int_all)(mem,m_num_elems);
+      mem += m_buffers.phi_int_all.size();
+    }
     m_buffers.omega_p    = decltype(m_buffers.omega_p   )(mem,nslots);
     mem += m_buffers.omega_p.size();
     m_buffers.vort       = decltype(m_buffers.vort)(mem,nslots);
@@ -403,10 +414,13 @@ struct CaarFunctorImplST {
   // [u_prev, u_curr, v_prev, v_curr,
   //  vth_prev, vth_curr, vth_next,
   //  dp_prev, dp_curr, dp_next,
+  //  pi_curr,
+  //  phinh_curr,phinh_next,
   //  phi_prev, phi_curr, phi_next, phi_next2,
   //  w_curr, w_next]
   // where _prev refers to lev k-1, _curr to lev k, _next to lev k+1, and _next2 to lev k+2.
-  // So the stencil_sz is 16. To compress columns, we interpret the derivs as follows. Let
+  // pi_curr and phinh_curr are only needed for hydrostatic to handle column scans.
+  // So the stencil_sz is 19. To compress columns, we interpret the derivs as follows. Let
   //  - kmN_M := (k-N) % M
   //  - k_M   := k % M
   //  - kpN_M := (k+N) % M
@@ -414,6 +428,8 @@ struct CaarFunctorImplST {
   // [u_km1_2, u_k_2, v_km1_2, v_k_2,
   //  vth_km1_3, vth_k_3, vth_kp1_3,
   //  dp_km1_3, dp_k_3, dp_kp1_3,
+  //  pi_k_1,
+  //  phinh_k_2, phinh_kp1_2,
   //  phi_km1_3, phi_k_4, phi_kp1_4, phi_kp2_4,
   //  w_k_2, w_kp1_2]
   // One would think that, since mod arith on neg numbers doesn't work well, we should do
@@ -423,14 +439,18 @@ struct CaarFunctorImplST {
   std::enable_if_t<std::is_same_v<MyST,DxFadTypeCaar>>
   init_J (const RKStageData& data)
   {
-    constexpr int stencil_sz = 16;
+    constexpr int stencil_sz = 19;
 
     int offset_u   = 0;
     int offset_v   = 2;
     int offset_vth = 4;
     int offset_dp  = 7;
-    int offset_phi = 10;
-    int offset_w   = 14;
+    // int offset_pi  = 10;
+    // int offset_phinh = 11;
+    int offset_phi = 13;
+    int offset_w   = 17;
+
+    // Note, we do not need to initialize pi (and phinh) since that will be done in compute_scan_quantities().
 
     using md_range_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>>;
     auto p4_mid = md_range_t({0,0,0,0},{m_num_elems,NP,NP,NUM_PHYSICAL_LEV});
@@ -486,14 +506,16 @@ struct CaarFunctorImplST {
   std::enable_if_t<std::is_same_v<MyST,DxFadTypeCaar>>
   run_JV (const RKStageData& data, const StateSnapshot& x, StateSnapshot& y)
   {
-    constexpr int stencil_sz = 16;
+    constexpr int stencil_sz = 19;
 
-    int offset_u   = 0;
-    int offset_v   = 2;
-    int offset_vth = 4;
-    int offset_dp  = 7;
-    int offset_phi = 10;
-    int offset_w   = 14;
+    int offset_u     = 0;
+    int offset_v     = 2;
+    int offset_vth   = 4;
+    int offset_dp    = 7;
+    int offset_pi    = 10;
+    int offset_phinh = 11;
+    int offset_phi   = 13;
+    int offset_w     = 17;
 
     using md_range_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>>;
     auto p4_mid = md_range_t({0,0,0,0},{m_num_elems,NP,NP,NUM_PHYSICAL_LEV});
@@ -504,6 +526,9 @@ struct CaarFunctorImplST {
     auto ddpdx_v = ekat::scalarize(m_state.m_dp3d);
     auto dphidx_v = ekat::scalarize(m_state.m_phinh_i);
     auto dwdx_v = ekat::scalarize(m_state.m_w_i);
+    
+    // for hydrostatic
+    auto phi_int_all = ekat::scalarize(m_buffers.phi_int_all);
 
     // Compute Y = dxnew/dxold * X
     int np1 = data.np1;
@@ -549,22 +574,25 @@ struct CaarFunctorImplST {
       y_vth_val = 0;
 
       // offsets of each var in the deriv vector
-      int u_prev    = offset_u   + (k-1) % 2;
-      int u_curr    = offset_u   +  k    % 2;
-      int v_prev    = offset_v   + (k-1) % 2;
-      int v_curr    = offset_v   +  k    % 2;
-      int vth_prev  = offset_vth + (k-1) % 3;
-      int vth_curr  = offset_vth +  k    % 3;
-      int vth_next  = offset_vth + (k+1) % 3;
-      int dp_prev   = offset_dp  + (k-1) % 3;
-      int dp_curr   = offset_dp  +  k    % 3;
-      int dp_next   = offset_dp  + (k+1) % 3;
-      int phi_prev  = offset_phi + (k-1) % 4;
-      int phi_curr  = offset_phi +  k    % 4;
-      int phi_next  = offset_phi + (k+1) % 4;
-      int phi_next2 = offset_phi + (k+2) % 4;
-      int w_curr    = offset_w   +  k    % 2;
-      int w_next    = offset_w   + (k+1) % 2;
+      int u_prev     = offset_u     + (k-1) % 2;
+      int u_curr     = offset_u     +  k    % 2;
+      int v_prev     = offset_v     + (k-1) % 2;
+      int v_curr     = offset_v     +  k    % 2;
+      int vth_prev   = offset_vth   + (k-1) % 3;
+      int vth_curr   = offset_vth   +  k    % 3;
+      int vth_next   = offset_vth   + (k+1) % 3;
+      int dp_prev    = offset_dp    + (k-1) % 3;
+      int dp_curr    = offset_dp    +  k    % 3;
+      int dp_next    = offset_dp    + (k+1) % 3;
+      int pi_curr    = offset_pi;
+      int phinh_curr = offset_phinh +  k    % 2;
+      int phinh_next = offset_phinh + (k+1) % 2;
+      int phi_prev   = offset_phi   + (k-1) % 4;
+      int phi_curr   = offset_phi   +  k    % 4;
+      int phi_next   = offset_phi   + (k+1) % 4;
+      int phi_next2  = offset_phi   + (k+2) % 4;
+      int w_curr     = offset_w     +  k    % 2;
+      int w_next     = offset_w     + (k+1) % 2;
 
       for (int mpt=0; mpt<NP; ++mpt) {
         for (int npt=0; npt<NP; ++npt) {
@@ -625,6 +653,72 @@ struct CaarFunctorImplST {
                      + pt_Jv[dp_next]   * x_dp_ie (mpt,npt,k+1)  // dv(k)/ddp(k+1)
                      + pt_Jv[phi_next2] * x_phi_ie(mpt,npt,k+2); // dv(k)/dphi(k+2)
           }
+
+          
+          if (m_theta_hydrostatic_mode) {
+            // There are two scan sums across levels in hydrostatic mode:  a scan sum of dp to get pi
+            // and a reverse scan sum of a nonlinear function of pi and vth to get phinh.  The way this is
+            // handled with the column compression is to introduce pi and phinh as new independent variables,
+            // compute the tangents of pi and phinh using column-compressed Jacobian multiply, and
+            // propagate their tangent contributions to all variables manually using the chain rule based on 
+            // the relevant scan sum. 
+            //
+            // The general principle is for any variable v that depends on a variable u, the tangent of v (vdot)
+            // is updated as vdot += (dv/du)*udot.  Thus, when computing the tangent of v, we need to apply
+            // this formula for each variable u that v depends on.
+            //
+            // Note, the derivatives of the nonlinear function of pi and vth that are used in the scan sum
+            // are stored in phi_int_all.  Also, because pi is averaged at interfaces, there is a 0.5 on the 
+            // diagonal of the derivative of the scan sum for computing pi.
+            //
+            // Final note, this is inside the mpt,npt loops, so there is an implicit sum over guass points here.
+            // This is needed because even though the calculations of pi from dp and phinh from pi and vth do
+            // not involve integrals over space, the calculations of u,v,vth,dp at the next time step do.  So,
+            // by the chain rule, we need tangents of pi and phinh at all gauss points.
+
+            // Compute tangent of pi(mpt,npt,l) for each level l
+            Real x_pi[NUM_PHYSICAL_LEV];
+            for (int l=0; l<NUM_PHYSICAL_LEV; ++l) {
+              x_pi[l] = 0.0;
+              for (int s=0; s<=l; ++s) {
+                x_pi[l] += x_dp_ie(mpt,npt,s)*(s == l ? 0.5 : 1.0);
+              }
+            }
+
+            // Compute tangent of phinh(mpt,np,l) for each level l.
+            // This is the same as below, recognizing we only need l_phinh[k] and l_phinh[k+1]
+            // Real l_phinh[NUM_PHYSICAL_LEV];
+            // for (int l=0; l<NUM_PHYSICAL_LEV; ++l) {
+            //   l_phinh[l] = 0.0;
+            //   for (int s=l; s<NUM_PHYSICAL_LEV; ++s) {
+            //     l_phinh[l] +=
+            //       phi_int_all(ie,mpt,npt,s).dx(pt_offset+offset_vth+s%3)*l_vth_old(mpt,npt,s) + 
+            //       phi_int_all(ie,mpt,npt,s).dx(pt_offset+offset_pi)*l_pi[s];
+            //   }
+            // }
+            Real x_phinh_kp1 = 0.0;
+            for (int l=k+1; l<NUM_PHYSICAL_LEV; ++l) {
+              x_phinh_kp1 +=
+                phi_int_all(ie,mpt,npt,l).dx(pt_offset + offset_vth + l%3)*x_vth_ie(mpt,npt,l) + 
+                phi_int_all(ie,mpt,npt,l).dx(pt_offset + offset_pi)*x_pi[l];
+            }
+            Real x_phinh_k = x_phinh_kp1 + 
+              phi_int_all(ie,mpt,npt,k).dx(pt_offset + offset_vth + k%3)*x_vth_ie(mpt,npt,k) + 
+              phi_int_all(ie,mpt,npt,k).dx(pt_offset + offset_pi)*x_pi[k];
+
+            // Propagate pi, phinh tangents to output variables (this is where the sum
+            // over gauss points is needed requring l_pi, l_phinh at all gauss points).
+            y_u_val   += pt_Ju[pi_curr]*x_pi[k]   + pt_Ju[phinh_curr]*x_phinh_k;
+            y_v_val   += pt_Jv[pi_curr]*x_pi[k]   + pt_Jv[phinh_curr]*x_phinh_k;
+            y_vth_val += pt_Jvth[pi_curr]*x_pi[k] + pt_Jvth[phinh_curr]*x_phinh_k;
+            y_dp_val  += pt_Jdp[pi_curr]*x_pi[k]  + pt_Jdp[phinh_curr]*x_phinh_k;
+            if (k < NUM_PHYSICAL_LEV-1) {
+              y_u_val   += pt_Ju[phinh_next]*x_phinh_kp1;
+              y_v_val   += pt_Jv[phinh_next]*x_phinh_kp1;
+              y_vth_val += pt_Jvth[phinh_next]*x_phinh_kp1;
+              y_dp_val  += pt_Jdp[phinh_next]*x_phinh_kp1;
+            }
+          }
         }
       }
     };
@@ -657,6 +751,8 @@ struct CaarFunctorImplST {
       int vth_curr  = offset_vth +  k    % 3;
       int dp_prev   = offset_dp  + (k-1) % 3;
       int dp_curr   = offset_dp  +  k    % 3;
+      int pi_curr   = offset_pi;
+      int phinh_curr  = offset_phinh;
       int phi_prev  = offset_phi + (k-1) % 4;
       int phi_curr  = offset_phi +  k    % 4;
       int phi_next  = offset_phi + (k+1) % 4;
@@ -704,6 +800,8 @@ struct CaarFunctorImplST {
           if (k<last_int) {
             y_w_val += pt_Jw[phi_next] * x_phi_ie (mpt,npt,k+1); // dw(k)/dphi(k+1)
           }
+
+          // Contributions of pi, phinh to w, phi seem to not be needed in hydrostatic
         }
       }
     };
@@ -744,6 +842,11 @@ struct CaarFunctorImplST {
             dvdx_v(ie,n0,1,igp,jgp,lvl).diff(fad_idx++, num_fad);
             dvthdx_v(ie,n0,igp,jgp,lvl).diff(fad_idx++, num_fad);
             ddpdx_v(ie,n0,igp,jgp,lvl).diff(fad_idx++, num_fad);
+
+            // Extra derivatives for pi, phi_i in hydrostatic mode
+            if (m_theta_hydrostatic_mode) {
+              fad_idx += 2;
+            }
           }
           for (int lvl=0; lvl<NUM_INTERFACE_LEV; ++lvl) {
             dwdx_v(ie,n0,igp,jgp,lvl).zero();
@@ -802,29 +905,19 @@ struct CaarFunctorImplST {
     auto y_dp = ekat::scalarize(y.dp3d);
     auto y_w = ekat::scalarize(y.w_i);
     auto y_phi = ekat::scalarize(y.phinh_i);
-    // std::ofstream uf("u.txt");
-    // std::ofstream vf("v.txt");
-    // std::ofstream vthf("vth.txt");
-    // std::ofstream dpf("dp.txt");
-    // std::ofstream phif("phi.txt");
-    // std::ofstream wf("w.txt");
+    
+    auto phi_int_all = ekat::scalarize(m_buffers.phi_int_all);
+    if (m_theta_hydrostatic_mode) {
+      std::cout << "Hydrostatic mode is on" << std::endl;
+    }
 
-    // const int elem_to_write = 0;
+    Real x_pi[NUM_PHYSICAL_LEV]; // for storing pi direction in hydrostatic mode
+    Real x_phinh[NUM_PHYSICAL_LEV]; // for storing phinh direction in hydrostatic mode
 
     for (int ie=0; ie<m_num_elems; ++ie) {
       for (int igp=0; igp<NP; ++igp) {
         for (int jgp=0; jgp<NP; ++jgp) {
           for (int lvl=0; lvl<NUM_PHYSICAL_LEV; ++lvl) {
-
-            // // Write Jacobian matrix to file
-            // if (ie == elem_to_write) {
-            //   for (int k=0; k<num_fad; ++k) {
-            //     uf << dvdx_v(ie,np1,0,igp,jgp,lvl).dx(k) << (k == num_fad-1 ? "\n" : " ");
-            //     vf << dvdx_v(ie,np1,1,igp,jgp,lvl).dx(k) << (k == num_fad-1 ? "\n" : " ");
-            //     vthf << dvthdx_v(ie,np1,igp,jgp,lvl).dx(k) << (k == num_fad-1 ? "\n" : " ");
-            //     dpf << ddpdx_v(ie,np1,igp,jgp,lvl).dx(k) << (k == num_fad-1 ? "\n" : " ");
-            //   }
-            // }
 
             // Zero Fad components
             y_V(ie,0,igp,jgp,lvl) = 0;
@@ -837,12 +930,75 @@ struct CaarFunctorImplST {
 
             for (int sigp=0; sigp<NP; ++sigp) {
               for (int sjgp=0; sjgp<NP; ++sjgp) {
+
+                // Include contribution of pi, phinh in hydrostatic mode
+                if (m_theta_hydrostatic_mode) {
+                  // Compute pi direction.  pi is a column scan of dp where d(pi)/d(dp) is lower triangular with 0.5's 
+                  // on the diagonal and 1's everywhere else in the lower triangle.
+                  for (int slvl=0; slvl<NUM_PHYSICAL_LEV; ++slvl) {
+                    x_pi[slvl] = 0.0;
+                    for (int tlvl=0; tlvl<=slvl; ++tlvl) {
+                      x_pi[slvl] += x_dp(ie,sigp,sjgp,tlvl)*(tlvl == slvl ? 0.5 : 1.0);
+                    }
+                  }
+
+                  // Compute phinh direction.  phinh is a reverse column scan of a nonlinear function of pi and vth
+                  // where the derivatives are upper triangular and a sum of the partial derivatives with respect
+                  // to the arguments of the scan sum stored in phi_int_all.  The derivative of the scan sum
+                  // is the scan sum across the diagonal entries of phi_int_all with regards to level, so that is
+                  // why we use tlvl in both array index argument and derivative offset.
+                  for (int slvl=0; slvl<NUM_PHYSICAL_LEV; ++slvl) {
+                    x_phinh[slvl] = 0.0;
+                    for (int tlvl=slvl; tlvl<NUM_PHYSICAL_LEV; ++tlvl) {
+                      int offset = (sigp*NP+sjgp)*(6*NUM_PHYSICAL_LEV + 2*NUM_INTERFACE_LEV) + 6*tlvl;
+                      x_phinh[slvl] +=
+                        phi_int_all(ie,sigp,sjgp,tlvl).dx(offset+2)*x_vth(ie,sigp,sjgp,tlvl) + 
+                        phi_int_all(ie,sigp,sjgp,tlvl).dx(offset+4)*x_pi[tlvl];
+                    }
+                  }
+                
+                  auto pi_ind = [=](const int lvl) {
+                    return (sigp*NP+sjgp)*(6*NUM_PHYSICAL_LEV + 2*NUM_INTERFACE_LEV) + 6*lvl + 4;
+                  };
+                  auto phinh_ind = [=](const int lvl) {
+                    return (sigp*NP+sjgp)*(6*NUM_PHYSICAL_LEV + 2*NUM_INTERFACE_LEV) + 6*lvl + 5;
+                  };
+
+                  y_V(ie,0,igp,jgp,lvl) +=
+                    dvdx_v(ie,np1,0,igp,jgp,lvl).dx(pi_ind(lvl)) * x_pi[lvl] +
+                    dvdx_v(ie,np1,0,igp,jgp,lvl).dx(phinh_ind(lvl)) * x_phinh[lvl];
+                  y_V(ie,1,igp,jgp,lvl) +=
+                    dvdx_v(ie,np1,1,igp,jgp,lvl).dx(pi_ind(lvl)) * x_pi[lvl] +
+                    dvdx_v(ie,np1,1,igp,jgp,lvl).dx(phinh_ind(lvl)) * x_phinh[lvl];
+                  y_vth(ie,igp,jgp,lvl) +=
+                    dvthdx_v(ie,np1,igp,jgp,lvl).dx(pi_ind(lvl)) * x_pi[lvl] +
+                    dvthdx_v(ie,np1,igp,jgp,lvl).dx(phinh_ind(lvl)) * x_phinh[lvl];
+                  y_dp(ie,igp,jgp,lvl) +=
+                    ddpdx_v(ie,np1,igp,jgp,lvl).dx(pi_ind(lvl)) * x_pi[lvl] +
+                    ddpdx_v(ie,np1,igp,jgp,lvl).dx(phinh_ind(lvl)) * x_phinh[lvl];
+                  if (lvl <NUM_PHYSICAL_LEV-1) {
+                    y_V(ie,0,igp,jgp,lvl) +=
+                      dvdx_v(ie,np1,0,igp,jgp,lvl).dx(phinh_ind(lvl+1)) * x_phinh[lvl+1];
+                    y_V(ie,1,igp,jgp,lvl) +=
+                      dvdx_v(ie,np1,1,igp,jgp,lvl).dx(phinh_ind(lvl+1)) * x_phinh[lvl+1];
+                    y_vth(ie,igp,jgp,lvl) +=
+                      dvthdx_v(ie,np1,igp,jgp,lvl).dx(phinh_ind(lvl+1)) * x_phinh[lvl+1];
+                    y_dp(ie,igp,jgp,lvl) +=
+                      ddpdx_v(ie,np1,igp,jgp,lvl).dx(phinh_ind(lvl+1)) * x_phinh[lvl+1];
+                  }
+                }
+
                 for (int slvl=0; slvl<NUM_PHYSICAL_LEV; ++slvl) {
                   y_V(ie,0,igp,jgp,lvl) +=
                     dvdx_v(ie,np1,0,igp,jgp,lvl).dx(fad_idx++) * x_V(ie,0,sigp,sjgp,slvl) +
                     dvdx_v(ie,np1,0,igp,jgp,lvl).dx(fad_idx++) * x_V(ie,1,sigp,sjgp,slvl) +
                     dvdx_v(ie,np1,0,igp,jgp,lvl).dx(fad_idx++) * x_vth(ie,sigp,sjgp,slvl) +
                     dvdx_v(ie,np1,0,igp,jgp,lvl).dx(fad_idx++) * x_dp(ie,sigp,sjgp,slvl);
+
+                  // Include contribution of pi, phinh in hydrostatic mode
+                  if (m_theta_hydrostatic_mode) {
+                    fad_idx +=2;
+                  }
                 }
                 for (int slvl=0; slvl<NUM_INTERFACE_LEV; ++slvl) {
                   y_V(ie,0,igp,jgp,lvl) +=
@@ -861,6 +1017,10 @@ struct CaarFunctorImplST {
                     dvdx_v(ie,np1,1,igp,jgp,lvl).dx(fad_idx++) * x_V(ie,1,sigp,sjgp,slvl) +
                     dvdx_v(ie,np1,1,igp,jgp,lvl).dx(fad_idx++) * x_vth(ie,sigp,sjgp,slvl) +
                     dvdx_v(ie,np1,1,igp,jgp,lvl).dx(fad_idx++) * x_dp(ie,sigp,sjgp,slvl);
+
+                  if (m_theta_hydrostatic_mode) {
+                    fad_idx += 2;
+                  }
                 }
                 for (int slvl=0; slvl<NUM_INTERFACE_LEV; ++slvl) {
                   y_V(ie,1,igp,jgp,lvl) +=
@@ -879,6 +1039,10 @@ struct CaarFunctorImplST {
                     dvthdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_V(ie,1,sigp,sjgp,slvl) +
                     dvthdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_vth(ie,sigp,sjgp,slvl) +
                     dvthdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_dp(ie,sigp,sjgp,slvl);
+
+                  if (m_theta_hydrostatic_mode) {
+                    fad_idx += 2;
+                  }
                 }
                 for (int slvl=0; slvl<NUM_INTERFACE_LEV; ++slvl) {
                   y_vth(ie,igp,jgp,lvl) +=
@@ -897,6 +1061,10 @@ struct CaarFunctorImplST {
                     ddpdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_V(ie,1,sigp,sjgp,slvl) +
                     ddpdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_vth(ie,sigp,sjgp,slvl) +
                     ddpdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_dp(ie,sigp,sjgp,slvl);
+
+                  if (m_theta_hydrostatic_mode) {
+                    fad_idx += 2;
+                  }
                 }
                 for (int slvl=0; slvl<NUM_INTERFACE_LEV; ++slvl) {
                   y_dp(ie,igp,jgp,lvl) +=
@@ -906,33 +1074,82 @@ struct CaarFunctorImplST {
               }
             }
           } // lvl
-
+          
           for (int lvl=0; lvl<NUM_INTERFACE_LEV; ++lvl) {
 
-            // // Write Jacobian matrix to file
-            // if (ie == elem_to_write) {
-            //   for (int k=0; k<num_fad; ++k) {
-            //     phif << dphidx_v(ie,np1,igp,jgp,lvl).dx(k) << (k == num_fad-1 ? "\n" : " ");
-            //     wf << dwdx_v(ie,np1,igp,jgp,lvl).dx(k) << (k == num_fad-1 ? "\n" : " ");
-            //   }
-            // }
-
             // Zero Fad components
-            y_w(ie,np1,igp,jgp,lvl) = 0;
-            y_phi(ie,np1,igp,jgp,lvl) = 0;
+            y_w(ie,igp,jgp,lvl) = 0;
+            y_phi(ie,igp,jgp,lvl) = 0;
 
             // Compute mat-vec one row at a time
             int fad_idx = 0;
 
             for (int sigp=0; sigp<NP; ++sigp) {
               for (int sjgp=0; sjgp<NP; ++sjgp) {
+
+                // Contributions of pi, phinh to w, phi seem to not be needed in hydrostatic, so commenting out
+
+                // if (m_theta_hydrostatic_mode) {
+                //   // Compute pi direction.  pi is a column scan of dp where d(pi)/d(dp) is lower triangular with 0.5's 
+                //   // on the diagonal and 1's everywhere else in the lower triangle.
+                //   for (int slvl=0; slvl<NUM_PHYSICAL_LEV; ++slvl) {
+                //     l_pi[slvl] = 0.0;
+                //     for (int tlvl=0; tlvl<=slvl; ++tlvl) {
+                //       l_pi[slvl] += l_dp(ie,n0,sigp,sjgp,tlvl)*(tlvl == slvl ? 0.5 : 1.0);
+                //     }
+                //   }
+
+                //   // Compute phinh direction.  phinh is a reverse column scan of a nonlinear function of pi and vth
+                //   // where the derivatives are upper triangular and a sum of the partial derivatives with respect
+                //   // to the arguments of the scan sum stored in phi_int_all.  The derivative of the scan sum
+                //   // is the scan sum across the diagonal entries of phi_int_all with regards to level, so that is
+                //   // why we use tlvl in both array index argument and derivative offset.
+                //   for (int slvl=0; slvl<NUM_PHYSICAL_LEV; ++slvl) {
+                //     l_phinh[slvl] = 0.0;
+                //     for (int tlvl=slvl; tlvl<NUM_PHYSICAL_LEV; ++tlvl) {
+                //       int offset = (sigp*NP+sjgp)*(6*NUM_PHYSICAL_LEV + 2*NUM_INTERFACE_LEV) + 6*tlvl;
+                //       l_phinh[slvl] +=
+                //         phi_int_all(ie,sigp,sjgp,tlvl).dx(offset+2)*l_vth(ie,n0,sigp,sjgp,tlvl) + 
+                //         phi_int_all(ie,sigp,sjgp,tlvl).dx(offset+4)*l_pi[tlvl];
+                //     }
+                //   }
+                // }
+
+                // // Include contribution of pi, phinh in hydrostatic mode
+                // if (m_theta_hydrostatic_mode) {
+                //   auto pi_ind = [=](const int lvl) {
+                //     return (sigp*NP+sjgp)*(6*NUM_PHYSICAL_LEV + 2*NUM_INTERFACE_LEV) + 6*lvl + 4;
+                //   };
+                //   auto phinh_ind = [=](const int lvl) {
+                //     return (sigp*NP+sjgp)*(6*NUM_PHYSICAL_LEV + 2*NUM_INTERFACE_LEV) + 6*lvl + 5;
+                //   };
+
+                //   // Need to guard this when lvl == NUM_PHYSICAL_LEV?
+                //   l_w(ie,np1,igp,jgp,lvl) +=
+                //     dwdx_v(ie,np1,igp,jgp,lvl).dx(pi_ind(lvl)) * l_pi[lvl] +
+                //     dwdx_v(ie,np1,igp,jgp,lvl).dx(phinh_ind(lvl)) * l_phinh[lvl];
+                //   l_phi(ie,np1,igp,jgp,lvl) +=
+                //     dphidx_v(ie,np1,igp,jgp,lvl).dx(pi_ind(lvl)) * l_pi[lvl] +
+                //     dphidx_v(ie,np1,igp,jgp,lvl).dx(phinh_ind(lvl)) * l_phinh[lvl];
+                //   if (lvl <NUM_PHYSICAL_LEV-1) {
+                //     l_w(ie,np1,igp,jgp,lvl) +=
+                //       dwdx_v(ie,np1,igp,jgp,lvl).dx(phinh_ind(lvl+1)) * l_phinh[lvl+1];
+                //     l_phi(ie,np1,igp,jgp,lvl) +=
+                //       dphidx_v(ie,np1,igp,jgp,lvl).dx(phinh_ind(lvl+1)) * l_phinh[lvl+1];
+                //   }
+                // }
+
                 for (int slvl=0; slvl<NUM_PHYSICAL_LEV; ++slvl) {
                   y_w(ie,igp,jgp,lvl) +=
                     dwdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_V(ie,0,sigp,sjgp,slvl) +
                     dwdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_V(ie,1,sigp,sjgp,slvl) +
                     dwdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_vth(ie,sigp,sjgp,slvl) +
                     dwdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_dp(ie,sigp,sjgp,slvl);
-                }
+
+                  if (m_theta_hydrostatic_mode) {
+                    fad_idx += 2;
+                  }
+                } 
                 for (int slvl=0; slvl<NUM_INTERFACE_LEV; ++slvl) {
                   y_w(ie,igp,jgp,lvl) +=
                     dwdx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_w(ie,sigp,sjgp,slvl) +
@@ -950,7 +1167,11 @@ struct CaarFunctorImplST {
                     dphidx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_V(ie,1,sigp,sjgp,slvl) +
                     dphidx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_vth(ie,sigp,sjgp,slvl) +
                     dphidx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_dp(ie,sigp,sjgp,slvl);
-                }
+
+                  if (m_theta_hydrostatic_mode) {
+                    fad_idx += 2;
+                  }
+                } 
                 for (int slvl=0; slvl<NUM_INTERFACE_LEV; ++slvl) {
                   y_phi(ie,igp,jgp,lvl) +=
                     dphidx_v(ie,np1,igp,jgp,lvl).dx(fad_idx++) * x_w(ie,sigp,sjgp,slvl) +
@@ -963,13 +1184,6 @@ struct CaarFunctorImplST {
         } // j
       } // i
     } // e
-
-    // uf.close();
-    // vf.close();
-    // vthf.close();
-    // dpf.close();
-    // phif.close();
-    // wf.close();
   }
 
   template<typename MyST = ST>
@@ -996,14 +1210,16 @@ struct CaarFunctorImplST {
     // For the levels, since we are doing compression, we need to be careful: while in J*v
     // we considered v_j at the levels that can affect x_i, in J'*v we have to consider
     // v_j at the levels that x_i can affect.
-    constexpr int stencil_sz = 16;
+    constexpr int stencil_sz = 19;
 
-    int offset_u   = 0;
-    int offset_v   = 2;
-    int offset_vth = 4;
-    int offset_dp  = 7;
-    int offset_phi = 10;
-    int offset_w   = 14;
+    int offset_u     = 0;
+    int offset_v     = 2;
+    int offset_vth   = 4;
+    int offset_dp    = 7;
+    int offset_pi    = 10;
+    int offset_phinh = 11;
+    int offset_phi   = 13;
+    int offset_w     = 17;
 
     using md_range_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>>;
     auto p4_mid = md_range_t({0,0,0,0},{m_num_elems,NP,NP,NUM_PHYSICAL_LEV});
@@ -1014,6 +1230,9 @@ struct CaarFunctorImplST {
     auto ddpdx_v = ekat::scalarize(m_state.m_dp3d);
     auto dphidx_v = ekat::scalarize(m_state.m_phinh_i);
     auto dwdx_v = ekat::scalarize(m_state.m_w_i);
+
+    // for hydrostatic
+    auto phi_int_all = ekat::scalarize(m_buffers.phi_int_all);
 
     // Compute Y = J^T * X
     int np1 = data.np1;
@@ -1133,6 +1352,91 @@ struct CaarFunctorImplST {
                       + pt_Jv(k-1).dx(dp_curr) * x_v_ie(mpt,npt,k-1); // dv(k-1)/ddp(k)
           }
         }
+      }
+
+      if (m_theta_hydrostatic_mode) {
+        // There are two scan sums across levels in hydrostatic mode:  a scan sum of dp to get pi
+        // and a reverse scan sum of a nonlinear function of pi and vth to get phinh.  The way this is
+        // handled with the column compression is to introduce pi and phinh as new independent variables,
+        // compute the adjoints of pi and phinh using column-compressed Jacobian transpose multiply, and
+        // propagate their adjoint contributions to dp and vth manually using the chain rule based on 
+        // the relevant scan sum. 
+        //
+        // The general principle is for any variable v that depends on a variable u, the adjoint of u (ubar)
+        // is updated as ubar += (dv/du)*vbar.  Thus, when computing the adjoint of u, we need to apply
+        // this formula for each variable v that depends on u.
+        //
+        // Note, the derivatives of the nonlinear function of pi and vth that are used in the scan sum
+        // are stored in phi_int_all.  Also, because pi is averaged at interfaces, there is a 0.5 on the 
+        // diagonal of the derivative of the scan sum for computing pi.
+
+        Real x_pi[NUM_PHYSICAL_LEV]; // for storing adjoint w.r.t. pi(ipt,jpt,l)
+        Real x_phinh[NUM_PHYSICAL_LEV]; // for storing adjoint w.r.t. phinh(ipt,jpt,l)
+
+        // Compute adjoint of phinh(l) assuming full coupling across gauss points.  Vars at level l only
+        // depend on phinh(l) and phinh(l+1), so that means phinh(l) only influences vars at levels l, l-1
+        for (int l=0; l<NUM_PHYSICAL_LEV; ++l) {
+          x_phinh[l] = 0.0;
+          int phinh_ind = pt_offset + offset_phinh + l % 2; // deriv w.r.t. phinh(ipt,jpt,l)
+          for (int mpt=0; mpt<NP; ++mpt) {
+            for (int npt=0; npt<NP; ++npt) {
+              x_phinh[l] +=
+                dvdx_v(ie,np1,0,mpt,npt,l).dx(phinh_ind) * x_u_ie(mpt,npt,l) + 
+                dvdx_v(ie,np1,1,mpt,npt,l).dx(phinh_ind) * x_v_ie(mpt,npt,l) + 
+                dvthdx_v(ie,np1,mpt,npt,l).dx(phinh_ind) * x_vth_ie(mpt,npt,l) + 
+                ddpdx_v(ie,np1,mpt,npt,l).dx(phinh_ind) * x_dp_ie(mpt,npt,l) +
+                dwdx_v(ie,np1,mpt,npt,l).dx(phinh_ind) * x_w_ie(mpt,npt,l) +
+                dphidx_v(ie,np1,mpt,npt,l).dx(phinh_ind) * x_phi_ie(mpt,npt,l);
+              if (l > 0) {
+                x_phinh[l] +=
+                  dvdx_v(ie,np1,0,mpt,npt,l-1).dx(phinh_ind) * x_u_ie(mpt,npt,l-1) + 
+                  dvdx_v(ie,np1,1,mpt,npt,l-1).dx(phinh_ind) * x_v_ie(mpt,npt,l-1) + 
+                  dvthdx_v(ie,np1,mpt,npt,l-1).dx(phinh_ind) * x_vth_ie(mpt,npt,l-1) + 
+                  ddpdx_v(ie,np1,mpt,npt,l-1).dx(phinh_ind) * x_dp_ie(mpt,npt,l-1) +
+                  dwdx_v(ie,np1,mpt,npt,l-1).dx(phinh_ind) * x_w_ie(mpt,npt,l-1) +
+                  dphidx_v(ie,np1,mpt,npt,l-1).dx(phinh_ind) * x_phi_ie(mpt,npt,l-1);
+              }
+            }
+          }
+        }
+
+        // Compute adjoint of pi(l) assuming full coupling across gauss points.  Vars at level
+        // l only directly depend on pi(l), so pi(l) only influences vars at level l, but since
+        // phinh(l) depends on pi(s) for s=l,...,N, pi(l) influences phinh(s) for s=0,...,l.
+        // Also phinh only depends on pi at the same gauss point.
+        for (int l=0; l<NUM_PHYSICAL_LEV; ++l) {
+          x_pi[l] = 0.0;
+          int pi_ind = pt_offset + offset_pi; // deriv w.r.t. pi(ipt,jpt,l)
+
+          // Direct dependence on pi
+          for (int mpt=0; mpt<NP; ++mpt) {
+            for (int npt=0; npt<NP; ++npt) {
+              x_pi[l] +=
+                dvdx_v(ie,np1,0,mpt,npt,l).dx(pi_ind) * x_u_ie(mpt,npt,l) + 
+                dvdx_v(ie,np1,1,mpt,npt,l).dx(pi_ind) * x_v_ie(mpt,npt,l) + 
+                dvthdx_v(ie,np1,mpt,npt,l).dx(pi_ind) * x_vth_ie(mpt,npt,l) + 
+                ddpdx_v(ie,np1,mpt,npt,l).dx(pi_ind) * x_dp_ie(mpt,npt,l) +
+                dwdx_v(ie,np1,mpt,npt,l).dx(pi_ind) * x_w_ie(mpt,npt,l) +
+                dphidx_v(ie,np1,mpt,npt,l).dx(pi_ind) * x_phi_ie(mpt,npt,l);
+            }
+          }
+
+          // Include contribution from phinh (transposed reverse scan sum)
+          for (int s=0; s<=l; ++s) {
+            x_pi[l] += phi_int_all(ie,ipt,jpt,l).dx(pi_ind)*x_phinh[s];
+          }
+        }
+
+        // Update adjoint of dp based on pi contribution (transposed scan sum)
+        for (int l=k; l<NUM_PHYSICAL_LEV; ++l) {
+          y_dp_val += (l == k ? 0.5 : 1.0)*x_pi[l];
+        }
+        
+        // Update adjoint of vth based on phinh contribution (transposed reverse scan sum)
+        for (int l=0; l<=k; ++l) {
+          y_vth_val += phi_int_all(ie,ipt,jpt,k).dx(vth_curr)*x_phinh[l];
+        }
+
       }
     };
 
@@ -1293,7 +1597,8 @@ struct CaarFunctorImplST {
     auto dwdx_v = ekat::scalarize(m_state.m_w_i);
     auto dphidx_v = ekat::scalarize(m_state.m_phinh_i);
 
-    int n0 = data.n0;
+    // for hydrostatic
+    auto phi_int_all = ekat::scalarize(m_buffers.phi_int_all);
 
     const int num_fad = Sacado::StaticSize<DxFadTypeCaar>::value;
 
@@ -1311,6 +1616,13 @@ struct CaarFunctorImplST {
     auto y_dp = ekat::scalarize(y.dp3d);
     auto y_w = ekat::scalarize(y.w_i);
     auto y_phi = ekat::scalarize(y.phinh_i);
+
+    if (m_theta_hydrostatic_mode) {
+      std::cout << "Hydrostatic mode is on" << std::endl;
+    }
+    
+    Real x_pi[NUM_PHYSICAL_LEV]; // for storing adjoint w.r.t. pi
+    Real x_phinh[NUM_PHYSICAL_LEV]; // for storing adjoint w.r.t. phinh
 
     for (int ie=0; ie<m_num_elems; ++ie) {
       int fad_idx = 0;
@@ -1342,7 +1654,6 @@ struct CaarFunctorImplST {
                 }
               }
             }
-
             ++fad_idx;
 
             for (int sigp=0; sigp<NP; ++sigp) {
@@ -1361,7 +1672,6 @@ struct CaarFunctorImplST {
                 }
               }
             }
-
             ++fad_idx;
 
             for (int sigp=0; sigp<NP; ++sigp) {
@@ -1399,8 +1709,77 @@ struct CaarFunctorImplST {
                 }
               }
             }
-
             ++fad_idx;
+
+            if (m_theta_hydrostatic_mode) {
+
+              // Compute adjoint of phinh(l) assuming full coupling across gauss points.  Vars at level l only
+              // depend on phinh(l) and phinh(l+1), so that means phinh(l) only influences vars at levels l, l-1
+              for (int l=0; l<NUM_PHYSICAL_LEV; ++l) {
+                x_phinh[l] = 0.0;
+                int phinh_ind = (igp*NP+jgp)*(6*NUM_PHYSICAL_LEV + 2*NUM_INTERFACE_LEV) + 6*l + 5;
+                for (int sigp=0; sigp<NP; ++sigp) {
+                  for (int sjgp=0; sjgp<NP; ++sjgp) {
+                    x_phinh[l] +=
+                      dvdx_v(ie,np1,0,sigp,sjgp,l).dx(phinh_ind) * x_V(ie,0,sigp,sjgp,l) + 
+                      dvdx_v(ie,np1,1,sigp,sjgp,l).dx(phinh_ind) * x_V(ie,1,sigp,sjgp,l) + 
+                      dvthdx_v(ie,np1,sigp,sjgp,l).dx(phinh_ind) * x_vth(ie,sigp,sjgp,l) + 
+                      ddpdx_v(ie,np1,sigp,sjgp,l).dx(phinh_ind) * x_dp(ie,sigp,sjgp,l) +
+                      dwdx_v(ie,np1,sigp,sjgp,l).dx(phinh_ind) * x_w(ie,sigp,sjgp,l) +
+                      dphidx_v(ie,np1,sigp,sjgp,l).dx(phinh_ind) * x_phi(ie,sigp,sjgp,l);
+                    if (l > 0) {
+                      x_phinh[l] +=
+                        dvdx_v(ie,np1,0,sigp,sjgp,l-1).dx(phinh_ind) * x_V(ie,0,sigp,sjgp,l-1) + 
+                        dvdx_v(ie,np1,1,sigp,sjgp,l-1).dx(phinh_ind) * x_V(ie,1,sigp,sjgp,l-1) + 
+                        dvthdx_v(ie,np1,sigp,sjgp,l-1).dx(phinh_ind) * x_vth(ie,sigp,sjgp,l-1) + 
+                        ddpdx_v(ie,np1,sigp,sjgp,l-1).dx(phinh_ind) * x_dp(ie,sigp,sjgp,l-1) +
+                        dwdx_v(ie,np1,sigp,sjgp,l-1).dx(phinh_ind) * x_w(ie,sigp,sjgp,l-1) +
+                        dphidx_v(ie,np1,sigp,sjgp,l-1).dx(phinh_ind) * x_phi(ie,sigp,sjgp,l-1);
+                    }
+                  }
+                }
+              }
+
+              // Compute adjoint of pi(l) assuming full coupling across gauss points.  Vars at level
+              // l only direclty depend on pi(l), so pi(l) only influences vars at level l, but since
+              // phinh(l) depends on pi(s) for s=l,...,N, pi(l) influences phinh(s) for s=0,...,l.
+              // Also phinh only depends on pi at the same gauss point.
+              for (int l=0; l<NUM_PHYSICAL_LEV; ++l) {
+                x_pi[l] = 0.0;
+                int pi_ind = (igp*NP+jgp)*(6*NUM_PHYSICAL_LEV + 2*NUM_INTERFACE_LEV) + 6*l + 4;
+
+                // Direct dependence on pi
+                for (int sigp=0; sigp<NP; ++sigp) {
+                  for (int sjgp=0; sjgp<NP; ++sjgp) {
+                    x_pi[l] +=
+                      dvdx_v(ie,np1,0,sigp,sjgp,l).dx(pi_ind) * x_V(ie,0,sigp,sjgp,l) + 
+                      dvdx_v(ie,np1,1,sigp,sjgp,l).dx(pi_ind) * x_V(ie,1,sigp,sjgp,l) + 
+                      dvthdx_v(ie,np1,sigp,sjgp,l).dx(pi_ind) * x_vth(ie,sigp,sjgp,l) + 
+                      ddpdx_v(ie,np1,sigp,sjgp,l).dx(pi_ind) * x_dp(ie,sigp,sjgp,l) +
+                      dwdx_v(ie,np1,sigp,sjgp,l).dx(pi_ind) * x_w(ie,sigp,sjgp,l) +
+                      dphidx_v(ie,np1,sigp,sjgp,l).dx(pi_ind) * x_phi(ie,sigp,sjgp,l);
+                  }
+                }
+
+                // Include contribution from phinh (transposed reverse scan sum)
+                for (int slvl=0; slvl<=l; ++slvl) {
+                  x_pi[l] += phi_int_all(ie,igp,jgp,l).dx(pi_ind)*x_phinh[slvl];
+                }
+              }
+
+              // Update adjoint of dp based on pi contribution (transposed scan sum)
+              for (int slvl=lvl; slvl<NUM_PHYSICAL_LEV; ++slvl) {
+                y_dp(ie,igp,jgp,lvl) += (slvl == lvl ? 0.5 : 1.0)*x_pi[slvl];
+              }
+              
+              // Update adjoint of vth based on phinh contribution (transposed reverse scan sum)
+              int vth_ind = (igp*NP+jgp)*(6*NUM_PHYSICAL_LEV + 2*NUM_INTERFACE_LEV) + 6*lvl + 2;
+              for (int slvl=0; slvl<=lvl; ++slvl) {
+                y_vth(ie,igp,jgp,lvl) += phi_int_all(ie,igp,jgp,lvl).dx(vth_ind)*x_phinh[slvl];
+              }
+
+              fad_idx += 2;
+            }
 
           } // lvl
 
@@ -1446,7 +1825,6 @@ struct CaarFunctorImplST {
                 }
               }
             }
-
             ++fad_idx;
 
           } // lvl
@@ -1655,6 +2033,34 @@ struct CaarFunctorImplST {
       //   omega=v*grad(pi)-average(omega_i)
       auto omega = Homme::subview(m_buffers.omega_p,kv.team_idx,igp,jgp);
       ColumnOps::compute_midpoint_values<CombineMode::Scale>(kv,omega_i,omega,-1.0);
+
+      // Treat pi at each interface level as a new independent variable
+      if constexpr (std::is_same_v<ST,DxFadTypeCaar>) {
+        if (m_theta_hydrostatic_mode) {
+          auto pis         = ekat::scalarize(pi);
+
+          // // This is for run_JV_full:
+          // int offset       = (igp*NP+jgp)*(6*NUM_PHYSICAL_LEV + 2*NUM_INTERFACE_LEV); // dx offset for beginning of physical level loop
+          // Kokkos::single(Kokkos::PerThread(kv.team),[&]() {
+          //   for (int lvl=0; lvl<NUM_PHYSICAL_LEV; ++lvl) {
+          //     offset += 4;
+          //     pis(lvl).zero();
+          //     pis(lvl).fastAccessDx(offset++) = 1.0;
+          //     offset++; // for phi_int
+          //   }
+          // });
+
+          // This is for run_JV
+          int offset       = (igp*NP+jgp)*(19)+10; // dx offset for current GP block
+          Kokkos::single(Kokkos::PerThread(kv.team),[&]() {
+            for (int lvl=0; lvl<NUM_PHYSICAL_LEV; ++lvl) {
+              pis(lvl).zero();
+              pis(lvl).fastAccessDx(offset) = 1.0;
+            }
+          });
+        }
+      }
+
     });
     kv.team_barrier();
 
@@ -1684,11 +2090,42 @@ struct CaarFunctorImplST {
         m_eos.compute_exner(kv,Homme::subview(m_buffers.pnh,kv.team_idx,igp,jgp),
                                Homme::subview(m_buffers.exner,kv.team_idx,igp,jgp));
 
-        m_eos.compute_phi_i(kv, m_geometry.m_phis(kv.ie,igp,jgp),
-                            Homme::subview(m_state.m_vtheta_dp,kv.ie,m_data.n0,igp,jgp),
-                            Homme::subview(m_buffers.exner,kv.team_idx,igp,jgp),
-                            Homme::subview(m_buffers.pnh,kv.team_idx,igp,jgp),
-                            Homme::subview(m_state.m_phinh_i,kv.ie,m_data.n0,igp,jgp));
+        if constexpr (std::is_same_v<ST,DxFadTypeCaar>) {
+          auto phinh_is = ekat::scalarize(Homme::subview(m_state.m_phinh_i,kv.ie,m_data.n0,igp,jgp));
+
+          m_eos.compute_phi_i(kv, m_geometry.m_phis(kv.ie,igp,jgp),
+                              Homme::subview(m_state.m_vtheta_dp,kv.ie,m_data.n0,igp,jgp),
+                              Homme::subview(m_buffers.exner,kv.team_idx,igp,jgp),
+                              Homme::subview(m_buffers.pnh,kv.team_idx,igp,jgp),
+                              Homme::subview(m_state.m_phinh_i,kv.ie,m_data.n0,igp,jgp),
+                              Homme::subview(m_buffers.phi_int_all,kv.ie,igp,jgp));
+
+          // Reset derivatives of phinh_i to treat it as a new independent variable
+
+          // //  This is for run_JV_full
+          // int offset = (igp*NP+jgp)*(6*NUM_PHYSICAL_LEV + 2*NUM_INTERFACE_LEV); // dx offset for beginning of physical level loop
+          // for (int lvl=0; lvl<NUM_PHYSICAL_LEV; ++lvl) {
+          //   offset += 5;
+          //   phinh_is(lvl).zero();
+          //   phinh_is(lvl).fastAccessDx(offset++) = 1.0;
+          // }
+
+          // This is for run_JV
+          int offset       = (igp*NP+jgp)*(19)+11; // dx offset for current GP block
+          Kokkos::single(Kokkos::PerThread(kv.team),[&]() {
+            for (int lvl=0; lvl<NUM_PHYSICAL_LEV; ++lvl) {
+              phinh_is(lvl).zero();
+              phinh_is(lvl).fastAccessDx(offset + lvl%2) = 1.0;
+            }
+          });
+        }
+        else {
+          m_eos.compute_phi_i(kv, m_geometry.m_phis(kv.ie,igp,jgp),
+                              Homme::subview(m_state.m_vtheta_dp,kv.ie,m_data.n0,igp,jgp),
+                              Homme::subview(m_buffers.exner,kv.team_idx,igp,jgp),
+                              Homme::subview(m_buffers.pnh,kv.team_idx,igp,jgp),
+                              Homme::subview(m_state.m_phinh_i,kv.ie,m_data.n0,igp,jgp));
+        }
       } else {
         const bool ok1 =
         m_eos.compute_pnh_and_exner(kv,
