@@ -43,6 +43,7 @@ find_package(nanobind REQUIRED)
 nanobind_add_module(pyhommexx
   pyhommexx.cpp
   impl/pyhommexx_mod.F90
+  impl/pyhommexx_forcing.cpp
   impl/pyhommexx_functors.cpp
   impl/pyhommexx_grid.cpp
   impl/pyhommexx_params.cpp

@@ -61,7 +61,7 @@ void get_state_var_impl (nb::ndarray<double>& arr, const nb::str& name, const in
     {"u",  flag_u},
     {"v",  flag_v},
     {"uv", flag_uv},
-    {"vth",flag_vth},
+    {"vtheta_dp",flag_vth},
     {"dp", flag_dp},
     {"w",  flag_w},
     {"phi",flag_phi},
@@ -70,7 +70,7 @@ void get_state_var_impl (nb::ndarray<double>& arr, const nb::str& name, const in
 
   // nanobind has no operator== with const char[]
   std::string n (name.c_str());
-  if (n=="u" or n=="v" or n=="dp" or n=="qv" or n=="vth") {
+  if (n=="u" or n=="v" or n=="dp" or n=="qv" or n=="vtheta_dp") {
     check_shape(arr,scalar3dm_shape);
   } else if (n=="uv") {
     check_shape(arr,vector3dm_shape);
@@ -187,7 +187,7 @@ void set_state_var_impl (const nb::ndarray<double>& arr, const nb::str& name, co
     {"u",  flag_u},
     {"v",  flag_v},
     {"uv", flag_uv},
-    {"vth",flag_vth},
+    {"vtheta_dp",flag_vth},
     {"dp", flag_dp},
     {"w",  flag_w},
     {"phi",flag_phi},
@@ -196,7 +196,7 @@ void set_state_var_impl (const nb::ndarray<double>& arr, const nb::str& name, co
 
   // nanobind has no operator== with const char[]
   std::string n (name.c_str());
-  if (n=="u" or n=="v" or n=="dp" or n=="qv" or n=="vth") {
+  if (n=="u" or n=="v" or n=="dp" or n=="qv" or n=="vtheta_dp") {
     check_shape(arr,scalar3dm_shape);
   } else if (n=="uv") {
     check_shape(arr,vector3dm_shape);
@@ -290,7 +290,7 @@ void set_state_var_value_impl (const double value, const nb::str& name, const in
     {"u",  flag_u},
     {"v",  flag_v},
     {"uv", flag_uv},
-    {"vth",flag_vth},
+    {"vtheta_dp",flag_vth},
     {"dp", flag_dp},
     {"w",  flag_w},
     {"phi",flag_phi},
@@ -419,7 +419,7 @@ void get_state_var_dp_sens (nb::ndarray<double>& arr, const nb::str& name)
     {"u",  flag_u},
     {"v",  flag_v},
     {"uv", flag_uv},
-    {"vth",flag_vth},
+    {"vtheta_dp",flag_vth},
     {"dp", flag_dp},
     {"w",  flag_w},
     {"phi",flag_phi},
@@ -428,7 +428,7 @@ void get_state_var_dp_sens (nb::ndarray<double>& arr, const nb::str& name)
 
   // nanobind has no operator== with const char[]
   std::string n (name.c_str());
-  if (n=="u" or n=="v" or n=="dp" or n=="qv" or n=="vthetadp") {
+  if (n=="u" or n=="v" or n=="dp" or n=="qv" or n=="vtheta_dp") {
     check_shape(arr,scalar3dm_shape);
   } else if (n=="uv") {
     check_shape(arr,vector3dm_shape);
@@ -515,7 +515,7 @@ void perturb_state_var_impl (const nb::str& name,
     {"u",  flag_u},
     {"v",  flag_v},
     {"uv", flag_uv},
-    {"vth",flag_vth},
+    {"vtheta_dp",flag_vth},
     {"dp", flag_dp},
     {"w",  flag_w},
     {"phi",flag_phi},
