@@ -371,7 +371,6 @@ include (EkatCreateUnitTest)
 # State generic tests
 EkatCreateUnitTest (state_ut
   state_ut.cpp
-  COMPILER_CXX_DEFS
   LIBS thetal_kokkos_ut_lib
   LABELS AMDIS
 )
@@ -403,7 +402,19 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
   # Tridiag sacado derivatives tests
   EkatCreateUnitTest ("tridiag_sacado_ut"
     tridiag_sacado_ut.cpp
-    COMPILER_CXX_DEFS
+    LIBS thetal_kokkos_ut_lib
+    LABELS AMDIS
+  )
+
+  # Test the gradient calculation via adjoints
+  set (IMEX_ADJOINT_SOURCES
+    imex_adjoint_ut.cpp
+    thetal_test_interface.F90
+    ${SHARE_UT_DIR}/geometry_interface.F90
+    ${SRC_THETA_DIR}/cxx/prim_advance_adj.cpp
+  )
+  EkatCreateUnitTest ("imex_adjoint_ut"
+    "${IMEX_ADJOINT_SOURCES}"
     LIBS thetal_kokkos_ut_lib
     LABELS AMDIS
   )
