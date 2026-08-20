@@ -194,6 +194,22 @@ recursive subroutine get_field(elem,name,field,hvcoord,nt,ntQ)
         field =elem%state%w_i(:,:,1:nlev,nt)
       endif
 
+#ifdef HOMME_AMDIS_PROJECT
+    ! ground-truth physics tendencies for pyhommexx training data (E10).
+    ! Populated by physics wrappers (e.g. dcmip16_wrapper.F90:569-584); readable
+    ! here at output cadence. AMDIS-only to keep diagnostic output off the
+    ! upstream E3SM code path.
+    case ('FM_x'); field = elem%derived%FM(:,:,1,:)
+    case ('FM_y'); field = elem%derived%FM(:,:,2,:)
+    case ('FM_z'); field = elem%derived%FM(:,:,3,:)
+    case ('FT');   field = elem%derived%FT
+    case ('FQ1'); field = elem%derived%FQ(:,:,:,1)
+    case ('FQ2'); field = elem%derived%FQ(:,:,:,2)
+    case ('FQ3'); field = elem%derived%FQ(:,:,:,3)
+    case ('FQ4'); field = elem%derived%FQ(:,:,:,4)
+    case ('FQ5'); field = elem%derived%FQ(:,:,:,5)
+#endif
+
     case default
        print *,'name = ',trim(name)
        call abortmp('ERROR: get_field name not supported in this model')

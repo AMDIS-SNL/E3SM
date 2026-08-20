@@ -140,6 +140,7 @@ ENDIF ()
 
 # Some options for conditional builds
 if (HOMME_AMDIS_PROJECT)
+  ADD_DEFINITIONS(-DHOMME_AMDIS_PROJECT)
   OPTION(BUILD_HOMME_SWEQX "Shallow water equations FEM" OFF)
   OPTION(BUILD_HOMME_PREQX "Primitive equations FEM" OFF)
   OPTION(BUILD_HOMME_THETA "SB81 NH model with theta and Exner pressure" OFF)
