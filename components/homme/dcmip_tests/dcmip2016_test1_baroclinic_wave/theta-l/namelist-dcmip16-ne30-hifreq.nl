@@ -55,7 +55,7 @@
   output_varnames1  = 'ps','T','Th','pnh','geo','u','v','w','dp','Q','Q2','Q3','Q4','Q5','precl','zeta',
                       'FM_x','FM_y','FM_z','FT','FQ1','FQ2','FQ3'
   interp_type       = 0                            ! native GLL — no interp before NN sees it
-  output_type       = 'netcdf'
+  output_type       = 'netcdf4p'                   ! HDF5-based; classic 'netcdf' fails NC_UNLIMITED on native path
   num_io_procs      = 16
 /
 &prof_inparm
