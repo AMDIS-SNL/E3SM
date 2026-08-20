@@ -27,7 +27,12 @@ module common_movie_mod
 #ifndef HOMME_WITHOUT_PIOLIBRARY
 
 #ifdef _PRIM
+#ifdef HOMME_AMDIS_PROJECT
+  ! +10 vars: dp, Q5, Q6, FM_x, FM_y, FM_z, FT, FQ1, FQ2, FQ3 (E10 training-data diagnostics)
+  integer, parameter :: varcnt = 42 + 10
+#else
   integer, parameter :: varcnt =  42
+#endif
 
   integer, parameter :: maxdims =  7
 
@@ -72,7 +77,20 @@ module common_movie_mod
                                                  'u_sens     ', &
                                                  'v_sens     ', &
                                                  'qv_sens    ', &
-                                                 'time       '/)
+                                                 'time       '  &
+#ifdef HOMME_AMDIS_PROJECT
+                                                ,'dp         ', &
+                                                 'Q5         ', &
+                                                 'Q6         ', &
+                                                 'FM_x       ', &
+                                                 'FM_y       ', &
+                                                 'FM_z       ', &
+                                                 'FT         ', &
+                                                 'FQ1        ', &
+                                                 'FQ2        ', &
+                                                 'FQ3        '  &
+#endif
+                                                 /)
 
 
   integer, parameter :: vardims(maxdims,varcnt) =  reshape( (/ 1,5,0,0,0,0,0, & ! ps
@@ -116,18 +134,38 @@ module common_movie_mod
                                                                1,2,7,5,0,0,0, &  !u_sens
                                                                1,2,7,5,0,0,0, &  !v_sens
                                                                1,2,7,5,0,0,0, &  !qv_sens
-                                                               5,0,0,0,0,0,0 /),&  ! time
+                                                               5,0,0,0,0,0,0  &  ! time
+#ifdef HOMME_AMDIS_PROJECT
+                                                              ,1,2,5,0,0,0,0, &  ! dp
+                                                               1,2,5,0,0,0,0, &  ! Q5
+                                                               1,2,5,0,0,0,0, &  ! Q6
+                                                               1,2,5,0,0,0,0, &  ! FM_x
+                                                               1,2,5,0,0,0,0, &  ! FM_y
+                                                               1,2,5,0,0,0,0, &  ! FM_z
+                                                               1,2,5,0,0,0,0, &  ! FT
+                                                               1,2,5,0,0,0,0, &  ! FQ1
+                                                               1,2,5,0,0,0,0, &  ! FQ2
+                                                               1,2,5,0,0,0,0  &  ! FQ3
+#endif
+                                                               /),&
                                                                shape=(/maxdims,varcnt/))
 
   integer, parameter :: vartype(varcnt)=(/nf_double, nf_double, nf_double,nf_double, nf_double,nf_double,nf_double,& !ps:cv_lon
                                           nf_int,    nf_double,nf_double,nf_double,nf_double,& !corners:T
                                           nf_double, nf_double,nf_double,nf_double,nf_double,nf_double,& !Th:w
-                                          nf_double, nf_double, nf_double,nf_double,& 
+                                          nf_double, nf_double, nf_double,nf_double,&
                                           nf_double, nf_double,nf_double,nf_double,nf_double,& !Q:geo
                                           nf_double, nf_double,nf_double,nf_double,nf_double,nf_double,& !omega:ilev
                                           nf_double, nf_double,nf_double,nf_double,& ! hybrid coords
                                           nf_double,nf_double,nf_double,nf_double,& !sentitivities
-                                          nf_double/) !time
+                                          nf_double  &  !time
+#ifdef HOMME_AMDIS_PROJECT
+                                         ,nf_double,nf_double,nf_double,& !dp, Q5, Q6
+                                          nf_double,nf_double,nf_double,& !FM_x, FM_y, FM_z
+                                          nf_double,& !FT
+                                          nf_double,nf_double,nf_double  & !FQ1, FQ2, FQ3
+#endif
+                                          /)
   logical, parameter :: varrequired(varcnt)=(/.false.,.false.,.false.,.false.,.false.,.false.,.false.,&
                                               .false.,.false.,.false.,.false.,.false.,&
                                               .false.,.false.,.false.,.false.,.false.,.false.,&
@@ -138,7 +176,14 @@ module common_movie_mod
                                               .true. ,.true. ,&   ! hy arrays
                                               .true. ,.true. ,&   ! hy arrays
                                               .false.,.false.,.false.,.false.,& ! sensitivities
-                                              .true./)            ! time
+                                              .true.  &            ! time
+#ifdef HOMME_AMDIS_PROJECT
+                                             ,.false.,.false.,.false.,& ! dp, Q5, Q6
+                                              .false.,.false.,.false.,& ! FM_x, FM_y, FM_z
+                                              .false.,& ! FT
+                                              .false.,.false.,.false.  & ! FQ1, FQ2, FQ3
+#endif
+                                              /)
   character*(*),parameter :: dimnames(maxdims)=(/'ncol        ',&
                                                  'lev         ',&
                                                  'ilev        ',&
