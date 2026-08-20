@@ -220,6 +220,13 @@ IF(BUILD_HOMME_THETA AND NOT HOMME_AMDIS_PROJECT)
   ADD_SUBDIRECTORY(stt)
 ENDIF()
 
+# AMDIS-specific: register just the theta-l target needed by the DCMIP-2016
+# training-data workflow (E9). The main theta-l block above is disabled under
+# HOMME_AMDIS_PROJECT to keep build times down; we opt this one target back in.
+IF(BUILD_HOMME_THETA AND HOMME_AMDIS_PROJECT)
+  ADD_SUBDIRECTORY(theta-l-nlev30-native)
+ENDIF()
+
 IF (BUILD_HOMME_THETA_KOKKOS)
   #summit-gpu will have only gpu targets
   if (${HOMME_MACHINE} MATCHES "summit-gpu")

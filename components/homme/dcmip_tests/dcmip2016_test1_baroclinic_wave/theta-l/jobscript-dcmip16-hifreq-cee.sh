@@ -44,11 +44,17 @@ if [ -n "${SLURM_NNODES:-}" ]; then
   NCPU=$(( SLURM_NNODES * PER_NODE ))
 fi
 
-# nlev=30 executable — matches DCMIP-2016 test 1 vertical coord (camm-30.ascii).
-# Build with HOMME_AMDIS_PROJECT=ON so the FM/FT/FQ output_varnames1 dispatch is compiled in (E10).
-EXEC=../../../test_execs/theta-l-nlev30/theta-l-nlev30
+# nlev=30 native-output executable. `-native` = USE_PIO=TRUE = prim_movie_mod,
+# which supports interp_type=0 (native GLL output) — required by our namelist.
+# The plain `theta-l-nlev30` target uses interp_movie_mod (interpolated-only) and
+# would silently ignore interp_type=0.
+# Build with HOMME_AMDIS_PROJECT=ON so the FM/FT/FQ output_varnames1 dispatch is
+# compiled in (E10). The `-native` target's QSIZE_D was bumped 3 -> 6 to match
+# DCMIP-2016 test 1's qsize=6 (Kessler + toy chemistry indices consumed unconditionally
+# by dcmip16_wrapper.F90:494-497).
+EXEC=../../../test_execs/theta-l-nlev30-native/theta-l-nlev30-native
 if [ ! -x "$EXEC" ]; then
-  echo "ERROR: $EXEC not found. Build theta-l-nlev30 with HOMME_AMDIS_PROJECT=ON."
+  echo "ERROR: $EXEC not found. Build theta-l-nlev30-native with HOMME_AMDIS_PROJECT=ON."
   exit 1
 fi
 
