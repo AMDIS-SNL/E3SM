@@ -259,6 +259,16 @@ contains
     call nf_variable_attributes(ncdf, 'PHIS', 'surface geopotential','m^2/s^2')
     call nf_variable_attributes(ncdf, 'precl','Precipitation rate','meters of water/s')
 #endif
+#ifdef HOMME_AMDIS_PROJECT
+    call nf_variable_attributes(ncdf, 'dp',   'pressure layer thickness','Pa')
+    call nf_variable_attributes(ncdf, 'FM_x', 'physics tendency of u','meters/second^2')
+    call nf_variable_attributes(ncdf, 'FM_y', 'physics tendency of v','meters/second^2')
+    call nf_variable_attributes(ncdf, 'FM_z', 'physics tendency of w','meters/second^2')
+    call nf_variable_attributes(ncdf, 'FT',   'physics tendency of T','degrees kelvin/second')
+    call nf_variable_attributes(ncdf, 'FQ1',  'physics tendency of Q1 (dp-weighted mass)','kg/m^2/s')
+    call nf_variable_attributes(ncdf, 'FQ2',  'physics tendency of Q2 (dp-weighted mass)','kg/m^2/s')
+    call nf_variable_attributes(ncdf, 'FQ3',  'physics tendency of Q3 (dp-weighted mass)','kg/m^2/s')
+#endif
   if (geometry=="sphere") then
     call nf_variable_attributes(ncdf, 'lat', 'column latitude','degrees_north')
     call nf_variable_attributes(ncdf, 'lon', 'column longitude','degrees_east')
@@ -749,7 +759,7 @@ contains
                 call nf_put_var(ncdf(ios),var3d,start, count, name='ke')
              end if
 
-             do qindex=1,min(qsize,4)
+             do qindex=1,qsize
                 write(vname,'(a1,i1)') 'Q',qindex
                 if (qindex==1) vname='Q'
                 if(nf_selectedvar(vname, output_varnames)) then
@@ -763,6 +773,83 @@ contains
                    call nf_put_var(ncdf(ios),var3d,start, count, name=vname)
                 end if
              enddo
+
+#ifdef HOMME_AMDIS_PROJECT
+             ! Ground-truth physics tendencies (E10) + dp, for pyhommexx D8 training.
+             ! FM/FT/FQ live in elem%derived (populated by dcmip16_wrapper.F90:569-584);
+             ! dp is the current-timelevel dp3d.
+             if(nf_selectedvar('dp', output_varnames)) then
+                if (par%masterproc) print *,'writing dp...'
+                st=1
+                do ie=1,nelemd
+                   en=st+elem(ie)%idxp%NumUniquePts-1
+                   call UniquePoints(elem(ie)%idxp,nlev,elem(ie)%state%dp3d(:,:,:,n0), var3d(st:en,:))
+                   st=en+1
+                end do
+                call nf_put_var(ncdf(ios),var3d,start, count, name='dp')
+             end if
+
+             if(nf_selectedvar('FM_x', output_varnames)) then
+                if (par%masterproc) print *,'writing FM_x...'
+                st=1
+                do ie=1,nelemd
+                   en=st+elem(ie)%idxp%NumUniquePts-1
+                   call UniquePoints(elem(ie)%idxp,nlev,elem(ie)%derived%FM(:,:,1,:), var3d(st:en,:))
+                   st=en+1
+                end do
+                call nf_put_var(ncdf(ios),var3d,start, count, name='FM_x')
+             end if
+
+             if(nf_selectedvar('FM_y', output_varnames)) then
+                if (par%masterproc) print *,'writing FM_y...'
+                st=1
+                do ie=1,nelemd
+                   en=st+elem(ie)%idxp%NumUniquePts-1
+                   call UniquePoints(elem(ie)%idxp,nlev,elem(ie)%derived%FM(:,:,2,:), var3d(st:en,:))
+                   st=en+1
+                end do
+                call nf_put_var(ncdf(ios),var3d,start, count, name='FM_y')
+             end if
+
+             if(nf_selectedvar('FM_z', output_varnames)) then
+                if (par%masterproc) print *,'writing FM_z...'
+                st=1
+                do ie=1,nelemd
+                   en=st+elem(ie)%idxp%NumUniquePts-1
+                   call UniquePoints(elem(ie)%idxp,nlev,elem(ie)%derived%FM(:,:,3,:), var3d(st:en,:))
+                   st=en+1
+                end do
+                call nf_put_var(ncdf(ios),var3d,start, count, name='FM_z')
+             end if
+
+             if(nf_selectedvar('FT', output_varnames)) then
+                if (par%masterproc) print *,'writing FT...'
+                st=1
+                do ie=1,nelemd
+                   en=st+elem(ie)%idxp%NumUniquePts-1
+                   call UniquePoints(elem(ie)%idxp,nlev,elem(ie)%derived%FT, var3d(st:en,:))
+                   st=en+1
+                end do
+                call nf_put_var(ncdf(ios),var3d,start, count, name='FT')
+             end if
+
+             block
+               character(len=3) :: fqname
+               do qindex=1,qsize
+                  write(fqname,'(a2,i1)') 'FQ',qindex
+                  if(nf_selectedvar(fqname, output_varnames)) then
+                     if (par%masterproc) print *,'writing ',fqname
+                     st=1
+                     do ie=1,nelemd
+                        en=st+elem(ie)%idxp%NumUniquePts-1
+                        call UniquePoints(elem(ie)%idxp,nlev,elem(ie)%derived%FQ(:,:,:,qindex), var3d(st:en,:))
+                        st=en+1
+                     end do
+                     call nf_put_var(ncdf(ios),var3d,start, count, name=fqname)
+                  end if
+               enddo
+             end block
+#endif
 
              if(nf_selectedvar('geo', output_varnames)) then
                 if (par%masterproc) print *,'writing geo...'
