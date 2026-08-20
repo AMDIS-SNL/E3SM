@@ -148,8 +148,10 @@ contains
 
 
     allocate(compdof(nxyp*nlevp), latp(nxyp),lonp(nxyp))
-    allocate(compDOF_sens(nxyp*nlevp*num_sensitivities))
-    
+    if (num_sensitivities > 0) then
+      allocate(compDOF_sens(nxyp*nlevp*num_sensitivities))
+    end if
+
     ! Create the DOF arrays for GLL points
     iorank=pio_iotask_rank(PIOFS)
 
@@ -163,10 +165,17 @@ contains
     call PIO_initDecomp(PIOFS, pio_double,(/GlobalUniqueCols,nlev/),&
          compDOF(1:nxyp*nlev),IOdesc3D)
 
-    if (par%masterproc) print *,'compDOF for 3d nlev sensitivities'
-    call getDOF(elem, GlobalUniqueCols, nlev*num_sensitivities, compdof_sens)
-    call PIO_initDecomp(PIOFS, pio_double,(/GlobalUniqueCols,nlev,num_sensitivities/),&
-         compDOF_sens(1:nxyp*nlev*num_sensitivities),iodesc3d_sens)
+    ! Guard the sensitivity decomp: passing num_sensitivities=0 to
+    ! PIO_initDecomp aborts inside scorpio ("global dimension length 0").
+    ! Downstream writers (Th_sens, u_sens, qv_sens, v_sens) are already gated
+    ! on nf_selectedvar, so skipping this decomp is safe when sensitivities
+    ! are off.
+    if (num_sensitivities > 0) then
+      if (par%masterproc) print *,'compDOF for 3d nlev sensitivities'
+      call getDOF(elem, GlobalUniqueCols, nlev*num_sensitivities, compdof_sens)
+      call PIO_initDecomp(PIOFS, pio_double,(/GlobalUniqueCols,nlev,num_sensitivities/),&
+           compDOF_sens(1:nxyp*nlev*num_sensitivities),iodesc3d_sens)
+    end if
 
     if (par%masterproc) print *,'compDOF for 3d nlevp'
     call getDOF(elem, GlobalUniqueCols, nlevp, compdof)
