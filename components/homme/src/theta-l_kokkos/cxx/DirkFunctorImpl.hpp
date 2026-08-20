@@ -91,6 +91,7 @@ struct DirkFunctorImplST {
   TeamPolicy m_policy, m_ig_policy;
   TeamUtils<ExecSpace> m_tu, m_tu_ig;
   int nslot;
+  int m_dx_tl = -1;  // time level seeded in init_J; used by run_JtV for identity block
   bool m_verbose = true; // Set to false to suppress some warnings in unit tests
   EquationOfState<Constants> m_eos;
 
@@ -218,6 +219,7 @@ struct DirkFunctorImplST {
 
     Kokkos::parallel_for(p5_mid, init_dx_mid);
     Kokkos::parallel_for(p5_int, init_dx_int);
+    m_dx_tl = dx_tl;
   }
 
   // Compute the product J*V where J = d(state(np1)) / d(state(itl)) (where itl
@@ -395,12 +397,10 @@ struct DirkFunctorImplST {
     };
 
     // Compute (J^T * x)_u(k2), _v(k2), _vth(k2), _dp(k2) for midpoint inputs k2.
-    // The identity block contributes the original x_old value; the off-diagonal
-    // contributions come from the w and phi rows of J (since w_np1 and phi_np1
-    // depend on u, v, vtheta_dp, dp3d).
-    // J^T[u_itl(k2), u_np1(k)]   = delta(k,k2)  (identity)
-    // J^T[u_itl(k2), w_np1(k)]   = J[w_np1(k), u_itl(k2)]   = dw_v(k).dx(offset_u + k2)
-    // J^T[u_itl(k2), phi_np1(k)] = J[phi_np1(k), u_itl(k2)] = dphi_v(k).dx(offset_u + k2)
+    // When dx_tl==np1 (primary DIRK input), DIRK leaves v/vtheta/dp unchanged,
+    // so J has an identity block and J^T adds x back. When dx_tl!=np1 (background
+    // slot), d(v_np1)/d(v_bg)=0 (no identity contribution).
+    const bool add_identity = (m_dx_tl == np1);
     auto jtv_mid = KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k2) {
       Real contrib_u   = 0;
       Real contrib_v   = 0;
@@ -421,11 +421,15 @@ struct DirkFunctorImplST {
                      + dphi_v(ie, np1, ip, jp, k).dx(offset_dp  + k2) * x_phi_k;
       }
 
-      // Identity block: DIRK does not modify u, v, vtheta_dp, dp3d at np1
-      y_V  (ie, 0, ip, jp, k2) = x_V  (ie, 0, ip, jp, k2) + contrib_u;
-      y_V  (ie, 1, ip, jp, k2) = x_V  (ie, 1, ip, jp, k2) + contrib_v;
-      y_vth(ie,    ip, jp, k2) = x_vth(ie,    ip, jp, k2) + contrib_vth;
-      y_dp (ie,    ip, jp, k2) = x_dp (ie,    ip, jp, k2) + contrib_dp;
+      // Identity block: only when the seeded slot equals the solve slot (np1)
+      const Real id_u   = add_identity ? x_V  (ie, 0, ip, jp, k2) : 0;
+      const Real id_v   = add_identity ? x_V  (ie, 1, ip, jp, k2) : 0;
+      const Real id_vth = add_identity ? x_vth(ie,    ip, jp, k2) : 0;
+      const Real id_dp  = add_identity ? x_dp (ie,    ip, jp, k2) : 0;
+      y_V  (ie, 0, ip, jp, k2) = id_u   + contrib_u;
+      y_V  (ie, 1, ip, jp, k2) = id_v   + contrib_v;
+      y_vth(ie,    ip, jp, k2) = id_vth + contrib_vth;
+      y_dp (ie,    ip, jp, k2) = id_dp  + contrib_dp;
     };
 
     Kokkos::parallel_for(p4_int, jtv_int);
