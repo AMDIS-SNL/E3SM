@@ -546,6 +546,7 @@ struct CaarFunctorImplST {
     auto y_w = ekat::scalarize(y.w_i);
 
     constexpr int last_mid = NUM_PHYSICAL_LEV-1;
+    auto hydrostatic_mode = m_theta_hydrostatic_mode;
     auto prod_rule_mid = KOKKOS_LAMBDA (const int ie, const int ipt, const int jpt, const int k) {
 
       const auto& x_u_ie   = Homme::subview(x_V,ie,0);
@@ -655,7 +656,7 @@ struct CaarFunctorImplST {
           }
 
           
-          if (m_theta_hydrostatic_mode) {
+          if (hydrostatic_mode) {
             // There are two scan sums across levels in hydrostatic mode:  a scan sum of dp to get pi
             // and a reverse scan sum of a nonlinear function of pi and vth to get phinh.  The way this is
             // handled with the column compression is to introduce pi and phinh as new independent variables,
@@ -1250,6 +1251,7 @@ struct CaarFunctorImplST {
     auto y_w = ekat::scalarize(y.w_i);
 
     constexpr int last_mid = NUM_PHYSICAL_LEV-1;
+    auto hydrostatic_mode = m_theta_hydrostatic_mode;
     auto jtv_mid = KOKKOS_LAMBDA (const int ie, const int ipt, const int jpt, const int k) {
       const auto& x_u_ie   = Homme::subview(x_V,ie,0);
       const auto& x_v_ie   = Homme::subview(x_V,ie,1);
@@ -1354,7 +1356,7 @@ struct CaarFunctorImplST {
         }
       }
 
-      if (m_theta_hydrostatic_mode) {
+      if (hydrostatic_mode) {
         // There are two scan sums across levels in hydrostatic mode:  a scan sum of dp to get pi
         // and a reverse scan sum of a nonlinear function of pi and vth to get phinh.  The way this is
         // handled with the column compression is to introduce pi and phinh as new independent variables,
@@ -2475,7 +2477,6 @@ struct CaarFunctorImplST {
         w_np1(ilev) += w_tens(ilev);
 
         // Add phi_tens to phi_nm1 and multiply by spheremp
-        // temp *= m_data.dt*spheremp;
         phi_tens(ilev) *= m_data.dt*spheremp;
         phi_np1(ilev) = m_state.m_phinh_i(kv.ie,m_data.nm1,igp,jgp,ilev);
         phi_np1(ilev) *= m_data.scale3*spheremp;

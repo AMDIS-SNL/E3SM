@@ -73,6 +73,9 @@ struct SimulationParams
   // to >0 for diagnostics.
   int       internal_diagnostics_level = 0;
 
+  // If we are running to compute grads, we need to store the fwd state snapshots, to be able to compute JtV with adjoints later
+  bool      store_fwd_state = false;
+
   // Use this member to check whether the struct has been initialized
   bool      params_set = false;
 };

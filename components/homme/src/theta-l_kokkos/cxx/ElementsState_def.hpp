@@ -513,10 +513,10 @@ check_print_abort_on_bad_elems (const std::string& label, const int tlvl) const
         int k_bad = -1;
         bool v = true, d = true, p = true;
         for (int k = 0; k < nplev; ++k) {
-          v = isnan(vtheta_dp(ie,tlvl,gi,gj,k)) || vtheta_dp(ie,tlvl,gi,gj,k) < 0;
-          d = isnan(dp3d(ie,tlvl,gi,gj,k)) || dp3d(ie,tlvl,gi,gj,k) < 0;
+          v = isnan(ADValue(vtheta_dp(ie,tlvl,gi,gj,k))) || ADValue(vtheta_dp(ie,tlvl,gi,gj,k)) < 0;
+          d = isnan(ADValue(dp3d(ie,tlvl,gi,gj,k))) || ADValue(dp3d(ie,tlvl,gi,gj,k)) < 0;
           p = (isnan(ADValue(phinh_i(ie,tlvl,gi,gj,k))) || isnan(ADValue(phinh_i(ie,tlvl,gi,gj,k+1))) ||
-               phinh_i(ie,tlvl,gi,gj,k) < phinh_i(ie,tlvl,gi,gj,k+1));
+               ADValue(phinh_i(ie,tlvl,gi,gj,k)) < ADValue(phinh_i(ie,tlvl,gi,gj,k+1)));
           if (v || d || p) {
             k_bad = k;
             break;
@@ -541,8 +541,8 @@ check_print_abort_on_bad_elems (const std::string& label, const int tlvl) const
           fprintf(fid, "level                   dphi                   dp3d              vtheta_dp\n");
           for (int k = 0; k < nplev; ++k)
             fprintf(fid, "%5d %22.15e %22.15e %22.15e\n",
-                    k, phinh_i(ie,tlvl,gi,gj,k+1) - phinh_i(ie,tlvl,gi,gj,k),
-                    dp3d(ie,tlvl,gi,gj,k), vtheta_dp(ie,tlvl,gi,gj,k));
+                    k, ADValue(phinh_i(ie,tlvl,gi,gj,k+1)) - ADValue(phinh_i(ie,tlvl,gi,gj,k)),
+                    ADValue(dp3d(ie,tlvl,gi,gj,k)), ADValue(vtheta_dp(ie,tlvl,gi,gj,k)));
         }
       }
   }

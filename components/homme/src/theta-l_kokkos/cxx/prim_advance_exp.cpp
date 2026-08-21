@@ -14,8 +14,7 @@
 #include "PhysicalConstants.hpp"
 #include "SimulationParams.hpp"
 #include "TimeLevel.hpp"
-
-#include "profiling.hpp"
+#include "prim_advance_exp.hpp"
 
 namespace Homme
 {
@@ -24,7 +23,6 @@ namespace Homme
 void ttype5_timestep      (const TimeLevel& tl, const Real dt, const Real eta_ave_w);
 void ttype7_imex_timestep (const TimeLevel& tl, const Real dt, const Real eta_ave_w);
 void ttype9_imex_timestep (const TimeLevel& tl, const Real dt, const Real eta_ave_w);
-void ttype10_imex_timestep(const TimeLevel& tl, const Real dt, const Real eta_ave_w);
 
 // Prescribed-wind F90-C++ bridge. Test inputs are all implemented in F90.
 extern "C" void set_prescribed_wind_f_bridge(int n0, int np1, int nstep, Real dt);
@@ -93,7 +91,7 @@ void prim_advance_exp (TimeLevel& tl, const Real dt, const bool compute_diagnost
       ttype9_imex_timestep  (tl, dt, eta_ave_w);
       break;
     case TimeStepType::ttype10_imex:
-      ttype10_imex_timestep (tl, dt, eta_ave_w);
+      ttype10_imex_timestep (tl.nm1,tl.n0,tl.np1, dt, eta_ave_w);
       break;
     default:
       {
@@ -215,7 +213,7 @@ void ttype7_imex_timestep(const TimeLevel& /* tl */,
   assert(false);
 }
 
-//note that ttype9 and ttype10 caqnnot be generalized easily into
+//note that ttype9 and ttype10 cannot be generalized easily into
 //one routine because of the 
 //summation in expl part in stage 5 in ttype9
 void ttype9_imex_timestep(const TimeLevel& tl,
@@ -319,72 +317,6 @@ void ttype9_imex_timestep(const TimeLevel& tl,
   dirk.run(nm1, a2, n0, a1, np1, a3, elements, hvcoord);
 
   GPTLstop("ttype9_imex_timestep");
-
-}
-
-
-void ttype10_imex_timestep(const TimeLevel& tl,
-                         const Real dt_dyn,
-                         const Real eta_ave_w)
-{
-  GPTLstart("ttype10_imex_timestep");
-
-  // The context
-  const auto& c = Context::singleton();
-
-  // Get elements, hvcoord, and functors
-  auto& elements = c.get<Elements>();
-  auto& hvcoord  = c.get<HybridVCoord>();
-  auto& dirk     = c.get<DirkFunctor>();
-  auto& caar     = c.get<CaarFunctor>();
-
-  const int nm1 = tl.nm1;
-  const int n0  = tl.n0;
-  const int np1 = tl.np1;
-  const int qn0 = tl.n0_qdp;
-
-  // ===================== IMEX STAGES ===================== //
-
-/////////////////////
-//  Time level indices
-//    caar: nm1, n0, np1
-//    dirk: nm1, n0, np1
-/////////////////////
-
-  // Stage 1
-  Real dt = dt_dyn/4.0;
-
-  caar.run(RKStageData(n0, n0, nm1, qn0, dt, 0.0, 1.0, 0.0, 1.0));
-  dirk.run(nm1, 0.0, n0, 0.0, nm1, dt, elements, hvcoord);
-
-  // Stage 2
-  dt = dt_dyn/6.0;
-
-  caar.run(RKStageData(n0, nm1, np1, qn0, dt, 0.0, 1.0, 0.0, 1.0));
-  dirk.run(nm1, 0.0, n0, 0.0, np1, dt, elements, hvcoord);
-
-  // Stage 3
-  dt = 3.0*dt_dyn/8.0;
-
-  caar.run(RKStageData(n0, np1, np1, qn0, dt, 0.0, 1.0, 0.0, 1.0));
-  dirk.run(nm1, 0.0, n0, 0.0, np1, dt, elements, hvcoord);
-
-  // Stage 4
-  dt = dt_dyn/2.0;
-
-  caar.run(RKStageData(n0, np1, np1, qn0, dt, 0.0, 1.0, 0.0, 1.0));
-  dirk.run(nm1, 0.0, n0, 0.0, np1, dt, elements, hvcoord);
-
-  // Stage 5
-  Real a1 = 0.24362;
-  Real a2 = 0.34184;
-  Real a3 = 1-(a1+a2);
-  dt = dt_dyn;
-
-  caar.run(RKStageData(n0, np1, np1, qn0, dt, eta_ave_w, 1.0, 0.0, 1.0));
-  dirk.run(nm1, a2*dt, n0, a1*dt, np1, a3*dt, elements, hvcoord);
-
-  GPTLstop("ttype10_imex_timestep");
 }
 
 } // namespace Homme
