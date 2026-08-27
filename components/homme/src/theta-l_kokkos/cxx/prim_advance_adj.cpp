@@ -63,6 +63,196 @@ std::shared_ptr<BoundaryExchangeST<Real>> create_adj_bex (StateSnapshot& adj_sta
   return be;
 }
 
+void ttype5_imex_adjoint(const Real dt_dyn,
+                         const Real eta_ave_w,
+                         StateSnapshot& adj_state)
+{
+  GPTLstart("ttype5_imex_adjoint");
+  using const_tape_t = const Tape<StateSnapshot>;
+
+  const auto& c = Context::singleton();
+  SimulationParams& params = c.get<SimulationParams>();
+
+  // Get elements and functors
+  auto& elems_caar = c.get<ElementsST<DxFadTypeCaar>>();
+  auto& state_caar = elems_caar.m_state;
+  auto& caar_base  = c.get<CaarFunctorST<DxFadTypeCaar>>();
+  auto& caar       = std::any_cast<CaarFunctorImplST<DxFadTypeCaar>&>(caar_base.impl());
+  auto& tape       = std::any_cast<const_tape_t&>(c.any_map().at("imex_tape"));
+  auto& geo        = c.get<ElementsGeometry>();
+
+  auto rspheremp = geo.m_rspheremp;
+
+  int nelem = adj_state.num_elems;
+  int nm1 = 0;
+  int n0  = 1;
+  int np1 = 2;
+  Real dt;
+
+  // NOTATION:
+  //
+  // State:
+  //  - u_i: state after i-th explicit CAAR stage
+  // where u_0 is the state at the beginning of prim_advance_exp,
+  // and u_5 is the state at the end (after 5th stage)
+  //
+  // Adjoint state:
+  //  - lambda_i: deriv w.r.t. u_i
+
+  // These are the needed buffers for the ttype5 adjoints. All work vars will
+  // TODO: create these ONCE
+  auto buf0 = adj_state.clone();
+  auto buf1 = adj_state.clone();
+  auto buf2 = adj_state.clone();
+  auto buf3 = adj_state.clone();
+
+  // These are all alias of lambda but they make the code underneath easier to follow
+  auto lambda0 = buf0,
+       lambda1 = buf1,
+       lambda2 = buf0,
+       lambda3 = buf1,
+       lambda4 = buf0,
+       lambda5 = buf1,
+       lambda_sum = buf2,
+       dCdu0_lambda5 = buf3;
+
+  // These temps are used to hold intermediate steps between lambdaN and lambdaN-1.
+  // WARNING: ensure that they alias lambdaN, NOT lambdaN-1, since caar's run_JtV
+  // will use the tmpN as X and lambdaN-1 as Y, and they CANNOT alias each other.
+  auto tmp5 = lambda5,
+       tmp4 = lambda4,
+       tmp3 = lambda3,
+       tmp2 = lambda2,
+       tmp1 = lambda1;
+
+  lambda_sum.zero();
+
+  // TODO: this must be created ONCE, not every time
+  auto be = create_adj_bex(lambda);
+
+  const auto& u0 = tape.at(0);
+  const auto& u1 = tape.at(1);
+  const auto& u2 = tape.at(2);
+  const auto& u3 = tape.at(3);
+  const auto& u4 = tape.at(4);
+  const auto& u5 = tape.at(5);
+
+  auto u0_5 = buf3;
+  u0_5.deep_copy(u1);
+  u0_5.add(u0,-1.0/4.0,5.0/4.0);
+
+  dt = dt_dyn;
+
+  // CAAR passes bwd
+
+  // Stage 5
+  debug_print("   stage 5...\n");
+  dt = dt_dyn;
+  state_caar.import_snapshot(u0_5,nm1); // Departure point for stage 5 is different
+
+  debug_print("     CAAR...\n");
+  const RKStageData stage5_data(nm1, n0, np1, -1, dt, eta_ave_w, 1.0, 0.0, 1.0);
+  debug_print("       surf bc...\n");
+  caar.run_JtV_surf_bc(stage5_data,lambda5,tmp5);
+  debug_print("       exchange...\n");
+  be->exchange(rspheremp);
+  lambda_sum.add_weighted(tmp5, geo.m_spheremp, -1.0/4.0*stage5_data.scale3);
+  // dept point contrib w.r.t u1 in stage 5
+  dCdu0_lambda5.add_weighted(tmp5, geo.m_spheremp, 5.0/4.0*stage5_data.scale3,0);
+  state_caar.import_snapshot(u4,n0);
+  debug_print("       init J...\n");
+  caar.init_J(stage5_data);
+  debug_print("       compute J...\n");
+  caar.run_pre_exchange(stage5_data);
+  debug_print("       apply Jt...\n");
+  caar.run_JtV(stage5_data,tmp5,lambda4);
+
+  // For all other stages, the departure point is u0
+  state_caar.import_snapshot(u0,nm1);
+
+  // Stage 4
+  debug_print("   stage 4...\n");
+  dt = dt_dyn/2.0;
+
+  debug_print("     CAAR...\n");
+  const RKStageData stage4_data(nm1, n0, np1, -1, dt, 0.0, 1.0, 0.0, 1.0);
+  debug_print("       surf bc...\n");
+  caar.run_JtV_surf_bc(stage4_data,lambda4,tmp4);
+  debug_print("       exchange...\n");
+  be->exchange(rspheremp);
+  lambda_sum.add_weighted(tmp4, geo.m_spheremp, stage4_data.scale3);
+  state_caar.import_snapshot(u3,n0);
+  debug_print("       init J...\n");
+  caar.init_J(stage4_data);
+  debug_print("       compute J...\n");
+  caar.run_pre_exchange(stage4_data);
+  debug_print("       apply Jt...\n");
+  caar.run_JtV(stage4_data,tmp4,lambda3);
+
+  // Stage 3
+  debug_print("   stage 3...\n");
+  dt = 3.0*dt_dyn/8.0;
+
+  debug_print("     CAAR...\n");
+  const RKStageData stage3_data(nm1, n0, np1, -1, dt, 0.0, 1.0, 0.0, 1.0);
+  debug_print("       surf bc...\n");
+  caar.run_JtV_surf_bc(stage3_data,lambda3,tmp3);
+  debug_print("       exchange...\n");
+  be->exchange(rspheremp);
+  lambda_sum.add_weighted(tmp3, geo.m_spheremp, stage3_data.scale3);
+  state_caar.import_snapshot(u2,n0);
+  debug_print("       init J...\n");
+  caar.init_J(stage3_data);
+  debug_print("       compute J...\n");
+  caar.run_pre_exchange(stage3_data);
+  debug_print("       apply Jt...\n");
+  caar.run_JtV(stage3_data,tmp3,lambda2);
+
+  // Stage 2
+  debug_print("   stage 2...\n");
+  dt = dt_dyn/6.0;
+
+  debug_print("     CAAR...\n");
+  const RKStageData stage2_data(nm1, n0, np1, -1, dt, 0.0, 1.0, 0.0, 1.0);
+  debug_print("       surf bc...\n");
+  caar.run_JtV_surf_bc(stage2_data,lambda2,tmp2);
+  debug_print("       exchange...\n");
+  be->exchange(rspheremp);
+  lambda_sum.add_weighted(tmp2, geo.m_spheremp, stage2_data.scale3);
+  state_caar.import_snapshot(u1,n0);
+  debug_print("       init J...\n");
+  caar.init_J(stage2_data);
+  debug_print("       compute J...\n");
+  caar.run_pre_exchange(stage2_data);
+  debug_print("       apply Jt...\n");
+  caar.run_JtV(stage2_data,tmp2,lambda1);
+  lambda1.add(dCdu0_lambda5);
+
+  // Stage 1
+  debug_print("   stage 1...\n");
+  dt = dt_dyn/4.0;
+
+  debug_print("     CAAR...\n");
+  const RKStageData stage1_data(nm1, n0, np1, -1, dt, 0.0, 1.0, 0.0, 1.0);
+  debug_print("       surf bc...\n");
+  caar.run_JtV_surf_bc(stage1_data,lambda1,tmp1);
+  debug_print("       exchange...\n");
+  be->exchange(rspheremp);
+  lambda_sum.add_weighted(tmp1, geo.m_spheremp, stage1_data.scale3);
+  state_caar.import_snapshot(u0,n0);
+  debug_print("       init J...\n");
+  caar.init_J(stage1_data);
+  debug_print("       compute J...\n");
+  caar.run_pre_exchange(stage1_data);
+  debug_print("       apply Jt...\n");
+  caar.run_JtV(stage1_data,tmp1,lambda0);
+
+  // Add the contributions corresponding to CAAR's departure point (which is always y0)
+  lambda0.add(lambda_sum);
+
+  GPTLstop("ttype5_imex_adjoint");
+}
+
 void ttype10_imex_adjoint(const Real dt_dyn,
                           const Real eta_ave_w,
                           StateSnapshot& adj_state)
@@ -121,6 +311,7 @@ void ttype10_imex_adjoint(const Real dt_dyn,
   // These are all alias of lambda and mu, but they make the code underneath easier to follow
   auto mu0 = mu, mu1 = mu, mu2 = mu, mu3 = mu, mu4 = mu, mu5 = mu;
   auto lambda1 = lambda, lambda2 = lambda, lambda3 = lambda, lambda4 = lambda, lambda5 = lambda;
+  auto lambda_tmp = lambda; // to hold some temporaries
 
   // These helpers will contain, respectively:
   //  - sum lambda_i
@@ -181,17 +372,17 @@ void ttype10_imex_adjoint(const Real dt_dyn,
   debug_print("     CAAR...\n");
   const RKStageData stage5_data(nm1, n0, np1, -1, dt, eta_ave_w, 1.0, 0.0, 1.0);
   debug_print("       surf bc...\n");
-  caar.run_JtV_surf_bc(stage5_data,lambda5,lambda5);
+  caar.run_JtV_surf_bc(stage5_data,lambda5,lambda_tmp);
   debug_print("       exchange...\n");
   be->exchange(rspheremp);
-  lambda_sum.add_weighted(lambda1, geo.m_spheremp, stage5_data.scale3);
+  lambda_sum.add_weighted(lambda_tmp, geo.m_spheremp, stage5_data.scale3);
   state_caar.import_snapshot(y4,n0);
   debug_print("       init J...\n");
   caar.init_J(stage5_data);
   debug_print("       compute J...\n");
   caar.run_pre_exchange(stage5_data);
   debug_print("       apply Jt...\n");
-  caar.run_JtV(stage5_data,lambda5,mu4);
+  caar.run_JtV(stage5_data,lambda_tmp,mu4);
 
   // Stage 4
   debug_print("   stage 4...\n");
@@ -206,17 +397,17 @@ void ttype10_imex_adjoint(const Real dt_dyn,
   debug_print("     CAAR...\n");
   const RKStageData stage4_data(nm1, n0, np1, -1, dt, 0.0, 1.0, 0.0, 1.0);
   debug_print("       surf bc...\n");
-  caar.run_JtV_surf_bc(stage4_data,lambda4,lambda4);
+  caar.run_JtV_surf_bc(stage4_data,lambda4,lambda_tmp);
   debug_print("       exchange...\n");
   be->exchange(rspheremp);
-  lambda_sum.add_weighted(lambda1, geo.m_spheremp, stage4_data.scale3);
+  lambda_sum.add_weighted(lambda_tmp, geo.m_spheremp, stage4_data.scale3);
   state_caar.import_snapshot(y3,n0);
   debug_print("       init J...\n");
   caar.init_J(stage4_data);
   debug_print("       compute J...\n");
   caar.run_pre_exchange(stage4_data);
   debug_print("       apply Jt...\n");
-  caar.run_JtV(stage4_data,lambda4,mu3);
+  caar.run_JtV(stage4_data,lambda_tmp,mu3);
 
   // Stage 3
   debug_print("   stage 3...\n");
@@ -231,17 +422,17 @@ void ttype10_imex_adjoint(const Real dt_dyn,
   debug_print("     CAAR...\n");
   const RKStageData stage3_data(nm1, n0, np1, -1, dt, 0.0, 1.0, 0.0, 1.0);
   debug_print("       surf bc...\n");
-  caar.run_JtV_surf_bc(stage3_data,lambda3,lambda3);
+  caar.run_JtV_surf_bc(stage3_data,lambda3,lambda_tmp);
   debug_print("       exchange...\n");
   be->exchange(rspheremp);
-  lambda_sum.add_weighted(lambda1, geo.m_spheremp, stage3_data.scale3);
+  lambda_sum.add_weighted(lambda_tmp, geo.m_spheremp, stage3_data.scale3);
   state_caar.import_snapshot(y2,n0);
   debug_print("       init J...\n");
   caar.init_J(stage3_data);
   debug_print("       compute J...\n");
   caar.run_pre_exchange(stage3_data);
   debug_print("       apply Jt...\n");
-  caar.run_JtV(stage3_data,lambda3,mu2);
+  caar.run_JtV(stage3_data,lambda_tmp,mu2);
 
   // Stage 2
   debug_print("   stage 2...\n");
@@ -256,17 +447,17 @@ void ttype10_imex_adjoint(const Real dt_dyn,
   debug_print("     CAAR...\n");
   const RKStageData stage2_data(nm1, n0, np1, -1, dt, 0.0, 1.0, 0.0, 1.0);
   debug_print("       surf bc...\n");
-  caar.run_JtV_surf_bc(stage2_data,lambda2,lambda2);
+  caar.run_JtV_surf_bc(stage2_data,lambda2,lambda_tmp);
   debug_print("       exchange...\n");
   be->exchange(rspheremp);
-  lambda_sum.add_weighted(lambda1, geo.m_spheremp, stage2_data.scale3);
+  lambda_sum.add_weighted(lambda_tmp, geo.m_spheremp, stage2_data.scale3);
   state_caar.import_snapshot(y1,n0);
   debug_print("       init J...\n");
   caar.init_J(stage2_data);
   debug_print("       compute J...\n");
   caar.run_pre_exchange(stage2_data);
   debug_print("       apply Jt...\n");
-  caar.run_JtV(stage2_data,lambda2,mu1);
+  caar.run_JtV(stage2_data,lambda_tmp,mu1);
   mu1.add(dDdy1_mu5);
 
   // Stage 1
@@ -282,17 +473,17 @@ void ttype10_imex_adjoint(const Real dt_dyn,
   debug_print("     CAAR...\n");
   const RKStageData stage1_data(nm1, n0, np1, -1, dt, 0.0, 1.0, 0.0, 1.0);
   debug_print("       surf bc...\n");
-  caar.run_JtV_surf_bc(stage1_data,lambda1,lambda1);
+  caar.run_JtV_surf_bc(stage1_data,lambda1,lambda_tmp);
   debug_print("       exchange...\n");
   be->exchange(rspheremp);
-  lambda_sum.add_weighted(lambda1, geo.m_spheremp, stage1_data.scale3);
+  lambda_sum.add_weighted(lambda_tmp, geo.m_spheremp, stage1_data.scale3);
   state_caar.import_snapshot(y0,n0);
   debug_print("       init J...\n");
   caar.init_J(stage1_data);
   debug_print("       compute J...\n");
   caar.run_pre_exchange(stage1_data);
   debug_print("       apply Jt...\n");
-  caar.run_JtV(stage1_data,lambda1,mu0);
+  caar.run_JtV(stage1_data,lambda_tmp,mu0);
   mu0.add(dDdy0_mu5);
 
   // Add the contributions corresponding to CAAR's departure point (which is always y0)
