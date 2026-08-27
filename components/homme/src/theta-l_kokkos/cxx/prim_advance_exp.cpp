@@ -91,7 +91,7 @@ void prim_advance_exp (TimeLevel& tl, const Real dt, const bool compute_diagnost
       ttype9_imex_timestep  (tl, dt, eta_ave_w);
       break;
     case TimeStepType::ttype10_imex:
-      ttype10_imex_timestep (tl.nm1,tl.n0,tl.np1, dt, eta_ave_w);
+      ttype10_imex_timestep (tl, dt, eta_ave_w);
       break;
     default:
       {
@@ -127,82 +127,6 @@ void prim_advance_exp (TimeLevel& tl, const Real dt, const bool compute_diagnost
 
   GPTLstop("tl-ae prim_advance_exp");
 }
-
-// Implementations of timestep schemes, in terms of CaarFunctor runs
-void ttype5_timestep(const TimeLevel& tl, const Real dt, const Real eta_ave_w)
-{
-  GPTLstart("ttype5_timestep");
-  // Get elements structure
-  Elements& elements = Context::singleton().get<Elements>();
-  SimulationParams& params = Context::singleton().get<SimulationParams>();
-
-  // Create the functor
-  CaarFunctor& functor = Context::singleton().get<CaarFunctor>();
-
-  const int nm1 = tl.nm1;
-  const int n0  = tl.n0;
-  const int np1 = tl.np1;
-  const int qn0 = tl.n0_qdp;
-
-  // ===================== RK STAGES ===================== //
-
-  // Stage 1: u1 = u0 + dt/5 RHS(u0),          t_rhs = t
-  functor.run(RKStageData(n0, n0, nm1, qn0, dt/5.0, eta_ave_w/4.0));
-
-  // Stage 2: u2 = u0 + dt/5 RHS(u1),          t_rhs = t + dt/5
-  functor.run(RKStageData(n0, nm1, np1, qn0, dt/5.0, 0.0));
-
-  // Stage 3: u3 = u0 + dt/3 RHS(u2),          t_rhs = t + dt/5 + dt/5
-  functor.run(RKStageData(n0, np1, np1, qn0, dt/3.0, 0.0));
-
-  // Stage 4: u4 = u0 + 2dt/3 RHS(u3),         t_rhs = t + dt/5 + dt/5 + dt/3
-  functor.run(RKStageData(n0, np1, np1, qn0, 2.0*dt/3.0, 0.0));
-
-  // Compute (5u1-u0)/4 and store it in timelevel nm1
-  {
-    const auto v         = elements.m_state.m_v;
-    const auto w         = elements.m_state.m_w_i;
-    const auto vtheta_dp = elements.m_state.m_vtheta_dp;
-    const auto phinh     = elements.m_state.m_phinh_i;
-    const auto dp3d      = elements.m_state.m_dp3d;
-    const auto hydrostatic_mode = params.theta_hydrostatic_mode;
-
-    Kokkos::parallel_for(
-      Kokkos::RangePolicy<ExecSpace>(0, elements.num_elems()*NP*NP*NUM_LEV),
-      KOKKOS_LAMBDA(const int it) {
-        const int ie = it / (NP*NP*NUM_LEV);
-        const int igp = (it / (NP*NUM_LEV)) % NP;
-        const int jgp = (it / NUM_LEV) % NP;
-        const int ilev = it % NUM_LEV;
-        v(ie,nm1,0,igp,jgp,ilev) = (5.0*v(ie,nm1,0,igp,jgp,ilev)-v(ie,n0,0,igp,jgp,ilev))/4.0;
-        v(ie,nm1,1,igp,jgp,ilev) = (5.0*v(ie,nm1,1,igp,jgp,ilev)-v(ie,n0,1,igp,jgp,ilev))/4.0;
-        vtheta_dp(ie,nm1,igp,jgp,ilev) = (5.0*vtheta_dp(ie,nm1,igp,jgp,ilev)-vtheta_dp(ie,n0,igp,jgp,ilev))/4.0;
-        dp3d(ie,nm1,igp,jgp,ilev) = (5.0*dp3d(ie,nm1,igp,jgp,ilev)-dp3d(ie,n0,igp,jgp,ilev))/4.0;
-        if (!hydrostatic_mode) {
-          w(ie,nm1,igp,jgp,ilev) = (5.0*w(ie,nm1,igp,jgp,ilev)-w(ie,n0,igp,jgp,ilev))/4.0;
-          phinh(ie,nm1,igp,jgp,ilev) = (5.0*phinh(ie,nm1,igp,jgp,ilev)-phinh(ie,n0,igp,jgp,ilev))/4.0;
-        }
-    });
-    // If NUM_LEV==NUM_LEV_P, the code above will take care also of the last interface
-    if (NUM_LEV_P>NUM_LEV && !hydrostatic_mode) {
-      const int LAST_INT = NUM_LEV_P-1;
-      Kokkos::parallel_for(
-        Kokkos::RangePolicy<ExecSpace>(0, elements.num_elems()*NP*NP),
-        KOKKOS_LAMBDA(const int it) {
-           const int ie  =  it / (NP*NP);
-           const int igp = (it / NP) % NP;
-           const int jgp =  it % NP;
-           w(ie,nm1,igp,jgp,LAST_INT) = (5.0*w(ie,nm1,igp,jgp,LAST_INT)-w(ie,n0,igp,jgp,LAST_INT))/4.0;
-      });
-    }
-  }
-  Kokkos::fence();
-
-  // Stage 5: u5 = (5u1-u0)/4 + 3dt/4 RHS(u4), t_rhs = t + dt/5 + dt/5 + dt/3 + 2dt/3
-  functor.run(RKStageData(nm1, np1, np1, qn0, 3.0*dt/4.0, 3.0*eta_ave_w/4.0));
-  GPTLstop("ttype5_timestep");
-}
-
 
 //compare with ttype10_imex, should be almost identical
 void ttype7_imex_timestep(const TimeLevel& /* tl */,

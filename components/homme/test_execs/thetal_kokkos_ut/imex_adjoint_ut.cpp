@@ -27,6 +27,23 @@
 namespace Homme
 {
 
+extern "C" {
+// Even if we don't run the f90 code in this unit test, it is easier to
+// init from f90, which takes care of creating the grid and decomposing it
+void init_f90 (const int& ne,
+               const Real* hyai_ptr, const Real* hybi_ptr,
+               const Real* hyam_ptr, const Real* hybm_ptr,
+               Real* dvv, Real* mp,
+               const Real& ps0);
+void init_geo_views_f90 (Real*& d_ptr, Real*& dinv_ptr,
+               const Real*& phis_ptr, const Real*& gradphis_ptr,
+               Real*& fcor_ptr,
+               Real*& sphmp_ptr, Real*& rspmp_ptr,
+               Real*& tVisc_ptr, Real*& sph2c_ptr,
+               Real*& metdet_ptr, Real*& metinv_ptr);
+void cleanup_f90();
+}
+
 template<typename ViewT>
 double dot (ViewT v1, ViewT v2, int last_dim = -1) {
   auto v1h = Kokkos::create_mirror_view(v1);
@@ -63,257 +80,54 @@ double dot (ViewT v1, ViewT v2, int last_dim = -1) {
   return prod;
 }
 
-extern "C" {
-// Even if we don't run the f90 code in this unit test, it is easier to
-// init from f90, which takes care of creating the grid and decomposing it
-void init_f90 (const int& ne,
-               const Real* hyai_ptr, const Real* hybi_ptr,
-               const Real* hyam_ptr, const Real* hybm_ptr,
-               Real* dvv, Real* mp,
-               const Real& ps0);
-void init_geo_views_f90 (Real*& d_ptr, Real*& dinv_ptr,
-               const Real*& phis_ptr, const Real*& gradphis_ptr,
-               Real*& fcor_ptr,
-               Real*& sphmp_ptr, Real*& rspmp_ptr,
-               Real*& tVisc_ptr, Real*& sph2c_ptr,
-               Real*& metdet_ptr, Real*& metinv_ptr);
-void cleanup_f90();
-void initialize_dp3d_from_ps_c ();
-}
-
-template<typename ST = ScalarValue>
-void fake_imex_forward (const int nm1, const int n0, const int np1,
-                        const Real dt_dyn,
-                        const Real eta_ave_w)
+void init_geo_views (ElementsGeometry& geo)
 {
-  GPTLstart("fake_imex_forward");
+  auto d        = Kokkos::create_mirror_view(geo.m_d);
+  auto dinv     = Kokkos::create_mirror_view(geo.m_dinv);
+  auto phis     = Kokkos::create_mirror_view(geo.m_phis);
+  auto gradphis = Kokkos::create_mirror_view(geo.m_gradphis);
+  auto fcor     = Kokkos::create_mirror_view(geo.m_fcor);
+  auto spmp     = Kokkos::create_mirror_view(geo.m_spheremp);
+  auto rspmp    = Kokkos::create_mirror_view(geo.m_rspheremp);
+  auto tVisc    = Kokkos::create_mirror_view(geo.m_tensorvisc);
+  auto sph2c    = Kokkos::create_mirror_view(geo.m_vec_sph2cart);
+  auto mdet     = Kokkos::create_mirror_view(geo.m_metdet);
+  auto minv     = Kokkos::create_mirror_view(geo.m_metinv);
 
-  // The context
-  auto& c = Context::singleton();
-  SimulationParams& params = c.get<SimulationParams>();
+  // Aquaplanet: zero phis/gradphis before passing to f90
+  Kokkos::deep_copy(phis,    Real(0));
+  Kokkos::deep_copy(gradphis,Real(0));
 
-  // Get elements, hvcoord, and functors
-  auto& elements = c.get<ElementsST<ST>>();
-  auto& hvcoord  = c.get<HybridVCoord>();
-  auto& dirk_base  = c.get<DirkFunctorST<ST>>();
-  auto& caar_base  = c.get<CaarFunctorST<ST>>();
-  auto& dirk       = std::any_cast<DirkFunctorImplST<ST>&>(dirk_base.impl());
-  auto& caar       = std::any_cast<CaarFunctorImplST<ST>&>(caar_base.impl());
+  Real*        d_ptr        = d.data();
+  Real*        dinv_ptr     = dinv.data();
+  const Real*  phis_ptr     = phis.data();
+  const Real*  gradphis_ptr = gradphis.data();
+  Real*        fcor_ptr     = fcor.data();
+  Real*        spmp_ptr     = spmp.data();
+  Real*        rspmp_ptr    = rspmp.data();
+  Real*        tVisc_ptr    = tVisc.data();
+  Real*        sph2c_ptr    = sph2c.data();
+  Real*        mdet_ptr     = mdet.data();
+  Real*        minv_ptr     = minv.data();
 
-  const int nelems = elements.num_elems();
+  init_geo_views_f90(d_ptr, dinv_ptr, phis_ptr, gradphis_ptr, fcor_ptr,
+                     spmp_ptr, rspmp_ptr, tVisc_ptr,
+                     sph2c_ptr, mdet_ptr, minv_ptr);
 
-  auto save = [&](int tl) {
-    if (not params.store_fwd_state)
-      return;
-    using tape_t = Tape<StateSnapshot>;
-
-    auto& tape = std::any_cast<tape_t&>(c.any_map().at("imex_tape"));
-    tape.shift_fwd();
-    auto& snap = tape.curr();
-    elements.m_state.take_snapshot(snap,tl,false);
-  };
-
-  // ===================== IMEX STAGES ===================== //
-  Real dt;
-
-  // Last stage DIRK factors
-  auto a1 = 0.24;
-  auto a2 = 0.34;
-  auto a3 = 1-(a1+a2);
-
-  // Save initial state y0 (needed by adjoint for stage 5 DIRK background)
-  save(n0);
-
-  // Stage 1
-  dt = dt_dyn/4.0;
-
-  auto stage1_data = RKStageData(n0, n0, nm1, -1, dt, 0.0, 1.0, 0.0, 1.0);
-  caar.run(stage1_data);
-  save(nm1);
-  dirk.run(nm1, 0.0, n0, 0.0, nm1, dt, elements, hvcoord);
-  save(nm1);
-
-  // Stage 2
-  dt = dt_dyn/2.0;
-
-  auto stage2_data = RKStageData(n0, nm1, np1, -1, dt, 0.0, 1.0, 0.0, 1.0);
-  caar.run(stage2_data);
-  save(np1);
-  dirk.run(nm1, 0.0, n0, 0.0, np1, dt, elements, hvcoord);
-  save(np1);
-
-  // Stage 3
-  dt = dt_dyn/4.0;
-
-  auto stage3_data = RKStageData(n0, np1, np1, -1, dt, 0.0, 1.0, 0.0, 1.0);
-  caar.run(stage3_data);
-  save(np1);
-  dirk.run(nm1, a1*dt, n0, a2*dt, np1, a3*dt, elements, hvcoord);
-  save(np1);
-
-  GPTLstop("fake_imex_forward");
+  Kokkos::deep_copy(geo.m_d,           d);
+  Kokkos::deep_copy(geo.m_dinv,        dinv);
+  Kokkos::deep_copy(geo.m_spheremp,    spmp);
+  Kokkos::deep_copy(geo.m_rspheremp,   rspmp);
+  Kokkos::deep_copy(geo.m_tensorvisc,  tVisc);
+  Kokkos::deep_copy(geo.m_vec_sph2cart,sph2c);
+  Kokkos::deep_copy(geo.m_metdet,      mdet);
+  Kokkos::deep_copy(geo.m_metinv,      minv);
+  Kokkos::deep_copy(geo.m_fcor,        fcor);
+  Kokkos::deep_copy(geo.m_phis,        phis);
+  Kokkos::deep_copy(geo.m_gradphis,    gradphis);
 }
 
-void fake_imex_adjoint(const Real dt_dyn,
-                       const Real eta_ave_w,
-                       StateSnapshot& adj_state)
-{
-  GPTLstart("fake_imex_adjoint");
-  using const_tape_t = const Tape<StateSnapshot>;
-
-  const auto& c = Context::singleton();
-  SimulationParams& params = c.get<SimulationParams>();
-
-  // Get elements, hvcoord, and functors
-  auto& elems_dirk = c.get<ElementsST<DxFadTypeDirk>>();
-  auto& elems_caar = c.get<ElementsST<DxFadTypeCaar>>();
-  auto& state_dirk = elems_dirk.m_state;
-  auto& state_caar = elems_caar.m_state;
-  auto& hvcoord    = c.get<HybridVCoord>();
-  auto& dirk_base  = c.get<DirkFunctorST<DxFadTypeDirk>>();
-  auto& caar_base  = c.get<CaarFunctorST<DxFadTypeCaar>>();
-  auto& dirk       = std::any_cast<DirkFunctorImplST<DxFadTypeDirk>&>(dirk_base.impl());
-  auto& caar       = std::any_cast<CaarFunctorImplST<DxFadTypeCaar>&>(caar_base.impl());
-  auto& tape       = std::any_cast<const_tape_t&>(c.any_map().at("imex_tape"));
-  auto& geo        = c.get<ElementsGeometry>();
-
-  auto rspheremp = geo.m_rspheremp;
-
-  int nelem = adj_state.num_elems;
-  Real dt;
-
-  // For each functor, load fwd state we had right before
-  // running it, run functor, then compute JtV (with V=adj_state)
-  // NOTATION:
-  //
-  // State:
-  //  - u_i: state after explicit CAAR stage
-  //  - y_i: state after implicit DIRK stage
-  // where y_0 is the state at the beginning of prim_advance_exp,
-  // and y_5 is the state at the end (after 5th DIRK stage)
-  //
-  // Adjoint state:
-  //  - lambda_i: deriv w.r.t. u_i
-  //  - mu_i: deriv w.r.t. y_i
-  // Hence, lambda is the adjoint var between a CAAR and DIRK stage,
-  // while mu is the adjoint var between DIRK and CAAR stages.
-  // So mu5 is the adj var at entry, while mu0 is the adj var at exit
-  StateSnapshot lambda (nelem);
-  StateSnapshot mu = adj_state;
-
-  // These are all alias of lambda and mu, but they make the code underneath easier to follow
-  auto mu0 = mu, mu1 = mu, mu2 = mu, mu3 = mu;
-  auto lambda1 = lambda, lambda2 = lambda, lambda3 = lambda;
-
-  int nm1 = 0;
-  int n0  = 1;
-  int np1 = 2;
-
-  // TODO: this must be created ONCE, not every time
-  auto be = create_adj_bex(lambda);
-
-  const auto& y0 = tape.at(0);
-  const auto& u1 = tape.at(1);
-  const auto& y1 = tape.at(2);
-  const auto& u2 = tape.at(3);
-  const auto& y2 = tape.at(4);
-  const auto& u3 = tape.at(5);
-  const auto& y3 = tape.at(6);
-
-  // Last stage DIRK factors
-  auto a1 = 0.24;
-  auto a2 = 0.34;
-  auto a3 = 1-(a1+a2);
-
-  // Departure point in CAAR is the same for all stages
-  state_caar.import_snapshot(y0,nm1);
-
-  // First, derivatives of DIRK in last stage w.r.t y0 and y1
-  StateSnapshot dDdy0_mu3(nelem), dDdy1_mu3(nelem);
-  dt = dt_dyn/4.0;  // stage 3 dt — must be set before these DIRK runs
-
-  state_dirk.import_snapshot(u3, np1);
-  state_dirk.import_snapshot(y0, n0);
-  state_dirk.import_snapshot(y1, nm1);
-
-  // dD3/dy0^T * mu3: seed FAD at n0 (y0 slot), run DIRK3, extract J^T*mu3.
-  // run_JtV uses m_dx_tl (set by init_J) to decide whether to add the identity
-  // block for v/vtheta/dp: only added when dx_tl==np1 (primary input), not for
-  // background slots where d(v_np1)/d(v_bg)=0.
-  dirk.init_J(n0,state_dirk);
-  dirk.run(nm1, a1*dt, n0, a2*dt, np1, a3*dt, elems_dirk, hvcoord);
-  dirk.run_JtV(np1,elems_dirk.m_state,mu3,dDdy0_mu3);
-
-  state_dirk.import_snapshot(u3,np1);
-  dirk.init_J(nm1,state_dirk);
-  dirk.run(nm1, a1*dt, n0, a2*dt, np1, a3*dt, elems_dirk, hvcoord);
-  dirk.run_JtV(np1,elems_dirk.m_state,mu3,dDdy1_mu3);
-
-  // Then all the stages in bwd order. Keep also the sum of lambdas (the contribution from y0
-  // in all CAAR steps)
-  StateSnapshot lambda_sum(nelem);
-  lambda_sum.zero();
-
-  // Stage 3
-  dt = dt_dyn/4.0;
-  auto stage3_data = RKStageData(nm1, n0, np1, -1, dt, 0.0, 1.0, 0.0, 1.0);
-
-  state_dirk.import_snapshot(u3,np1);
-  dirk.init_J(np1,state_dirk);
-  dirk.run(nm1, a1*dt, n0, a2*dt, np1, a3*dt, elems_dirk, hvcoord);
-  dirk.run_JtV(np1,elems_dirk.m_state,mu3,lambda3);
-
-  caar.run_JtV_surf_bc(stage3_data,lambda3,lambda3);
-  be->exchange(rspheremp);
-  lambda_sum.add_weighted(lambda3, geo.m_spheremp, stage3_data.scale3);
-  state_caar.import_snapshot(y2,n0);
-  caar.init_J(stage3_data);
-  caar.run_pre_exchange(stage3_data);
-  caar.run_JtV(stage3_data,lambda3,mu2);
-
-  // Stage 2
-  dt = dt_dyn/2.0;
-  auto stage2_data = RKStageData(nm1, n0, np1, -1, dt, 0.0, 1.0, 0.0, 1.0);
-
-  state_dirk.import_snapshot(u2,np1);
-  dirk.init_J(np1,state_dirk);
-  dirk.run(nm1, 0.0, n0, 0.0, np1, dt, elems_dirk, hvcoord);
-  dirk.run_JtV(np1,elems_dirk.m_state,mu2,lambda2);
-
-  caar.run_JtV_surf_bc(stage2_data,lambda2,lambda2);
-  be->exchange(rspheremp);
-  lambda_sum.add_weighted(lambda2, geo.m_spheremp, stage2_data.scale3);
-  state_caar.import_snapshot(y1,n0);
-  caar.init_J(stage2_data);
-  caar.run_pre_exchange(stage2_data);
-  caar.run_JtV(stage2_data,lambda2,mu1);
-  mu1.add(dDdy1_mu3);
-
-  // Stage 1
-  dt = dt_dyn/4.0;
-  auto stage1_data = RKStageData(nm1, n0, np1, -1, dt, 0.0, 1.0, 0.0, 1.0);
-
-  state_dirk.import_snapshot(u1, np1);
-  dirk.init_J(np1, state_dirk);
-  dirk.run(nm1, 0.0, n0, 0.0, np1, dt, elems_dirk, hvcoord);
-  dirk.run_JtV(np1, elems_dirk.m_state, mu1, lambda1);
-
-  caar.run_JtV_surf_bc(stage1_data,lambda1,lambda1);
-  be->exchange(rspheremp);
-  lambda_sum.add_weighted(lambda1, geo.m_spheremp, stage1_data.scale3);
-  state_caar.import_snapshot(y0,n0);
-  caar.init_J(stage1_data);
-  caar.run_pre_exchange(stage1_data);
-  caar.run_JtV(stage1_data,lambda1,mu0);
-  mu0.add(dDdy0_mu3);
-
-  // Add the contributions corresponding to CAAR's departure point (which is always y0)
-  mu0.add(lambda_sum);
-
-  GPTLstop("fake_imex_adjoint");
-}
-
-TEST_CASE("fake_imex_adjoint")
+TEST_CASE("ttype10_imex_adjoint")
 {
   constexpr int ne = 2;
   constexpr int nlevs = NUM_PHYSICAL_LEV;
@@ -331,6 +145,7 @@ TEST_CASE("fake_imex_adjoint")
   // Use stuff from Context, to increase similarity with actual runs
   auto& c = Context::singleton();
   auto& comm = c.create<ekat::Comm>(MPI_COMM_WORLD);
+  auto& tl = c.create<TimeLevel>();
 
   // Init parameters
   auto& params = c.create<SimulationParams>();
@@ -340,7 +155,7 @@ TEST_CASE("fake_imex_adjoint")
   params.qsplit = 1;
   params.rsplit = 1;
   params.store_fwd_state = true;
-  params.theta_hydrostatic_mode = false;
+  params.theta_hydrostatic_mode = true;
   params.scale_factor = PhysicalConstants::rearth0;
   params.laplacian_rigid_factor = PhysicalConstants::rrearth0;
 
@@ -379,52 +194,7 @@ TEST_CASE("fake_imex_adjoint")
   auto& geo = c.create<ElementsGeometry>();
   geo.init(num_elems,false,true,PhysicalConstants::rearth0,-1,true);
 
-  // Pull physical geometry from f90 (gives realistic Dinv, spheremp, fcor, etc.)
-  {
-    auto d        = Kokkos::create_mirror_view(geo.m_d);
-    auto dinv     = Kokkos::create_mirror_view(geo.m_dinv);
-    auto phis     = Kokkos::create_mirror_view(geo.m_phis);
-    auto gradphis = Kokkos::create_mirror_view(geo.m_gradphis);
-    auto fcor     = Kokkos::create_mirror_view(geo.m_fcor);
-    auto spmp     = Kokkos::create_mirror_view(geo.m_spheremp);
-    auto rspmp    = Kokkos::create_mirror_view(geo.m_rspheremp);
-    auto tVisc    = Kokkos::create_mirror_view(geo.m_tensorvisc);
-    auto sph2c    = Kokkos::create_mirror_view(geo.m_vec_sph2cart);
-    auto mdet     = Kokkos::create_mirror_view(geo.m_metdet);
-    auto minv     = Kokkos::create_mirror_view(geo.m_metinv);
-
-    // Aquaplanet: zero phis/gradphis before passing to f90
-    Kokkos::deep_copy(phis,    Real(0));
-    Kokkos::deep_copy(gradphis,Real(0));
-
-    Real*        d_ptr        = d.data();
-    Real*        dinv_ptr     = dinv.data();
-    const Real*  phis_ptr     = phis.data();
-    const Real*  gradphis_ptr = gradphis.data();
-    Real*        fcor_ptr     = fcor.data();
-    Real*        spmp_ptr     = spmp.data();
-    Real*        rspmp_ptr    = rspmp.data();
-    Real*        tVisc_ptr    = tVisc.data();
-    Real*        sph2c_ptr    = sph2c.data();
-    Real*        mdet_ptr     = mdet.data();
-    Real*        minv_ptr     = minv.data();
-
-    init_geo_views_f90(d_ptr, dinv_ptr, phis_ptr, gradphis_ptr, fcor_ptr,
-                       spmp_ptr, rspmp_ptr, tVisc_ptr,
-                       sph2c_ptr, mdet_ptr, minv_ptr);
-
-    Kokkos::deep_copy(geo.m_d,           d);
-    Kokkos::deep_copy(geo.m_dinv,        dinv);
-    Kokkos::deep_copy(geo.m_spheremp,    spmp);
-    Kokkos::deep_copy(geo.m_rspheremp,   rspmp);
-    Kokkos::deep_copy(geo.m_tensorvisc,  tVisc);
-    Kokkos::deep_copy(geo.m_vec_sph2cart,sph2c);
-    Kokkos::deep_copy(geo.m_metdet,      mdet);
-    Kokkos::deep_copy(geo.m_metinv,      minv);
-    Kokkos::deep_copy(geo.m_fcor,        fcor);
-    Kokkos::deep_copy(geo.m_phis,        phis);
-    Kokkos::deep_copy(geo.m_gradphis,    gradphis);
-  }
+  init_geo_views(geo);
 
   // Create elements for FWD/BWD integration
   auto& elems_dp = c.create<ElementsST<DpFadType>>();
@@ -452,9 +222,10 @@ TEST_CASE("fake_imex_adjoint")
   auto conn  = c.get_ptr<Connectivity>();
   auto  bm   = bmm[MPI_EXCHANGE];
 
-  int nm1 = 0;
-  int n0  = 1;
-  int np1 = 2;
+  int nm1 = tl.nm1 = 0;
+  int n0  = tl.n0  = 1;
+  int np1 = tl.np1 = 2;
+
   // Create and init Caar/Limiter/Dirk functors
   auto& caar_dp = c.create<CaarFunctorST<DpFadType>>();
   auto& caar_dx = c.create<CaarFunctorST<DxFadTypeCaar>>();
@@ -507,7 +278,7 @@ TEST_CASE("fake_imex_adjoint")
   elems_dp.m_state.randomize_derivs(seed,n0);
   auto du0 = elems_dp.m_state.take_deriv_snapshot(n0,0);
   printf(" -> Run forward problem...\n");
-  fake_imex_forward<DpFadType>(nm1,n0,np1,dt,eta_ave_w);
+  ttype10_imex_timestep<DpFadType>(tl,dt,eta_ave_w);
   printf(" -> Run forward problem...done!\n");
   auto duN = elems_dp.m_state.take_deriv_snapshot(np1,0);
 
@@ -516,7 +287,7 @@ TEST_CASE("fake_imex_adjoint")
   lambda.randomize(seed,1.0,1.0/100,0.0);
   auto lambdaN = lambda.clone(true);
   printf(" -> Run adjoint problem...\n");
-  fake_imex_adjoint(dt,eta_ave_w,lambda);
+  ttype10_imex_adjoint(dt,eta_ave_w,lambda);
   printf(" -> Run adjoint problem...done!\n");
   auto lambda0 = lambda.clone(true);
 
@@ -554,7 +325,7 @@ TEST_CASE("fake_imex_adjoint")
   c.finalize_singleton();
 }
 
-TEST_CASE("ttype10_imex_adjoint")
+TEST_CASE("ttype5_imex_adjoint")
 {
   constexpr int ne = 2;
   constexpr int nlevs = NUM_PHYSICAL_LEV;
@@ -572,6 +343,7 @@ TEST_CASE("ttype10_imex_adjoint")
   // Use stuff from Context, to increase similarity with actual runs
   auto& c = Context::singleton();
   auto& comm = c.create<ekat::Comm>(MPI_COMM_WORLD);
+  auto& tl = c.create<TimeLevel>();
 
   // Init parameters
   auto& params = c.create<SimulationParams>();
@@ -619,53 +391,8 @@ TEST_CASE("ttype10_imex_adjoint")
   // Init geometry views once (same for all elements structs)
   auto& geo = c.create<ElementsGeometry>();
   geo.init(num_elems,false,true,PhysicalConstants::rearth0,-1,true);
-
-  // Pull physical geometry from f90 (gives realistic Dinv, spheremp, fcor, etc.)
-  {
-    auto d        = Kokkos::create_mirror_view(geo.m_d);
-    auto dinv     = Kokkos::create_mirror_view(geo.m_dinv);
-    auto phis     = Kokkos::create_mirror_view(geo.m_phis);
-    auto gradphis = Kokkos::create_mirror_view(geo.m_gradphis);
-    auto fcor     = Kokkos::create_mirror_view(geo.m_fcor);
-    auto spmp     = Kokkos::create_mirror_view(geo.m_spheremp);
-    auto rspmp    = Kokkos::create_mirror_view(geo.m_rspheremp);
-    auto tVisc    = Kokkos::create_mirror_view(geo.m_tensorvisc);
-    auto sph2c    = Kokkos::create_mirror_view(geo.m_vec_sph2cart);
-    auto mdet     = Kokkos::create_mirror_view(geo.m_metdet);
-    auto minv     = Kokkos::create_mirror_view(geo.m_metinv);
-
-    // Aquaplanet: zero phis/gradphis before passing to f90
-    Kokkos::deep_copy(phis,    Real(0));
-    Kokkos::deep_copy(gradphis,Real(0));
-
-    Real*        d_ptr        = d.data();
-    Real*        dinv_ptr     = dinv.data();
-    const Real*  phis_ptr     = phis.data();
-    const Real*  gradphis_ptr = gradphis.data();
-    Real*        fcor_ptr     = fcor.data();
-    Real*        spmp_ptr     = spmp.data();
-    Real*        rspmp_ptr    = rspmp.data();
-    Real*        tVisc_ptr    = tVisc.data();
-    Real*        sph2c_ptr    = sph2c.data();
-    Real*        mdet_ptr     = mdet.data();
-    Real*        minv_ptr     = minv.data();
-
-    init_geo_views_f90(d_ptr, dinv_ptr, phis_ptr, gradphis_ptr, fcor_ptr,
-                       spmp_ptr, rspmp_ptr, tVisc_ptr,
-                       sph2c_ptr, mdet_ptr, minv_ptr);
-
-    Kokkos::deep_copy(geo.m_d,           d);
-    Kokkos::deep_copy(geo.m_dinv,        dinv);
-    Kokkos::deep_copy(geo.m_spheremp,    spmp);
-    Kokkos::deep_copy(geo.m_rspheremp,   rspmp);
-    Kokkos::deep_copy(geo.m_tensorvisc,  tVisc);
-    Kokkos::deep_copy(geo.m_vec_sph2cart,sph2c);
-    Kokkos::deep_copy(geo.m_metdet,      mdet);
-    Kokkos::deep_copy(geo.m_metinv,      minv);
-    Kokkos::deep_copy(geo.m_fcor,        fcor);
-    Kokkos::deep_copy(geo.m_phis,        phis);
-    Kokkos::deep_copy(geo.m_gradphis,    gradphis);
-  }
+  
+  init_geo_views(geo);
 
   // Create elements for FWD/BWD integration
   auto& elems_dp = c.create<ElementsST<DpFadType>>();
@@ -693,9 +420,10 @@ TEST_CASE("ttype10_imex_adjoint")
   auto conn  = c.get_ptr<Connectivity>();
   auto  bm   = bmm[MPI_EXCHANGE];
 
-  int nm1 = 0;
-  int n0  = 1;
-  int np1 = 2;
+  int nm1 = tl.nm1 = 0;
+  int n0  = tl.n0  = 1;
+  int np1 = tl.np1 = 2;
+
   // Create and init Caar/Limiter/Dirk functors
   auto& caar_dp = c.create<CaarFunctorST<DpFadType>>();
   auto& caar_dx = c.create<CaarFunctorST<DxFadTypeCaar>>();
@@ -748,7 +476,7 @@ TEST_CASE("ttype10_imex_adjoint")
   elems_dp.m_state.randomize_derivs(seed,n0);
   auto du0 = elems_dp.m_state.take_deriv_snapshot(n0,0);
   printf(" -> Run forward problem...\n");
-  ttype10_imex_timestep<DpFadType>(nm1,n0,np1,dt,eta_ave_w);
+  ttype5_imex_timestep<DpFadType>(tl,dt,eta_ave_w);
   printf(" -> Run forward problem...done!\n");
   auto duN = elems_dp.m_state.take_deriv_snapshot(np1,0);
 
@@ -757,7 +485,7 @@ TEST_CASE("ttype10_imex_adjoint")
   lambda.randomize(seed,1.0,1.0/100,0.0);
   auto lambdaN = lambda.clone(true);
   printf(" -> Run adjoint problem...\n");
-  ttype10_imex_adjoint(dt,eta_ave_w,lambda);
+  ttype5_imex_adjoint(dt,eta_ave_w,lambda);
   printf(" -> Run adjoint problem...done!\n");
   auto lambda0 = lambda.clone(true);
 
