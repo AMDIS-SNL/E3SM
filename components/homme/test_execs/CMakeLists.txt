@@ -227,6 +227,13 @@ IF(BUILD_HOMME_THETA AND HOMME_AMDIS_PROJECT)
   ADD_SUBDIRECTORY(theta-l-nlev30-native)
 ENDIF()
 
+# AMDIS + kokkos: native-GLL output executable for the C++ dycore, so the
+# E10 tendency-emission hook in prim_movie_mod.F90 (guarded by
+# HOMME_AMDIS_PROJECT) is exercised alongside theta-l_kokkos.
+IF(BUILD_HOMME_THETA_KOKKOS AND HOMME_AMDIS_PROJECT)
+  ADD_SUBDIRECTORY(theta-l-nlev30-native-kokkos)
+ENDIF()
+
 IF (BUILD_HOMME_THETA_KOKKOS)
   #summit-gpu will have only gpu targets
   if (${HOMME_MACHINE} MATCHES "summit-gpu")

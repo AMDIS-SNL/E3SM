@@ -1,18 +1,20 @@
 !
-! theta-l_kokkos: DCMIP2016 test1 baroclinic wave
-!   ttype10 IMEX, Eulerian transport, qsplit=rsplit=1
-!   NOTE: run with the theta-l_kokkos (C++) executable, e.g.
-!         theta-l-nlev30-kokkos < namelist-eulerian-ttype10.nl
+! theta-l_kokkos: DCMIP2016 test1 baroclinic wave — ne2 smoke test
+!   ttype10 IMEX, Eulerian transport, qsplit=rsplit=1, native GLL output.
+!   12 dyn steps -> 2 output frames. Validates the E10 tendency path with
+!   the kokkos dycore end to end. Not a scientific configuration.
+!
+! Companion: namelist-eulerian-ttype10.nl for the ne=8 / ndays=9 run.
 !_______________________________________________________________________
 &ctl_nl
   nthreads          = -1
   partmethod        = 4
   topology          = "cube"
   test_case         = "dcmip2016_test1"
-  ne                = 8
+  ne                = 2
   qsize             = 6
-  ndays             = 9
-  statefreq         = 24
+  nmax              = 12                 ! 12 dyn steps -> 2 output frames
+  statefreq         = 6
   restartfreq       = -1
   runtype           = 0
   tstep             = 300
@@ -21,9 +23,9 @@
   rsplit            = 1
   qsplit            = 1
   transport_alg     = 0                  ! 0 = Eulerian (EulerStepFunctor)
-  nu                = 3e16
-  nu_s              = 3e16
-  nu_p              = 3e16
+  nu                = 1e15
+  nu_s              = 1e15
+  nu_p              = 1e15
   nu_top            = 0
   limiter_option    = 9                  ! Eulerian requires 8 or 9
   hypervis_order    = 2
@@ -39,7 +41,7 @@
   vfile_int         = "../vcoord/cami-30.ascii"
 /
 &analysis_nl
-  output_prefix     = "hommexx-eulerian-ttype10-"
+  output_prefix     = "hommexx-eulerian-ttype10-ne2-"
   output_dir        = "./movies/"
   output_timeunits  = 0,                 ! 0 = timesteps
   output_frequency  = 6                  ! every 6 dyn steps
@@ -47,7 +49,7 @@
                       'FM_x','FM_y','FM_z','FT','FQ1','FQ2','FQ3'
   interp_type       = 0                  ! native GLL
   output_type       = 'netcdf4p'         ! HDF5-backed, required by native GLL path
-  num_io_procs      = 16
+  num_io_procs      = 1
 /
 &prof_inparm
   profile_outpe_num   = 100
