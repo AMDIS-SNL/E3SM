@@ -19,9 +19,14 @@ struct StateSnapshot {
   void zero ();
 
   void add (const StateSnapshot& x); // *this += x
+  void add (const StateSnapshot& x, const Real alpha, const Real beta = 1); // *this = *this * beta + x * alpha
   void add_weighted (const StateSnapshot& x,                 // *this += scale * weight * x
                      const ExecViewManaged<Real*[NP][NP]>& weight,
                      const Real scale = 1.0);
+  void add_weighted (const StateSnapshot& x,                 // *this = *this * beta + scale * weight * x
+                     const ExecViewManaged<Real*[NP][NP]>& weight,
+                     const Real scale,
+                     const Real beta);
   void scale (const Real alpha);     // *this *= alpha
 
   StateSnapshot clone (const bool deep_copy = false) const;
