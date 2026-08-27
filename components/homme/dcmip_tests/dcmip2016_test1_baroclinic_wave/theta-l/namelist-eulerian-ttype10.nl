@@ -21,6 +21,7 @@
   rsplit            = 1
   qsplit            = 1
   transport_alg     = 0                  ! 0 = Eulerian (EulerStepFunctor)
+  vert_remap_q_alg  = 1                  ! 1 = PPM_MIRRORED (kokkos accepts {1,3,10})
   nu                = 3e16
   nu_s              = 3e16
   nu_p              = 3e16
