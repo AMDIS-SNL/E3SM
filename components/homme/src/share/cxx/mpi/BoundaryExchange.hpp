@@ -15,9 +15,14 @@
 #include "ErrorDefs.hpp"
 #include "Hommexx_Debug.hpp"
 
+#include <ekat_string_utils.hpp>
+#include <ekat_assert.hpp>
+
 #include <memory>
 
 #include <vector>
+#include <map>
+#include <string>
 
 #include <assert.h>
 
@@ -129,51 +134,28 @@ public:
   template<typename... Properties>
   void register_field (ExecView<PT***[NP][NP][NUM_LEV], Properties...> field, int idim_out, int num_dims, int start_dim, int nlev=NUM_LEV);
 
-  // Handle both NUM_LEV and NUM_LEV_P. register_field does not support nlev !=
-  // NUM_LEV_P.
+  // Handle both NUM_LEV and NUM_LEV_P.
   template<int NUM_LEV_IN, typename... Properties>
-  void register_field (ExecView<PT*[NP][NP][NUM_LEV_IN], Properties...> field, int nlev=NUM_LEV_IN) {
-    register_field_impl<NUM_LEV_IN,Properties...>(field,nlev);
-  }
-  template<int NUM_LEV_IN, typename... Properties>
-  void register_field (ExecView<PT**[NP][NP][NUM_LEV_IN], Properties...> field, int num_dims, int start_dim, int nlev=NUM_LEV_IN) {
-    register_field_impl<NUM_LEV_IN,Properties...>(field,num_dims,start_dim,nlev);
-  }
-  template<int NUM_LEV_IN, int DIM, typename... Properties>
-  void register_field (ExecView<PT*[DIM][NP][NP][NUM_LEV_IN], Properties...> field, int num_dims, int start_dim, int nlev=NUM_LEV_IN) {
-    using field_t = ExecView<PT**[NP][NP][NUM_LEV_IN],Properties...>;
-    Unmanaged<field_t> f(field.data(),field.extent(0),DIM);
-    register_field_impl<NUM_LEV_IN,Properties...>(f,num_dims,start_dim,nlev);
-  }
+  void register_field (ExecView<PT*[NP][NP][NUM_LEV_IN], Properties...> field, int nlev=NUM_LEV_IN);
 
   template<int NUM_LEV_IN, typename... Properties>
-  void register_field_impl (
-        typename std::enable_if<NUM_LEV_IN==NUM_LEV,
-                                ExecView<PT*[NP][NP][NUM_LEV], Properties...>
-                               >::type field
-        , int nlev);
-  template<int NUM_LEV_IN, typename... Properties>
-  void register_field_impl (
-        typename std::enable_if<NUM_LEV_IN==NUM_LEV_P && NUM_LEV!=NUM_LEV_P,
-                                ExecView<PT*[NP][NP][NUM_LEV_P], Properties...>
-                               >::type field
-        , int nlev);
-  template<int NUM_LEV_IN, typename... Properties>
-  void register_field_impl (
-        typename std::enable_if<NUM_LEV_IN==NUM_LEV,
-                                ExecView<PT**[NP][NP][NUM_LEV], Properties...>
-                               >::type field,
-        int num_dims, int start_dim, int nlev);
-  template<int NUM_LEV_IN, typename... Properties>
-  void register_field_impl (
-        typename std::enable_if<NUM_LEV_IN==NUM_LEV_P && NUM_LEV!=NUM_LEV_P,
-                                ExecView<PT**[NP][NP][NUM_LEV_P], Properties...>
-                               >::type field,
-        int num_dims, int start_dim, int nlev);
+  void register_field (ExecView<PT**[NP][NP][NUM_LEV_IN], Properties...> field, int num_dims, int start_dim, int nlev=NUM_LEV_IN);
+
+  template<int NUM_LEV_IN, int DIM, typename... Properties>
+  void register_field (ExecView<PT*[DIM][NP][NP][NUM_LEV_IN], Properties...> field, int num_dims, int start_dim, int nlev=NUM_LEV_IN);
 
   // This registration method should be used for the exchange of min/max fields
   template<int DIM, typename... Properties>
   void register_min_max_fields (ExecView<PT*[DIM][2][NUM_LEV], Properties...> field_min_max, int num_dims, int start_dim);
+
+  // Allow to swap a registered field with a new one. This allows to echange different views,
+  // without having to rebuild all the MPI structures.
+  template<int NUM_LEV_IN, typename... Properties>
+  void replace_field (ExecView<PT*[NP][NP][NUM_LEV_IN], Properties...> field);
+  template<int DIM, typename... Properties>
+  void replace_field (ExecView<PT*[DIM][NP][NP][NUM_LEV], Properties...> field);
+
+  bool can_replace_fields () const { return m_replace_allowed; }
 
   // Exchange all registered 2d and 3d fields
   void exchange ();
@@ -211,8 +193,21 @@ private:
 
   void build_buffer_views_and_requests () override;
 
+  // We store some specs for each field, so that, if we replace it, we know exactly where in the
+  // exec views below we need to replace the subviews. Only offset is ALWAYS needed, while
+  // the others only make sense for vector/tensor fields
+  struct FieldProps {
+    int offset;        // Offset in m_Nd_fields
+    int cmp_beg = -1;  // 1st cmp of field we exchange
+    int cmp_end = -1;  // Number of cmps of field we exchange
+    int out_dim = -1;  // If tensor field, the index of outer dim we're exchanging
+  };
+
+  std::map<std::string, FieldProps> m_fields_props;
+  bool m_replace_allowed = true; // If all registered fields store a diff name, replacing will be allowed
+
   ExecViewManaged<ExecViewManaged<PT[2][NUM_LEV]>**>            m_1d_fields;
-  ExecViewManaged<ExecViewManaged<ST[NP][NP]>**>           m_2d_fields;
+  ExecViewManaged<ExecViewManaged<ST[NP][NP]>**>                m_2d_fields;
   ExecViewManaged<ExecViewManaged<PT[NP][NP][NUM_LEV]>**>       m_3d_fields;
   ExecViewManaged<ExecViewManaged<PT[NP][NP][NUM_LEV_P]>**>     m_3d_int_fields;
 
@@ -391,6 +386,9 @@ void BoundaryExchangeST<ST>::register_field (ExecView<PT***[NP][NP][NUM_LEV], Pr
   assert (m_num_3d_fields+num_dims<=m_3d_fields.extent_int(1));
   assert (m_num_1d_fields==0);
 
+  auto it_bool = m_fields_props.emplace(field.label(),{m_num_3d_fields,start_dim,num_dims,outer_dim});
+  m_replace_allowed &= it_bool.second;
+
   {
     auto l_num_3d_fields = m_num_3d_fields;
     auto l_3d_fields = m_3d_fields;
@@ -406,61 +404,39 @@ void BoundaryExchangeST<ST>::register_field (ExecView<PT***[NP][NP][NUM_LEV], Pr
 
 template<typename ST>
 template<int NUM_LEV_IN, typename... Properties>
-void BoundaryExchangeST<ST>::register_field_impl (
-    typename std::enable_if<NUM_LEV_IN==NUM_LEV,
-                            ExecView<PT*[NP][NP][NUM_LEV], Properties...>
-                           >::type field,
-    int nlev)
+void BoundaryExchangeST<ST>::
+register_field (ExecView<PT*[NP][NP][NUM_LEV_IN], Properties...> field, int nlev)
 {
   using Kokkos::ALL;
 
   // Sanity checks
   assert (m_registration_started && !m_registration_completed);
-  assert (m_num_3d_fields+1<=m_3d_fields.extent_int(1));
   assert (m_num_1d_fields==0);
 
-  {
-    auto l_num_3d_fields = m_num_3d_fields;
-    auto l_3d_fields = m_3d_fields;
-    Kokkos::parallel_for(Kokkos::RangePolicy<ExecSpace>(0, m_connectivity->get_num_local_elements()),
-                         KOKKOS_LAMBDA(const int ie){
-      l_3d_fields(ie, l_num_3d_fields) = Kokkos::subview(field, ie, ALL, ALL, ALL);
-    });
+  auto it_bool = m_fields_props.emplace(field.label(),FieldProps{m_num_3d_fields});
+  m_replace_allowed &= it_bool.second;
+
+  int nelems = m_connectivity->get_num_local_elements();
+  auto do_register = [=](auto fields, auto f, int& num_fields) {
+    assert (num_fields+1<=fields.extent_int(1));
+    auto policy = Kokkos::RangePolicy<ExecSpace>(0, nelems);
+    auto lambda = KOKKOS_LAMBDA(const int ie){
+      fields(ie, num_fields) = Kokkos::subview(field, ie, ALL, ALL, ALL);
+    };
+    Kokkos::parallel_for(policy,lambda);
+    ++num_fields;
+  };
+
+  if constexpr (NUM_LEV_IN==NUM_LEV) {
+    do_register(m_3d_fields,field,m_num_3d_fields);
+    m_3d_nlev_pack.push_back(nlev);
+  } else if constexpr (NUM_LEV_IN==NUM_LEV_P) {
+    do_register(m_3d_int_fields,field,m_num_3d_int_fields);
+  } else {
+    EKAT_ERROR_MSG (
+        "Error! Invalid value for template arg NUM_LEV_IN.\n"
+        " - NUM_LEV_IN: " + std::to_string(NUM_LEV_IN) + "\n");
   }
-
-  m_3d_nlev_pack.push_back(nlev);
-  ++m_num_3d_fields;
-}
-
-template<typename ST>
-template<int NUM_LEV_IN,typename... Properties>
-void BoundaryExchangeST<ST>::register_field_impl (
-    typename std::enable_if<NUM_LEV_IN==NUM_LEV_P && NUM_LEV!=NUM_LEV_P,
-                            ExecView<PT*[NP][NP][NUM_LEV_P], Properties...>
-                                            >::type field,
-    int nlev)
-{
-  using Kokkos::ALL;
-
-  // Sanity checks
-  assert (m_registration_started && !m_registration_completed);
-  assert (m_num_3d_int_fields+1<=m_3d_int_fields.extent_int(1));
-  assert (m_num_1d_fields==0);
-
-  EKAT_REQUIRE_MSG(
-    nlev == NUM_LEV_IN,
-    "register_field for 3D interface fields does not support nlev < NUM_LEV_P.");
-
-  {
-    auto l_num_3d_int_fields = m_num_3d_int_fields;
-    auto l_3d_int_fields = m_3d_int_fields;
-    Kokkos::parallel_for(Kokkos::RangePolicy<ExecSpace>(0, m_connectivity->get_num_local_elements()),
-                         KOKKOS_LAMBDA(const int ie){
-      l_3d_int_fields(ie, l_num_3d_int_fields) = Kokkos::subview(field, ie, ALL, ALL, ALL);
-    });
-  }
-
-  ++m_num_3d_int_fields;
 }
 
 // Workaround for SCREAM issue
@@ -482,68 +458,85 @@ struct RegisterFieldImpl {
 
 template<typename ST>
 template<int NUM_LEV_IN, typename... Properties>
-void BoundaryExchangeST<ST>::register_field_impl (
-    typename std::enable_if<NUM_LEV_IN==NUM_LEV,
-                            ExecView<PT**[NP][NP][NUM_LEV], Properties...>
-                           >::type field,
-    int num_dims, int start_dim, int nlev)
+void BoundaryExchangeST<ST>::
+register_field (ExecView<PT**[NP][NP][NUM_LEV_IN], Properties...> field,
+                int num_dims, int start_dim, int nlev)
 {
   using Kokkos::ALL;
 
   // Sanity checks
   assert (m_registration_started && !m_registration_completed);
+  assert (m_num_1d_fields==0);
   assert (num_dims>0 && start_dim>=0);
   assert (start_dim+num_dims<=field.extent_int(1));
-  assert (m_num_3d_fields+num_dims<=m_3d_fields.extent_int(1));
-  assert (m_num_1d_fields==0);
 
-  {
-    RegisterFieldImpl<ST,Properties...> f;
-    f.num_dims = num_dims;
-    f.num_3d_fields = m_num_3d_fields;
-    f.start_dim = start_dim;
-    f.fields = m_3d_fields;
-    f.field = field;
-    Kokkos::parallel_for(
-      Kokkos::RangePolicy<ExecSpace>(0, m_connectivity->get_num_local_elements()*num_dims),
-      f);
+  auto it_bool = m_fields_props.emplace(field.label(),FieldProps{m_num_3d_fields,start_dim,start_dim+num_dims});
+  m_replace_allowed &= it_bool.second;
+
+  int nelems = m_connectivity->get_num_local_elements();
+  auto do_register = [=](auto fields, auto f, int& num_fields) {
+    assert (num_fields+num_dims<=fields.extent_int(1));
+    MDRangePolicy<ExecSpace, 2> policy({0, 0},{nelems,num_dims});
+    auto lambda = KOKKOS_LAMBDA(const int ie,const int idim){
+      fields(ie, num_fields+idim) = Kokkos::subview(field, ie, start_dim+idim, ALL, ALL, ALL);
+    };
+    Kokkos::parallel_for(policy,lambda);
+    num_fields += num_dims;
+  };
+
+  if constexpr (NUM_LEV_IN==NUM_LEV) {
+    do_register(m_3d_fields,field,m_num_3d_fields);
+  } else if constexpr (NUM_LEV_IN==NUM_LEV_P) {
+    do_register(m_3d_int_fields,field,m_num_3d_int_fields);
+  } else {
+    EKAT_ERROR_MSG (
+        "Error! Invalid value for template arg NUM_LEV_IN.\n"
+        " - NUM_LEV_IN: " + std::to_string(NUM_LEV_IN) + "\n");
   }
 
-  for (int i = 0; i < num_dims; ++i) m_3d_nlev_pack.push_back(nlev);
-  m_num_3d_fields += num_dims;
+  m_3d_nlev_pack.push_back(nlev);
 }
 
 template<typename ST>
-template<int NUM_LEV_IN, typename... Properties>
-void BoundaryExchangeST<ST>::register_field_impl (
-    typename std::enable_if<NUM_LEV_IN==NUM_LEV_P && NUM_LEV!=NUM_LEV_P,
-                            ExecView<PT**[NP][NP][NUM_LEV_P], Properties...>
-                           >::type field,
-    int num_dims, int start_dim, int nlev)
+template<int NUM_LEV_IN, int DIM, typename... Properties>
+void BoundaryExchangeST<ST>::
+register_field (ExecView<PT*[DIM][NP][NP][NUM_LEV_IN], Properties...> field,
+                int num_dims, int start_dim, int nlev)
 {
   using Kokkos::ALL;
 
   // Sanity checks
   assert (m_registration_started && !m_registration_completed);
-  assert (num_dims>0 && start_dim>=0);
-  assert (start_dim+num_dims<=field.extent_int(1));
-  assert (m_num_3d_int_fields+1<=m_3d_int_fields.extent_int(1));
   assert (m_num_1d_fields==0);
+  assert (num_dims>0 && start_dim>=0);
+  assert (start_dim+num_dims<=DIM);
 
-  EKAT_REQUIRE_MSG(
-    nlev == NUM_LEV_IN,
-    "register_field for 3D interface fields does not support nlev < NUM_LEV_P.");
+  auto it_bool = m_fields_props.emplace(field.label(),FieldProps{m_num_3d_fields,start_dim,start_dim+num_dims});
+  m_replace_allowed &= it_bool.second;
 
-  {
-    auto l_num_3d_int_fields = m_num_3d_int_fields;
-    auto l_3d_int_fields = m_3d_int_fields;
-    Kokkos::parallel_for(MDRangePolicy<ExecSpace, 2>({0, 0}, {m_connectivity->get_num_local_elements(), num_dims}, {1, 1}),
-                         KOKKOS_LAMBDA(const int ie, const int idim){
-      l_3d_int_fields(ie, l_num_3d_int_fields) = Kokkos::subview(field, ie, start_dim+idim, ALL, ALL, ALL);
-    });
+  int nelems = m_connectivity->get_num_local_elements();
+  auto do_register = [=](auto fields, auto f, int& num_fields) {
+    assert (num_fields+num_dims<=fields.extent_int(1));
+    MDRangePolicy<ExecSpace, 2> policy({0, 0},{nelems,num_dims});
+    auto lambda = KOKKOS_LAMBDA(const int ie,const int idim){
+      fields(ie, num_fields+idim) = Kokkos::subview(field, ie, start_dim+idim, ALL, ALL, ALL);
+    };
+    Kokkos::parallel_for(policy,lambda);
+    num_fields += num_dims;
+  };
+
+  if constexpr (NUM_LEV_IN==NUM_LEV) {
+    do_register(m_3d_fields,field,m_num_3d_fields);
+  } else if constexpr (NUM_LEV_IN==NUM_LEV_P) {
+    do_register(m_3d_int_fields,field,m_num_3d_int_fields);
+  } else {
+    EKAT_ERROR_MSG (
+        "Error! Invalid value for template arg NUM_LEV_IN.\n"
+        " - NUM_LEV_IN: " + std::to_string(NUM_LEV_IN) + "\n");
   }
 
-  ++m_num_3d_int_fields;
+  for (int i = 0; i < num_dims; ++i)
+    m_3d_nlev_pack.push_back(nlev);
 }
 
 // --- min-max fields --- //
@@ -570,6 +563,79 @@ register_min_max_fields (ExecView<PT*[DIM][2][NUM_LEV], Properties...> field_min
   }
 
   m_num_1d_fields += num_dims;
+}
+
+// ================================ REPLACE FIELDS ===================================== //
+
+template<typename ST>
+template<int NUM_LEV_IN, typename... Properties>
+void BoundaryExchangeST<ST>::
+replace_field (ExecView<PT*[NP][NP][NUM_LEV_IN], Properties...> field)
+{
+  EKAT_REQUIRE_MSG (m_registration_completed,
+      "Error! Cannot replace a field until registration has ended.\n");
+  EKAT_REQUIRE_MSG (m_replace_allowed,
+      "Error! Attempting to replace a field, but replace was not allowed.\n");
+
+  auto it = m_fields_props.find(field.label());
+  EKAT_REQUIRE_MSG (it!=m_fields_props.end(),
+      "Error! Could not locate offsets for this field.\n"
+      " - field name: " + field.label() + "\n");
+
+  const auto props = it->second;
+
+  int offset   = props.offset;
+  int nelems = m_connectivity->get_num_local_elements();
+  auto do_replace = [&](auto fields, auto f_in) {
+    auto lambda = KOKKOS_LAMBDA (int ie) {
+      using Kokkos::ALL;
+      fields(ie, offset) = Kokkos::subview(field, ie, ALL, ALL, ALL);
+    };
+    Kokkos::RangePolicy<ExecSpace> policy(0, nelems);
+
+    Kokkos::parallel_for(policy,lambda);
+  };
+
+  if constexpr (NUM_LEV_IN==NUM_LEV) {
+    do_replace(m_3d_fields,field);
+  } else if constexpr (NUM_LEV_IN==NUM_LEV_P) {
+    do_replace(m_3d_int_fields,field);
+  } else {
+    EKAT_ERROR_MSG (
+        "Error! Invalid value for template arg NUM_LEV_IN.\n"
+        " - NUM_LEV_IN: " + std::to_string(NUM_LEV_IN) + "\n");
+  }
+}
+
+template<typename ST>
+template<int DIM, typename... Properties>
+void BoundaryExchangeST<ST>::
+replace_field (ExecView<PT*[DIM][NP][NP][NUM_LEV], Properties...> field)
+{
+  EKAT_REQUIRE_MSG (m_registration_completed,
+      "Error! Cannot replace a field until registration has ended.\n");
+  EKAT_REQUIRE_MSG (m_replace_allowed,
+      "Error! Attempting to replace a field, but replace was not allowed.\n");
+
+  auto it = m_fields_props.find(field.label());
+  EKAT_REQUIRE_MSG (it!=m_fields_props.end(),
+      "Error! Could not locate offsets for this field.\n"
+      " - field name: " + field.label() + "\n");
+
+  const auto props = it->second;
+
+  int cmp_beg  = props.cmp_beg;
+  int cmp_end  = props.cmp_end;
+  int offset   = props.offset;
+  int nelems = m_connectivity->get_num_local_elements();
+  auto l_3d_fields = m_3d_fields;
+  auto lambda = KOKKOS_LAMBDA (int ie, int idim) {
+    using Kokkos::ALL;
+    l_3d_fields(ie, offset+idim) = Kokkos::subview(field, ie, idim, ALL, ALL, ALL);
+  };
+  MDRangePolicy<ExecSpace, 2> policy({0, cmp_beg},{nelems,cmp_end});
+
+  Kokkos::parallel_for(policy,lambda);
 }
 
 } // namespace Homme

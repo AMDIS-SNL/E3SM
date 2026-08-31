@@ -312,3 +312,140 @@ TEST_CASE ("Boundary Exchange", "Testing the boundary exchange framework")
 
   Context::finalize_singleton();
 }
+
+TEST_CASE ("swap_field")
+{
+  using PT = PackType<Real>;
+
+  //std::random_device rd;
+  std::random_device rd;
+  using rngAlg = std::mt19937_64;
+  const unsigned int catchRngSeed = Catch::rngSeed();
+  const unsigned int seed = catchRngSeed==0 ? rd() : catchRngSeed;
+  std::cout << "seed: " << seed << (catchRngSeed==0 ? " (catch rng seed was 0)\n" : "\n");
+  rngAlg engine(seed);
+  std::uniform_real_distribution<Real> dreal(-1.0, 1.0);
+
+  constexpr int ne        = 2;
+  constexpr int num_tests = 2;
+  constexpr int DIM       = 2;
+  constexpr double test_tolerance = 1e-13;
+  constexpr int num_scalar_fields_3d_mid  = 1;
+  constexpr int num_scalar_fields_3d_int  = 1;
+  constexpr int num_vector_fields_3d      = 1;
+  constexpr int field_3d_idim = 1;
+  constexpr int field_4d_outer_idim = 2;
+
+  auto& c = Context::singleton();
+  c.create<ekat::Comm>(MPI_COMM_WORLD);
+
+  // Initialize f90 mpi stuff
+  initmp_f90();
+
+  // Create cube geometry
+  init_cube_geometry_f90(ne);
+
+  // Create connectivity
+  init_connectivity_f90();
+  init_edges_structs_f90(0,0, num_scalar_fields_3d_mid, num_scalar_fields_3d_int, num_vector_fields_3d, DIM);
+
+  // Note: init_connectivity_f90 calls init_connectivity, which in turns creates
+  //       a Connectivity object in the Context, making the following call safe.
+  auto connectivity = c.get_ptr<Connectivity>();
+
+  // Retrieve local number of elements
+  int num_elems = connectivity->get_num_local_elements();
+  int rank = connectivity->get_comm().rank();
+
+  // Create input data arrays
+  ExecViewManaged<PT*[NP][NP][NUM_LEV]> scl_mid_A ("scl_mid", num_elems), scl_mid_B("scl_mid", num_elems);
+  ExecViewManaged<PT*[NP][NP][NUM_LEV_P]> scl_int_A("scl_int", num_elems), scl_int_B("scl_int", num_elems);
+  ExecViewManaged<PT*[DIM][NP][NP][NUM_LEV]> vec_mid_A ("vec_mid", num_elems), vec_mid_B("vec_mid", num_elems);
+
+  // Get the buffers manager
+  c.create<MpiBuffersManagerMap>()[MPI_EXCHANGE];
+  auto buffers_manager = Context::singleton().get<MpiBuffersManagerMap>()[MPI_EXCHANGE];
+
+  auto scl_mid_A_h = Kokkos::create_mirror_view(scl_mid_A);
+  auto scl_int_A_h = Kokkos::create_mirror_view(scl_int_A);
+  auto vec_mid_A_h = Kokkos::create_mirror_view(vec_mid_A);
+
+  auto scl_mid_B_h = Kokkos::create_mirror_view(scl_mid_B);
+  auto scl_int_B_h = Kokkos::create_mirror_view(scl_int_B);
+  auto vec_mid_B_h = Kokkos::create_mirror_view(vec_mid_B);
+
+  for (int itest=0; itest<num_tests; ++itest)
+  {
+    // Create boundary exchange
+    auto be = std::make_shared<BoundaryExchangeST<Real>>(connectivity,buffers_manager);
+
+    // Setup the be objects
+    be->set_num_fields(0,0,num_scalar_fields_3d_mid+DIM*num_vector_fields_3d,num_scalar_fields_3d_int);
+    be->register_field(scl_mid_A);
+    be->register_field(scl_int_A);
+    be->register_field(vec_mid_A,DIM,0);
+    be->registration_completed();
+
+    // Initialize input data to random values
+    genRandArray(scl_mid_A,engine,dreal);
+    genRandArray(scl_int_A,engine,dreal);
+    genRandArray(vec_mid_A,engine,dreal);
+
+    Kokkos::deep_copy(scl_mid_B,scl_mid_A);
+    Kokkos::deep_copy(scl_int_B,scl_int_A);
+    Kokkos::deep_copy(vec_mid_B,vec_mid_A);
+
+    be->exchange();
+
+    REQUIRE (be->can_replace_fields());
+    be->replace_field(scl_mid_B);
+    be->replace_field(scl_int_B);
+    be->replace_field(vec_mid_B);
+    be->exchange();
+
+    // Compare answers
+    Kokkos::deep_copy(scl_mid_A_h, scl_mid_A);
+    Kokkos::deep_copy(scl_int_A_h, scl_int_A);
+    Kokkos::deep_copy(vec_mid_A_h, vec_mid_A);
+
+    Kokkos::deep_copy(scl_mid_B_h, scl_mid_B);
+    Kokkos::deep_copy(scl_int_B_h, scl_int_B);
+    Kokkos::deep_copy(vec_mid_B_h, vec_mid_B);
+
+    Real value_A, value_B;
+    for (int ie=0; ie<num_elems; ++ie) {
+      for (int igp=0; igp<NP; ++igp) {
+        for (int jgp=0; jgp<NP; ++jgp) {
+          for (int k=0; k<NUM_PHYSICAL_LEV; ++k) {
+            const int ilev = k / VECTOR_SIZE;
+            const int ivec = k % VECTOR_SIZE;
+
+            value_A = ADValue(scl_mid_A_h(ie,igp,jgp,ilev)[ivec]);
+            value_B = ADValue(scl_mid_B_h(ie,igp,jgp,ilev)[ivec]);
+            REQUIRE_THAT(value_A, Catch::Matchers::WithinRel(value_B,test_tolerance));
+
+            value_A = ADValue(scl_int_A_h(ie,igp,jgp,ilev)[ivec]);
+            value_B = ADValue(scl_int_B_h(ie,igp,jgp,ilev)[ivec]);
+            REQUIRE_THAT(value_A, Catch::Matchers::WithinRel(value_B,test_tolerance));
+
+            for (int idim=0; idim<DIM; ++idim) {
+              value_A = vec_mid_A_h(ie,idim,igp,jgp,ilev)[ivec];
+              value_B = vec_mid_B_h(ie,idim,igp,jgp,ilev)[ivec];
+              REQUIRE_THAT(value_A, Catch::Matchers::WithinRel(value_B,test_tolerance));
+            }
+          }
+          const int ilev = NUM_INTERFACE_LEV / VECTOR_SIZE;
+          const int ivec = NUM_INTERFACE_LEV % VECTOR_SIZE;
+          auto value_A = scl_int_A_h(ie,igp,jgp,ilev)[ivec];
+          auto value_B = scl_int_B_h(ie,igp,jgp,ilev)[ivec];
+          REQUIRE_THAT(value_A, Catch::Matchers::WithinRel(value_B,test_tolerance));
+
+    }}}
+    be->clean_up();
+  }
+
+  // Cleanup
+  cleanup_f90();  // Deallocate stuff in the F90 module
+
+  Context::finalize_singleton();
+}
