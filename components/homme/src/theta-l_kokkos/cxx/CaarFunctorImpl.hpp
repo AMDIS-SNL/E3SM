@@ -1539,10 +1539,16 @@ struct CaarFunctorImplST {
     using md_range_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<3>>;
     auto policy = md_range_t({0,0,0},{m_num_elems,NP,NP});
 
-    auto& gradphis = m_geometry.m_gradphis;
-
     // Start copying all the adjoint states
     y.deep_copy(x);
+
+    // The fwd TagPostExchange (whose adjoint this function computes) is a no-op
+    // in hydrostatic mode (see run()), so there is nothing else to do here.
+    if (m_theta_hydrostatic_mode) {
+      return;
+    }
+
+    auto& gradphis = m_geometry.m_gradphis;
 
     auto v_in = ekat::scalarize(x.v);
     auto w_in = ekat::scalarize(x.w_i);

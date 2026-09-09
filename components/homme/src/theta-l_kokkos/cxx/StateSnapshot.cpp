@@ -88,6 +88,53 @@ void StateSnapshot::add (const StateSnapshot& x)
   Kokkos::parallel_for(p4_int,add_int);
 }
 
+void StateSnapshot::add (const StateSnapshot& x, const Real alpha, const Real beta)
+{
+  using md_range_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>>;
+  auto p4_mid = md_range_t({0,0,0,0},{num_elems,NP,NP,NUM_LEV});
+  auto p4_int = md_range_t({0,0,0,0},{num_elems,NP,NP,NUM_LEV_P});
+
+  auto lhs_v               = v        ;
+  auto lhs_vtheta_dp       = vtheta_dp;
+  auto lhs_dp3d            = dp3d     ;
+  auto lhs_w_i             = w_i      ;
+  auto lhs_phinh_i         = phinh_i  ;
+  auto lhs_ps_v            = ps_v     ;
+
+  auto rhs_v               = x.v        ;
+  auto rhs_vtheta_dp       = x.vtheta_dp;
+  auto rhs_dp3d            = x.dp3d     ;
+  auto rhs_w_i             = x.w_i      ;
+  auto rhs_phinh_i         = x.phinh_i  ;
+  auto rhs_ps_v            = x.ps_v     ;
+
+  auto add_mid = KOKKOS_LAMBDA (const int ie, const int ipt, const int jpt, const int k) {
+    lhs_v(ie,0,ipt,jpt,k) *= beta;
+    lhs_v(ie,1,ipt,jpt,k) *= beta;
+    lhs_vtheta_dp(ie,ipt,jpt,k) *= beta;
+    lhs_dp3d     (ie,ipt,jpt,k) *= beta;
+    if (lhs_ps_v.data()!=nullptr and k==0)
+      lhs_ps_v(ie,ipt,jpt) *= beta;
+
+    lhs_v(ie,0,ipt,jpt,k) += alpha*rhs_v(ie,0,ipt,jpt,k);
+    lhs_v(ie,1,ipt,jpt,k) += alpha*rhs_v(ie,1,ipt,jpt,k);
+    lhs_vtheta_dp(ie,ipt,jpt,k) += alpha*rhs_vtheta_dp(ie,ipt,jpt,k);
+    lhs_dp3d     (ie,ipt,jpt,k) += alpha*rhs_dp3d     (ie,ipt,jpt,k);
+    if (lhs_ps_v.data()!=nullptr and k==0)
+      lhs_ps_v(ie,ipt,jpt) += alpha*rhs_ps_v(ie,ipt,jpt);
+  };
+  auto add_int = KOKKOS_LAMBDA (const int ie, const int ipt, const int jpt, const int k) {
+    lhs_w_i      (ie,ipt,jpt,k) *= beta;
+    lhs_phinh_i  (ie,ipt,jpt,k) *= beta;
+
+    lhs_w_i      (ie,ipt,jpt,k) += alpha*rhs_w_i    (ie,ipt,jpt,k);
+    lhs_phinh_i  (ie,ipt,jpt,k) += alpha*rhs_phinh_i(ie,ipt,jpt,k);
+  };
+
+  Kokkos::parallel_for(p4_mid,add_mid);
+  Kokkos::parallel_for(p4_int,add_int);
+}
+
 void StateSnapshot::add_weighted (const StateSnapshot& x,
                                   const ExecViewManaged<Real*[NP][NP]>& weight,
                                   const Real scale)
@@ -121,6 +168,59 @@ void StateSnapshot::add_weighted (const StateSnapshot& x,
       lhs_ps_v(ie,ipt,jpt) += s * rhs_ps_v(ie,ipt,jpt);
   };
   auto add_int = KOKKOS_LAMBDA (const int ie, const int ipt, const int jpt, const int k) {
+    Real s = scale * w(ie,ipt,jpt);
+    lhs_w_i      (ie,ipt,jpt,k) += s * rhs_w_i    (ie,ipt,jpt,k);
+    lhs_phinh_i  (ie,ipt,jpt,k) += s * rhs_phinh_i(ie,ipt,jpt,k);
+  };
+
+  Kokkos::parallel_for(p4_mid,add_mid);
+  Kokkos::parallel_for(p4_int,add_int);
+}
+
+void StateSnapshot::add_weighted (const StateSnapshot& x,
+                                  const ExecViewManaged<Real*[NP][NP]>& weight,
+                                  const Real scale,
+                                  const Real beta)
+{
+  using md_range_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>>;
+  auto p4_mid = md_range_t({0,0,0,0},{num_elems,NP,NP,NUM_LEV});
+  auto p4_int = md_range_t({0,0,0,0},{num_elems,NP,NP,NUM_LEV_P});
+
+  auto lhs_v               = v        ;
+  auto lhs_vtheta_dp       = vtheta_dp;
+  auto lhs_dp3d            = dp3d     ;
+  auto lhs_w_i             = w_i      ;
+  auto lhs_phinh_i         = phinh_i  ;
+  auto lhs_ps_v            = ps_v     ;
+
+  auto rhs_v               = x.v        ;
+  auto rhs_vtheta_dp       = x.vtheta_dp;
+  auto rhs_dp3d            = x.dp3d     ;
+  auto rhs_w_i             = x.w_i      ;
+  auto rhs_phinh_i         = x.phinh_i  ;
+  auto rhs_ps_v            = x.ps_v     ;
+
+  auto w = weight;
+  auto add_mid = KOKKOS_LAMBDA (const int ie, const int ipt, const int jpt, const int k) {
+    lhs_v(ie,0,ipt,jpt,k) *= beta;
+    lhs_v(ie,1,ipt,jpt,k) *= beta;
+    lhs_vtheta_dp(ie,ipt,jpt,k) *= beta;
+    lhs_dp3d     (ie,ipt,jpt,k) *= beta;
+    if (lhs_ps_v.data()!=nullptr and k==0)
+      lhs_ps_v(ie,ipt,jpt) *= beta;
+
+    Real s = scale * w(ie,ipt,jpt);
+    lhs_v(ie,0,ipt,jpt,k) += s * rhs_v(ie,0,ipt,jpt,k);
+    lhs_v(ie,1,ipt,jpt,k) += s * rhs_v(ie,1,ipt,jpt,k);
+    lhs_vtheta_dp(ie,ipt,jpt,k) += s * rhs_vtheta_dp(ie,ipt,jpt,k);
+    lhs_dp3d     (ie,ipt,jpt,k) += s * rhs_dp3d     (ie,ipt,jpt,k);
+    if (lhs_ps_v.data()!=nullptr and k==0)
+      lhs_ps_v(ie,ipt,jpt) += s * rhs_ps_v(ie,ipt,jpt);
+  };
+  auto add_int = KOKKOS_LAMBDA (const int ie, const int ipt, const int jpt, const int k) {
+    lhs_w_i      (ie,ipt,jpt,k) *= beta;
+    lhs_phinh_i  (ie,ipt,jpt,k) *= beta;
+
     Real s = scale * w(ie,ipt,jpt);
     lhs_w_i      (ie,ipt,jpt,k) += s * rhs_w_i    (ie,ipt,jpt,k);
     lhs_phinh_i  (ie,ipt,jpt,k) += s * rhs_phinh_i(ie,ipt,jpt,k);
