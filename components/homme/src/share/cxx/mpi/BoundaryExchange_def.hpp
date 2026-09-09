@@ -149,6 +149,9 @@ void BoundaryExchangeST<ST>::clean_up()
   }
 #endif
 
+  m_replace_allowed = true;
+  m_fields_props.clear();
+
   // Now we're all cleaned
   m_cleaned_up = true;
 }

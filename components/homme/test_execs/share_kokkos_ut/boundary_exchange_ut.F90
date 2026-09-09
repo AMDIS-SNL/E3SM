@@ -105,9 +105,14 @@ contains
   subroutine cleanup_f90 () bind(c)
     use edge_mod, only : FreeEdgeBuffer
     use geometry_interface_mod, only: cleanup_geometry_f90
+    use parallel_mod, only : rrequest, srequest, status
 
     call FreeEdgeBuffer(edge)
     call cleanup_geometry_f90()
+
+    deallocate(rrequest)
+    deallocate(srequest)
+    deallocate(status)
 
   end subroutine cleanup_f90
 
