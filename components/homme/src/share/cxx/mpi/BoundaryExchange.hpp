@@ -486,6 +486,8 @@ register_field (ExecView<PT**[NP][NP][NUM_LEV_IN], Properties...> field,
 
   if constexpr (NUM_LEV_IN==NUM_LEV) {
     do_register(m_3d_fields,field,m_num_3d_fields);
+    for (int i = 0; i < num_dims; ++i)
+      m_3d_nlev_pack.push_back(nlev);
   } else if constexpr (NUM_LEV_IN==NUM_LEV_P) {
     do_register(m_3d_int_fields,field,m_num_3d_int_fields);
   } else {
@@ -493,8 +495,6 @@ register_field (ExecView<PT**[NP][NP][NUM_LEV_IN], Properties...> field,
         "Error! Invalid value for template arg NUM_LEV_IN.\n"
         " - NUM_LEV_IN: " + std::to_string(NUM_LEV_IN) + "\n");
   }
-
-  m_3d_nlev_pack.push_back(nlev);
 }
 
 template<typename ST>
@@ -527,6 +527,8 @@ register_field (ExecView<PT*[DIM][NP][NP][NUM_LEV_IN], Properties...> field,
 
   if constexpr (NUM_LEV_IN==NUM_LEV) {
     do_register(m_3d_fields,field,m_num_3d_fields);
+    for (int i = 0; i < num_dims; ++i)
+      m_3d_nlev_pack.push_back(nlev);
   } else if constexpr (NUM_LEV_IN==NUM_LEV_P) {
     do_register(m_3d_int_fields,field,m_num_3d_int_fields);
   } else {
@@ -534,9 +536,6 @@ register_field (ExecView<PT*[DIM][NP][NP][NUM_LEV_IN], Properties...> field,
         "Error! Invalid value for template arg NUM_LEV_IN.\n"
         " - NUM_LEV_IN: " + std::to_string(NUM_LEV_IN) + "\n");
   }
-
-  for (int i = 0; i < num_dims; ++i)
-    m_3d_nlev_pack.push_back(nlev);
 }
 
 // --- min-max fields --- //
