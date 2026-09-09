@@ -63,9 +63,23 @@ std::shared_ptr<BoundaryExchangeST<Real>> create_adj_bex (StateSnapshot& adj_sta
   return be;
 }
 
-void ttype5_imex_adjoint(const Real dt_dyn,
-                         const Real eta_ave_w,
-                         StateSnapshot& adj_state)
+void update_adj_bex (const std::shared_ptr<BoundaryExchangeST<Real>>& be, const StateSnapshot& state)
+{
+  auto& c = Context::singleton();
+  const auto& params = c.get<SimulationParams>();
+
+  be->replace_field(state.v);
+  be->replace_field(state.vtheta_dp);
+  be->replace_field(state.dp3d);
+  if (not params.theta_hydrostatic_mode) {
+    be->replace_field(state.w_i);
+    be->replace_field(state.phinh_i);
+  }
+}
+
+void ttype5_adjoint(const Real dt_dyn,
+                    const Real eta_ave_w,
+                    StateSnapshot& adj_state)
 {
   GPTLstart("ttype5_imex_adjoint");
   using const_tape_t = const Tape<StateSnapshot>;
@@ -102,7 +116,7 @@ void ttype5_imex_adjoint(const Real dt_dyn,
   // These are the needed buffers for the ttype5 adjoints. All work vars will
   // TODO: create these ONCE
   auto buf0 = adj_state.clone();
-  auto buf1 = adj_state.clone();
+  auto buf1 = adj_state.clone(true); // seeds lambda5/tmp5 with the incoming adjoint state
   auto buf2 = adj_state.clone();
   auto buf3 = adj_state.clone();
 
@@ -128,7 +142,7 @@ void ttype5_imex_adjoint(const Real dt_dyn,
   lambda_sum.zero();
 
   // TODO: this must be created ONCE, not every time
-  auto be = create_adj_bex(lambda);
+  auto be = create_adj_bex(tmp5);
 
   const auto& u0 = tape.at(0);
   const auto& u1 = tape.at(1);
@@ -147,7 +161,7 @@ void ttype5_imex_adjoint(const Real dt_dyn,
 
   // Stage 5
   debug_print("   stage 5...\n");
-  dt = dt_dyn;
+  dt = 3.0*dt_dyn/4.0;
   state_caar.import_snapshot(u0_5,nm1); // Departure point for stage 5 is different
 
   debug_print("     CAAR...\n");
@@ -172,13 +186,14 @@ void ttype5_imex_adjoint(const Real dt_dyn,
 
   // Stage 4
   debug_print("   stage 4...\n");
-  dt = dt_dyn/2.0;
+  dt = 2.0*dt_dyn/3.0;
 
   debug_print("     CAAR...\n");
   const RKStageData stage4_data(nm1, n0, np1, -1, dt, 0.0, 1.0, 0.0, 1.0);
   debug_print("       surf bc...\n");
   caar.run_JtV_surf_bc(stage4_data,lambda4,tmp4);
   debug_print("       exchange...\n");
+  update_adj_bex(be,tmp4);
   be->exchange(rspheremp);
   lambda_sum.add_weighted(tmp4, geo.m_spheremp, stage4_data.scale3);
   state_caar.import_snapshot(u3,n0);
@@ -191,13 +206,14 @@ void ttype5_imex_adjoint(const Real dt_dyn,
 
   // Stage 3
   debug_print("   stage 3...\n");
-  dt = 3.0*dt_dyn/8.0;
+  dt = dt_dyn/3.0;
 
   debug_print("     CAAR...\n");
   const RKStageData stage3_data(nm1, n0, np1, -1, dt, 0.0, 1.0, 0.0, 1.0);
   debug_print("       surf bc...\n");
   caar.run_JtV_surf_bc(stage3_data,lambda3,tmp3);
   debug_print("       exchange...\n");
+  update_adj_bex(be,tmp3);
   be->exchange(rspheremp);
   lambda_sum.add_weighted(tmp3, geo.m_spheremp, stage3_data.scale3);
   state_caar.import_snapshot(u2,n0);
@@ -210,13 +226,14 @@ void ttype5_imex_adjoint(const Real dt_dyn,
 
   // Stage 2
   debug_print("   stage 2...\n");
-  dt = dt_dyn/6.0;
+  dt = dt_dyn/5.0;
 
   debug_print("     CAAR...\n");
   const RKStageData stage2_data(nm1, n0, np1, -1, dt, 0.0, 1.0, 0.0, 1.0);
   debug_print("       surf bc...\n");
   caar.run_JtV_surf_bc(stage2_data,lambda2,tmp2);
   debug_print("       exchange...\n");
+  update_adj_bex(be,tmp2);
   be->exchange(rspheremp);
   lambda_sum.add_weighted(tmp2, geo.m_spheremp, stage2_data.scale3);
   state_caar.import_snapshot(u1,n0);
@@ -230,13 +247,14 @@ void ttype5_imex_adjoint(const Real dt_dyn,
 
   // Stage 1
   debug_print("   stage 1...\n");
-  dt = dt_dyn/4.0;
+  dt = dt_dyn/5.0;
 
   debug_print("     CAAR...\n");
   const RKStageData stage1_data(nm1, n0, np1, -1, dt, 0.0, 1.0, 0.0, 1.0);
   debug_print("       surf bc...\n");
   caar.run_JtV_surf_bc(stage1_data,lambda1,tmp1);
   debug_print("       exchange...\n");
+  update_adj_bex(be,tmp1);
   be->exchange(rspheremp);
   lambda_sum.add_weighted(tmp1, geo.m_spheremp, stage1_data.scale3);
   state_caar.import_snapshot(u0,n0);
@@ -249,6 +267,8 @@ void ttype5_imex_adjoint(const Real dt_dyn,
 
   // Add the contributions corresponding to CAAR's departure point (which is always y0)
   lambda0.add(lambda_sum);
+
+  adj_state.deep_copy(lambda0);
 
   GPTLstop("ttype5_imex_adjoint");
 }

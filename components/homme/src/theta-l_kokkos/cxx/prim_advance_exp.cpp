@@ -20,7 +20,6 @@ namespace Homme
 {
 
 // Declare all the timestepping schemes routines
-void ttype5_timestep      (const TimeLevel& tl, const Real dt, const Real eta_ave_w);
 void ttype7_imex_timestep (const TimeLevel& tl, const Real dt, const Real eta_ave_w);
 void ttype9_imex_timestep (const TimeLevel& tl, const Real dt, const Real eta_ave_w);
 

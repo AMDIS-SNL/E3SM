@@ -155,7 +155,7 @@ TEST_CASE("ttype10_imex_adjoint")
   params.qsplit = 1;
   params.rsplit = 1;
   params.store_fwd_state = true;
-  params.theta_hydrostatic_mode = true;
+  params.theta_hydrostatic_mode = false;
   params.scale_factor = PhysicalConstants::rearth0;
   params.laplacian_rigid_factor = PhysicalConstants::rrearth0;
 
@@ -307,6 +307,13 @@ TEST_CASE("ttype10_imex_adjoint")
   auto phi_dot0 = dot(ekat::scalarize(du0.phinh_i),ekat::scalarize(lambda0.phinh_i),nlevs+1);
   auto phi_dotN = dot(ekat::scalarize(duN.phinh_i),ekat::scalarize(lambdaN.phinh_i),nlevs+1);
 
+  std::cout << std::setprecision(15)
+            << "   v:   " << v_dot0   << "  vs  " << v_dotN   << "  (diff " << (v_dot0-v_dotN) << ")\n"
+            << "   vth: " << vth_dot0 << "  vs  " << vth_dotN << "  (diff " << (vth_dot0-vth_dotN) << ")\n"
+            << "   dp:  " << dp_dot0  << "  vs  " << dp_dotN  << "  (diff " << (dp_dot0-dp_dotN) << ")\n"
+            << "   w:   " << w_dot0   << "  vs  " << w_dotN   << "  (diff " << (w_dot0-w_dotN) << ")\n"
+            << "   phi: " << phi_dot0 << "  vs  " << phi_dotN << "  (diff " << (phi_dot0-phi_dotN) << ")\n";
+
   constexpr auto tol = std::numeric_limits<double>::epsilon()*1e4;
   {
     using namespace Catch::Matchers;
@@ -353,7 +360,7 @@ TEST_CASE("ttype5_imex_adjoint")
   params.qsplit = 1;
   params.rsplit = 1;
   params.store_fwd_state = true;
-  params.theta_hydrostatic_mode = false;
+  params.theta_hydrostatic_mode = true;
   params.scale_factor = PhysicalConstants::rearth0;
   params.laplacian_rigid_factor = PhysicalConstants::rrearth0;
 
@@ -476,7 +483,7 @@ TEST_CASE("ttype5_imex_adjoint")
   elems_dp.m_state.randomize_derivs(seed,n0);
   auto du0 = elems_dp.m_state.take_deriv_snapshot(n0,0);
   printf(" -> Run forward problem...\n");
-  ttype5_imex_timestep<DpFadType>(tl,dt,eta_ave_w);
+  ttype5_timestep<DpFadType>(tl,dt,eta_ave_w);
   printf(" -> Run forward problem...done!\n");
   auto duN = elems_dp.m_state.take_deriv_snapshot(np1,0);
 
@@ -485,7 +492,7 @@ TEST_CASE("ttype5_imex_adjoint")
   lambda.randomize(seed,1.0,1.0/100,0.0);
   auto lambdaN = lambda.clone(true);
   printf(" -> Run adjoint problem...\n");
-  ttype5_imex_adjoint(dt,eta_ave_w,lambda);
+  ttype5_adjoint(dt,eta_ave_w,lambda);
   printf(" -> Run adjoint problem...done!\n");
   auto lambda0 = lambda.clone(true);
 
@@ -504,6 +511,13 @@ TEST_CASE("ttype5_imex_adjoint")
 
   auto phi_dot0 = dot(ekat::scalarize(du0.phinh_i),ekat::scalarize(lambda0.phinh_i),nlevs+1);
   auto phi_dotN = dot(ekat::scalarize(duN.phinh_i),ekat::scalarize(lambdaN.phinh_i),nlevs+1);
+
+  std::cout << std::setprecision(15)
+            << "   v:   " << v_dot0   << "  vs  " << v_dotN   << "  (diff " << (v_dot0-v_dotN) << ")\n"
+            << "   vth: " << vth_dot0 << "  vs  " << vth_dotN << "  (diff " << (vth_dot0-vth_dotN) << ")\n"
+            << "   dp:  " << dp_dot0  << "  vs  " << dp_dotN  << "  (diff " << (dp_dot0-dp_dotN) << ")\n"
+            << "   w:   " << w_dot0   << "  vs  " << w_dotN   << "  (diff " << (w_dot0-w_dotN) << ")\n"
+            << "   phi: " << phi_dot0 << "  vs  " << phi_dotN << "  (diff " << (phi_dot0-phi_dotN) << ")\n";
 
   constexpr auto tol = std::numeric_limits<double>::epsilon()*1e4;
   {
