@@ -114,6 +114,162 @@ public:
 
   void biharmonic_wk_theta () const;
 
+  // ==========================================================================
+  // Discrete tangent-linear / adjoint support: init_J / run_JV / run_JtV.
+  //
+  // HV's diffusion operator (the two Laplacian applications, the two boundary
+  // exchanges, and the diagonal nu/dt scalings) is LINEAR and does not depend
+  // on the state at all -- only on geometry and parameters. laplace_simple and
+  // vlaplace_sphere_wk_contra are, by construction, the Galerkin "D^T*W*D"
+  // form (divergence_sphere_wk is literally the discrete transpose of
+  // gradient_sphere, weighted by quadrature/metric factors), hence exactly
+  // (discretely, not just in the continuous limit) self-adjoint; the two
+  // exchange() calls are exactly self-adjoint too, given a properly
+  // DSS-assembled mass matrix. (Verified numerically in
+  // hv_sphere_ops_discrete_self_adjoint, hv_sacado_ut.cpp.) So run_JV/run_JtV
+  // below apply the *same* kernels run() uses, run_JtV just in reverse order,
+  // with no Sacado/Fad machinery needed -- unlike CAAR, whose pre-exchange
+  // dynamics are genuinely nonlinear and state-dependent throughout.
+  //
+  // The only state-dependent (nonlinear) pieces are the pointwise
+  // vtheta_dp<->theta conversions (need a base-point linearization, via
+  // init_J) and the w-surface fix (already exactly linear in u,v -- no
+  // linearization needed, just reused/adjointed directly).
+  //
+  // Only the const-viscosity (hypervis_scaling==0) path and nu_top==0 are
+  // supported for now. Tensor viscosity (laplace_tensor/
+  // vlaplace_sphere_wk_cartesian) and the sponge layer are not exercised by
+  // any test yet, so their self-adjointness hasn't been verified; extending
+  // support means checking that first, then mirroring the same pattern below.
+
+  template<typename MyST = ST>
+  std::enable_if_t<not std::is_same_v<MyST, Real>>
+  init_J (const int) = delete;
+
+  // Snapshot dp0, theta0=vtheta0/dp0 at time level np1, BEFORE run() is
+  // called: needed to linearize the vtheta_dp<->theta conversion. Must be
+  // called before run().
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, Real>>
+  init_J (const int np1);
+
+  template<typename MyST = ST>
+  std::enable_if_t<not std::is_same_v<MyST, Real>>
+  run_JV (const int, const StateSnapshot&, StateSnapshot&) = delete;
+
+  // y = J*x, where J = d(state(np1))/d(state(np1)) is the Jacobian of run(),
+  // linearized about the state snapshotted by init_J (which must have been
+  // called, followed by run(np1,dt,eta_ave_w), before this call). x and y
+  // must be different objects.
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, Real>>
+  run_JV (const int np1, const StateSnapshot& x, StateSnapshot& y);
+
+  template<typename MyST = ST>
+  std::enable_if_t<not std::is_same_v<MyST, Real>>
+  run_JtV (const int, const StateSnapshot&, StateSnapshot&) = delete;
+
+  // y = J^T*x, using the same J as run_JV. x and y must be different objects.
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, Real>>
+  run_JtV (const int np1, const StateSnapshot& x, StateSnapshot& y);
+
+protected:
+
+  // ---- Helpers for run_JV/run_JtV (see the comment block above them) ----
+
+  // (dp,vtheta) -> (dp,theta), theta = (vtheta - theta0*dp)/dp0 (quotient
+  // rule, linearized about the state snapshotted by init_J). Also copies the
+  // fields this step doesn't touch from x to y unchanged. y.vtheta_dp holds
+  // the *theta* tangent from here until linearize_theta_out runs, exactly
+  // mirroring how run() keeps vtheta_dp holding theta through its own loop.
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, Real>>
+  linearize_theta_in (const StateSnapshot& x, StateSnapshot& y) const;
+
+  // Adjoint of linearize_theta_in, in place: on entry y.dp3d/y.vtheta_dp hold
+  // the adjoint w.r.t. (dp,theta) at the core's input; on exit, the adjoint
+  // w.r.t. the original (dp,vtheta_dp).
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, Real>>
+  linearize_theta_in_adjoint (StateSnapshot& y) const;
+
+  // (theta,dp) [core output] -> (vtheta_dp,dp) [final]: vtheta_dp_final =
+  // theta*dp_final_base + theta_final_base*dp (product rule). Uses the
+  // state's POST-run() values (the base point at the *output* of the
+  // diffusion), so must be called after run() has completed.
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, Real>>
+  linearize_theta_out (const int np1, StateSnapshot& y) const;
+
+  // Adjoint of linearize_theta_out, in place: on entry y.dp3d/y.vtheta_dp
+  // hold the adjoint w.r.t. the final (dp,vtheta_dp); on exit, the adjoint
+  // w.r.t. the core's output (dp,theta).
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, Real>>
+  linearize_theta_out_adjoint (const int np1, StateSnapshot& y) const;
+
+  // w(surface) = (u_last*gradphis_x + v_last*gradphis_y)/g: exactly linear in
+  // u,v, so no base point is needed, just the (constant) geometry.
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, Real>>
+  apply_w_surface_tangent (StateSnapshot& y) const;
+
+  // Adjoint of apply_w_surface_tangent: scatters x.w_i(surface) into
+  // y.v(u/v,last level); y.w_i(surface) itself is zeroed, since run() never
+  // reads w_init at the surface (it's overwritten, not accumulated into).
+  // All other fields pass through from x to y unchanged.
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, Real>>
+  apply_w_surface_adjoint (const StateSnapshot& x, StateSnapshot& y) const;
+
+  // Laplacian(nu_ratio) of src's (dp3d,vtheta_dp,w_i,phinh_i,v) into
+  // m_buffers (dptens,ttens,wtens,phitens,vtens).
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, Real>>
+  hv_apply_laplace1 (const StateSnapshot& src, const Real nu_ratio) const;
+
+  // Laplacian(nu_ratio) applied in place to m_buffers.
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, Real>>
+  hv_apply_laplace2 (const Real nu_ratio) const;
+
+  // m_buffers *= -nu (v,vth), -nu_p (dp), -nu_s (w,phi if NH). Same scaling
+  // TagHyperPreExchange applies to the real tens buffers.
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, Real>>
+  hv_scale_tens () const;
+
+  // dst.field += dt_hvs*rspheremp * m_buffers.tens (matches TagUpdateStates).
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, Real>>
+  hv_add_scaled_tens_to (StateSnapshot& dst) const;
+
+  // m_buffers.tens = dt_hvs*rspheremp * src.field (adjoint of the *scaling*
+  // half of TagUpdateStates; the "+=" half is peeled off separately, since it
+  // is the first step of the reverse chain, not folded into a running sum).
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, Real>>
+  hv_scale_state_into_tens (const StateSnapshot& src) const;
+
+  // dst.field += m_buffers.tens (no scaling: used for the last step of the
+  // reverse chain, where the dt_hvs*rspheremp scaling was already applied as
+  // the very first step).
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, Real>>
+  hv_add_tens_to (StateSnapshot& dst) const;
+
+  // One subcycle iteration of y += T(y) [forward, matches biharmonic_wk_theta
+  // + TagHyperPreExchange + exchange + TagUpdateStates exactly], or its
+  // transpose [reverse: same 6 self-adjoint factors, in reverse order:
+  // (f6 o f5 o f4 o f3 o f2 o f1)^T = f1 o f2 o f3 o f4 o f5 o f6, since each
+  // fi is individually self-adjoint].
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, Real>>
+  run_linear_core (StateSnapshot& y, const bool forward) const;
+
+public:
+
   // first iter of laplace, const hv
   KOKKOS_INLINE_FUNCTION
   void operator() (const TagFirstLaplaceHV&, const TeamMember& team) const {
@@ -424,6 +580,10 @@ protected:
 
   ExecViewManaged<PT[NUM_LEV]> m_nu_scale_top;
   int m_nu_scale_top_ilev_pack_lim;
+
+  // Base-point snapshot for run_JV/run_JtV's vtheta_dp<->theta linearization;
+  // allocated lazily on first init_J() call (ST=Real only).
+  ExecViewManaged<PT*[NP][NP][NUM_LEV]> m_adj_dp0, m_adj_theta0;
 }; //HVfunctorImplST
 
 using HyperviscosityFunctorImpl = HyperviscosityFunctorImplST<ScalarValue>;

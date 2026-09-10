@@ -9,6 +9,8 @@
 #include "utilities/SyncUtils.hpp"
 #include "utilities/TestUtils.hpp"
 #include "HybridVCoord.hpp"
+#include "mpi/BoundaryExchange.hpp"
+#include "mpi/MpiBuffersManager.hpp"
 
 #include <limits>
 #include <random>
@@ -200,10 +202,15 @@ void ElementsGeometry::randomize(const int seed) {
   // Check geometry was inited
   assert (m_num_elems>0);
 
-  // Arbitrary minimum value to generate and minimum determinant allowed
-  constexpr const Real min_value = 0.015625;
+  // Arbitrary minimum value to generate.
+  constexpr const Real min_value = 0.1;
+
   std::mt19937_64 engine(seed);
   std::uniform_real_distribution<Real> random_dist(min_value, 1.0 / min_value);
+
+  // For the metric, to ensure we don't get an ill-conditioned metric
+  std::uniform_real_distribution<Real> diag_pdf(0.5, 2.0);
+  std::uniform_real_distribution<Real> offdiag_pdf(-0.1, 0.1);
 
   genRandArray(m_fcor,         engine, random_dist);
 
@@ -215,11 +222,6 @@ void ElementsGeometry::randomize(const int seed) {
   if (m_gradphis.size()!=0) {
     genRandArray(m_gradphis, engine, random_dist);
   }
-
-  // Lambdas used to constrain the metric tensor and its inverse
-  const auto compute_det = [](HostViewUnmanaged<Real[2][2]> mtx) {
-    return mtx(0, 0) * mtx(1, 1) - mtx(0, 1) * mtx(1, 0);
-  };
 
   // 2d tensors
   // Generating lots of matrices with reasonable determinants can be difficult
@@ -238,40 +240,28 @@ void ElementsGeometry::randomize(const int seed) {
   for (int ie = 0; ie < m_num_elems; ++ie) {
     // Because this constraint is difficult to satisfy for all of the tensors,
     // incrementally generate the view
-    for (int igp = 0; igp < NP; ++igp) {
-      for (int jgp = 0; jgp < NP; ++jgp) {
+    for (int ip = 0; ip < NP; ++ip) {
+      for (int jp = 0; jp < NP; ++jp) {
 
         // To avoid physical inconsistencies (which may trigger errors in the EOS):
-        //  1) rspheremp = 1/spheremp
-        //  2.1) det(d)>0
-        //  2.1) dinv = (d)^-1
-        //  2.1) det(metinv)>0
-        //  2.1) metdet = 1/det(metinv)
-        h_rspheremp(ie,igp,jgp) = 1./h_spheremp(ie,igp,jgp);
+        // rspheremp = 1/spheremp (locally. For the dss-ed version, use the overload
+        // that accepts connectivity)
+        h_rspheremp(ie,ip,jp) = 1./h_spheremp(ie,ip,jp);
 
-        do {
-          genRandArray(h_matrix, engine, random_dist);
-        } while (compute_det(h_matrix)<=0.0);
+        const Real a = diag_pdf(engine), d = diag_pdf(engine);
+        const Real b = offdiag_pdf(engine), c = offdiag_pdf(engine);
+        const Real det = a*d - b*c; // >= 0.5*0.5 - 0.1*0.1 = 0.24, safely away from 0
 
-        for (int i = 0; i < 2; ++i) {
-          for (int j = 0; j < 2; ++j) {
-            h_d(ie, i, j, igp, jgp) = h_matrix(i, j);
-          }
-        }
-        const Real determinant = compute_det(h_matrix);
-        h_dinv(ie, 0, 0, igp, jgp) =  h_matrix(1, 1) / determinant;
-        h_dinv(ie, 1, 0, igp, jgp) = -h_matrix(1, 0) / determinant;
-        h_dinv(ie, 0, 1, igp, jgp) = -h_matrix(0, 1) / determinant;
-        h_dinv(ie, 1, 1, igp, jgp) =  h_matrix(0, 0) / determinant;
+        h_d(ie,0,0,ip,jp) = a; h_d(ie,0,1,ip,jp) = b;
+        h_d(ie,1,0,ip,jp) = c; h_d(ie,1,1,ip,jp) = d;
+        h_dinv(ie,0,0,ip,jp) =  d/det; h_dinv(ie,0,1,ip,jp) = -b/det;
+        h_dinv(ie,1,0,ip,jp) = -c/det; h_dinv(ie,1,1,ip,jp) =  a/det;
 
-        do {
-          genRandArray(h_matrix, engine, random_dist);
-        } while (compute_det(h_matrix)<=0.0);
-        h_metdet(ie,igp,jgp) = compute_det(h_matrix);
-        h_metinv(ie, 0, 0, igp, jgp) = h_matrix(1, 1);
-        h_metinv(ie, 1, 0, igp, jgp) = h_matrix(1, 0);
-        h_metinv(ie, 0, 1, igp, jgp) = h_matrix(0, 1);
-        h_metinv(ie, 1, 1, igp, jgp) = h_matrix(0, 0);
+        const Real a2 = diag_pdf(engine), d2 = diag_pdf(engine);
+        const Real b2 = offdiag_pdf(engine), c2 = offdiag_pdf(engine);
+        h_metdet(ie,ip,jp) = a2*d2 - b2*c2;
+        h_metinv(ie,0,0,ip,jp) = a2; h_metinv(ie,0,1,ip,jp) = b2;
+        h_metinv(ie,1,0,ip,jp) = c2; h_metinv(ie,1,1,ip,jp) = d2;
       }
     }
   }
@@ -281,6 +271,31 @@ void ElementsGeometry::randomize(const int seed) {
   Kokkos::deep_copy(m_metinv, h_metinv);
   Kokkos::deep_copy(m_metdet, h_metdet);
   Kokkos::deep_copy(m_rspheremp, h_rspheremp);
+}
+
+void ElementsGeometry::randomize (const int seed, const std::shared_ptr<Connectivity>& connectivity,
+                                   const std::shared_ptr<MpiBuffersManager>& buffers_manager) {
+  randomize(seed);
+
+  // Make rspheremp equal to 1/BE(spheremp) (needed to ensure adjoint works):
+  // spheremp itself stays local (it is the per-element weak-form/quadrature
+  // weight), but rspheremp -- used by BoundaryExchange's weighted
+  // exchange(rspheremp) to divide by the *assembled* mass after DSS-summing
+  // local (spheremp-weighted) contributions -- must be the same value at
+  // every owning element of a shared DOF for that exchange to be self-adjoint.
+  // randomize(seed) alone sets rspheremp = 1/spheremp locally, which does not
+  // satisfy this.
+  Kokkos::deep_copy(m_rspheremp, m_spheremp);
+  BoundaryExchangeST<Real> be_mass(connectivity, buffers_manager);
+  be_mass.set_num_fields(0,1,0);
+  be_mass.register_field(m_rspheremp);
+  be_mass.registration_completed();
+  be_mass.exchange();
+  const auto rspheremp = m_rspheremp;
+  const Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<3>> p3({0,0,0},{m_num_elems,NP,NP});
+  Kokkos::parallel_for(p3, KOKKOS_LAMBDA(const int ie, const int ip, const int jp) {
+    rspheremp(ie,ip,jp) = 1 / rspheremp(ie,ip,jp);
+  });
 }
 
 } // namespace Homme

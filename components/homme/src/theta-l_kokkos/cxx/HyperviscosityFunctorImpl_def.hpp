@@ -8,6 +8,7 @@
 
 #include "Context.hpp"
 #include "FunctorsBuffersManager.hpp"
+#include "PhysicalConstants.hpp"
 #include "profiling.hpp"
 
 #include "mpi/BoundaryExchange.hpp"
@@ -399,6 +400,390 @@ void HyperviscosityFunctorImplST<ST>::biharmonic_wk_theta() const
   }
   Kokkos::fence();
 } //biharmonic
+
+template<typename ST>
+template<typename MyST>
+std::enable_if_t<std::is_same_v<MyST, Real>>
+HyperviscosityFunctorImplST<ST>::
+init_J (const int np1) {
+  if (m_adj_dp0.size() == 0) {
+    m_adj_dp0    = decltype(m_adj_dp0)   ("HV adjoint dp0",    m_num_elems);
+    m_adj_theta0 = decltype(m_adj_theta0)("HV adjoint theta0", m_num_elems);
+  }
+  auto dp  = ekat::scalarize(m_state.m_dp3d);
+  auto vth = ekat::scalarize(m_state.m_vtheta_dp);
+  auto dp0 = ekat::scalarize(m_adj_dp0);
+  auto th0 = ekat::scalarize(m_adj_theta0);
+  using md_range_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>>;
+  auto p4_mid = md_range_t({0,0,0,0}, {m_num_elems,NP,NP,NUM_PHYSICAL_LEV});
+  Kokkos::parallel_for(p4_mid, KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k) {
+    const Real dp_ie = dp(ie,np1,ip,jp,k);
+    dp0(ie,ip,jp,k) = dp_ie;
+    th0(ie,ip,jp,k) = vth(ie,np1,ip,jp,k) / dp_ie;
+  });
+}
+
+template<typename ST>
+template<typename MyST>
+std::enable_if_t<std::is_same_v<MyST, Real>>
+HyperviscosityFunctorImplST<ST>::
+run_JV (const int np1, const StateSnapshot& x, StateSnapshot& y)
+{
+  EKAT_REQUIRE_MSG(m_data.consthv, "HV run_JV: tensor viscosity (hypervis_scaling!=0) not yet supported.\n");
+  EKAT_REQUIRE_MSG(m_data.nu_top<=0, "HV run_JV: sponge layer (nu_top>0) not yet supported.\n");
+
+  linearize_theta_in(x, y);
+  for (int icycle=0; icycle<m_data.hypervis_subcycle; ++icycle) {
+    run_linear_core(y, true);
+  }
+  linearize_theta_out(np1, y);
+  apply_w_surface_tangent(y);
+}
+
+// y = J^T*x, using the same J as run_JV. x and y must be different objects.
+template<typename ST>
+template<typename MyST>
+std::enable_if_t<std::is_same_v<MyST, Real>>
+HyperviscosityFunctorImplST<ST>::
+run_JtV (const int np1, const StateSnapshot& x, StateSnapshot& y)
+{
+  EKAT_REQUIRE_MSG(m_data.consthv, "HV run_JtV: tensor viscosity (hypervis_scaling!=0) not yet supported.\n");
+  EKAT_REQUIRE_MSG(m_data.nu_top<=0, "HV run_JtV: sponge layer (nu_top>0) not yet supported.\n");
+
+  apply_w_surface_adjoint(x, y);
+  linearize_theta_out_adjoint(np1, y);
+  for (int icycle=0; icycle<m_data.hypervis_subcycle; ++icycle) {
+    run_linear_core(y, false);
+  }
+  linearize_theta_in_adjoint(y);
+}
+
+template<typename ST>
+template<typename MyST>
+std::enable_if_t<std::is_same_v<MyST, Real>>
+HyperviscosityFunctorImplST<ST>::
+linearize_theta_in (const StateSnapshot& x, StateSnapshot& y) const {
+  Kokkos::deep_copy(y.dp3d, x.dp3d);
+  Kokkos::deep_copy(y.v, x.v);
+  Kokkos::deep_copy(y.w_i, x.w_i);
+  Kokkos::deep_copy(y.phinh_i, x.phinh_i);
+
+  auto dp0  = ekat::scalarize(m_adj_dp0);
+  auto th0  = ekat::scalarize(m_adj_theta0);
+  auto x_dp = ekat::scalarize(x.dp3d);
+  auto x_vt = ekat::scalarize(x.vtheta_dp);
+  auto y_th = ekat::scalarize(y.vtheta_dp);
+  using md_range_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>>;
+  auto p4_mid = md_range_t({0,0,0,0}, {m_num_elems,NP,NP,NUM_PHYSICAL_LEV});
+  Kokkos::parallel_for(p4_mid, KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k) {
+    y_th(ie,ip,jp,k) = (x_vt(ie,ip,jp,k) - th0(ie,ip,jp,k)*x_dp(ie,ip,jp,k)) / dp0(ie,ip,jp,k);
+  });
+}
+
+template<typename ST>
+template<typename MyST>
+std::enable_if_t<std::is_same_v<MyST, Real>>
+HyperviscosityFunctorImplST<ST>::
+linearize_theta_in_adjoint (StateSnapshot& y) const {
+  auto dp0  = ekat::scalarize(m_adj_dp0);
+  auto th0  = ekat::scalarize(m_adj_theta0);
+  auto y_dp = ekat::scalarize(y.dp3d);
+  auto y_th = ekat::scalarize(y.vtheta_dp);
+  using md_range_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>>;
+  auto p4_mid = md_range_t({0,0,0,0}, {m_num_elems,NP,NP,NUM_PHYSICAL_LEV});
+  Kokkos::parallel_for(p4_mid, KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k) {
+    const Real dp_adj = y_dp(ie,ip,jp,k);
+    const Real th_adj = y_th(ie,ip,jp,k);
+    y_dp(ie,ip,jp,k) = dp_adj - (th0(ie,ip,jp,k)/dp0(ie,ip,jp,k))*th_adj;
+    y_th(ie,ip,jp,k) = th_adj / dp0(ie,ip,jp,k);
+  });
+}
+
+template<typename ST>
+template<typename MyST>
+std::enable_if_t<std::is_same_v<MyST, Real>>
+HyperviscosityFunctorImplST<ST>::
+linearize_theta_out (const int np1, StateSnapshot& y) const {
+  auto dp_base = ekat::scalarize(m_state.m_dp3d);
+  auto vt_base = ekat::scalarize(m_state.m_vtheta_dp);
+  auto y_dp = ekat::scalarize(y.dp3d);
+  auto y_th = ekat::scalarize(y.vtheta_dp);
+  using md_range_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>>;
+  auto p4_mid = md_range_t({0,0,0,0}, {m_num_elems,NP,NP,NUM_PHYSICAL_LEV});
+  Kokkos::parallel_for(p4_mid, KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k) {
+    const Real dpf = dp_base(ie,np1,ip,jp,k);
+    const Real thf = vt_base(ie,np1,ip,jp,k) / dpf;
+    const Real y_theta = y_th(ie,ip,jp,k);
+    y_th(ie,ip,jp,k) = y_theta*dpf + thf*y_dp(ie,ip,jp,k);
+  });
+}
+
+template<typename ST>
+template<typename MyST>
+std::enable_if_t<std::is_same_v<MyST, Real>>
+HyperviscosityFunctorImplST<ST>::
+linearize_theta_out_adjoint (const int np1, StateSnapshot& y) const {
+  auto dp_base = ekat::scalarize(m_state.m_dp3d);
+  auto vt_base = ekat::scalarize(m_state.m_vtheta_dp);
+  auto y_dp = ekat::scalarize(y.dp3d);
+  auto y_vt = ekat::scalarize(y.vtheta_dp);
+  using md_range_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>>;
+  auto p4_mid = md_range_t({0,0,0,0}, {m_num_elems,NP,NP,NUM_PHYSICAL_LEV});
+  Kokkos::parallel_for(p4_mid, KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k) {
+    const Real dpf = dp_base(ie,np1,ip,jp,k);
+    const Real thf = vt_base(ie,np1,ip,jp,k) / dpf;
+    const Real vt_adj = y_vt(ie,ip,jp,k);
+    const Real dp_adj = y_dp(ie,ip,jp,k);
+    y_vt(ie,ip,jp,k) = dpf * vt_adj;           // -> theta_core_out adjoint
+    y_dp(ie,ip,jp,k) = thf * vt_adj + dp_adj;  // -> dp_core_out adjoint
+  });
+}
+
+template<typename ST>
+template<typename MyST>
+std::enable_if_t<std::is_same_v<MyST, Real>>
+HyperviscosityFunctorImplST<ST>::
+apply_w_surface_tangent (StateSnapshot& y) const {
+  if (!m_process_nh_vars) return;
+  constexpr int last_mid = NUM_PHYSICAL_LEV-1;
+  constexpr int last_int = NUM_INTERFACE_LEV-1;
+  constexpr Real g = PhysicalConstants::g;
+  auto y_v = ekat::scalarize(y.v);
+  auto y_w = ekat::scalarize(y.w_i);
+  auto gradphis = m_geometry.m_gradphis;
+  using md_range_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<3>>;
+  auto p3 = md_range_t({0,0,0}, {m_num_elems,NP,NP});
+  Kokkos::parallel_for(p3, KOKKOS_LAMBDA (const int ie, const int ip, const int jp) {
+    const Real gx = gradphis(ie,0,ip,jp);
+    const Real gy = gradphis(ie,1,ip,jp);
+    y_w(ie,ip,jp,last_int) = (y_v(ie,0,ip,jp,last_mid)*gx + y_v(ie,1,ip,jp,last_mid)*gy)/g;
+  });
+}
+
+template<typename ST>
+template<typename MyST>
+std::enable_if_t<std::is_same_v<MyST, Real>>
+HyperviscosityFunctorImplST<ST>::
+apply_w_surface_adjoint (const StateSnapshot& x, StateSnapshot& y) const {
+  y.deep_copy(x);
+  if (!m_process_nh_vars) return;
+  constexpr int last_mid = NUM_PHYSICAL_LEV-1;
+  constexpr int last_int = NUM_INTERFACE_LEV-1;
+  constexpr Real g = PhysicalConstants::g;
+  auto y_v = ekat::scalarize(y.v);
+  auto y_w = ekat::scalarize(y.w_i);
+  auto x_w = ekat::scalarize(x.w_i);
+  auto gradphis = m_geometry.m_gradphis;
+  using md_range_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<3>>;
+  auto p3 = md_range_t({0,0,0}, {m_num_elems,NP,NP});
+  Kokkos::parallel_for(p3, KOKKOS_LAMBDA (const int ie, const int ip, const int jp) {
+    const Real gx = gradphis(ie,0,ip,jp);
+    const Real gy = gradphis(ie,1,ip,jp);
+    const Real w_adj = x_w(ie,ip,jp,last_int);
+    y_v(ie,0,ip,jp,last_mid) += w_adj*gx/g;
+    y_v(ie,1,ip,jp,last_mid) += w_adj*gy/g;
+    y_w(ie,ip,jp,last_int) = 0;
+  });
+}
+
+template<typename ST>
+template<typename MyST>
+std::enable_if_t<std::is_same_v<MyST, Real>>
+HyperviscosityFunctorImplST<ST>::
+hv_apply_laplace1 (const StateSnapshot& src, const Real nu_ratio) const {
+  const auto policy = Homme::get_default_team_policy<ExecSpace>(m_num_elems);
+  const bool nh = m_process_nh_vars;
+  auto sphop   = m_sphere_ops;
+  auto tu      = m_tu;
+  auto dptens  = m_buffers.dptens;
+  auto ttens   = m_buffers.ttens;
+  auto wtens   = m_buffers.wtens;
+  auto phitens = m_buffers.phitens;
+  auto vtens   = m_buffers.vtens;
+  Kokkos::parallel_for(policy, KOKKOS_LAMBDA (const TeamMember& team) {
+    KernelVariables kv(team, tu);
+    sphop.laplace_simple(kv, Homme::subview(src.dp3d,kv.ie), Homme::subview(dptens,kv.ie));
+    sphop.laplace_simple(kv, Homme::subview(src.vtheta_dp,kv.ie), Homme::subview(ttens,kv.ie));
+    if (nh) {
+      sphop.template laplace_simple<NUM_LEV,NUM_LEV_P>(kv, Homme::subview(src.w_i,kv.ie), Homme::subview(wtens,kv.ie));
+      sphop.template laplace_simple<NUM_LEV,NUM_LEV_P>(kv, Homme::subview(src.phinh_i,kv.ie), Homme::subview(phitens,kv.ie));
+    }
+    sphop.vlaplace_sphere_wk_contra(kv, nu_ratio, Homme::subview(src.v,kv.ie), Homme::subview(vtens,kv.ie));
+  });
+  Kokkos::fence();
+}
+
+template<typename ST>
+template<typename MyST>
+std::enable_if_t<std::is_same_v<MyST, Real>>
+HyperviscosityFunctorImplST<ST>::
+hv_apply_laplace2 (const Real nu_ratio) const {
+  const auto policy = Homme::get_default_team_policy<ExecSpace>(m_num_elems);
+  const bool nh = m_process_nh_vars;
+  auto sphop   = m_sphere_ops;
+  auto tu      = m_tu;
+  auto dptens  = m_buffers.dptens;
+  auto ttens   = m_buffers.ttens;
+  auto wtens   = m_buffers.wtens;
+  auto phitens = m_buffers.phitens;
+  auto vtens   = m_buffers.vtens;
+  Kokkos::parallel_for(policy, KOKKOS_LAMBDA (const TeamMember& team) {
+    KernelVariables kv(team, tu);
+    sphop.laplace_simple(kv, Homme::subview(dptens,kv.ie), Homme::subview(dptens,kv.ie));
+    sphop.laplace_simple(kv, Homme::subview(ttens,kv.ie), Homme::subview(ttens,kv.ie));
+    if (nh) {
+      sphop.laplace_simple(kv, Homme::subview(wtens,kv.ie), Homme::subview(wtens,kv.ie));
+      sphop.laplace_simple(kv, Homme::subview(phitens,kv.ie), Homme::subview(phitens,kv.ie));
+    }
+    sphop.vlaplace_sphere_wk_contra(kv, nu_ratio, Homme::subview(vtens,kv.ie), Homme::subview(vtens,kv.ie));
+  });
+  Kokkos::fence();
+}
+
+template<typename ST>
+template<typename MyST>
+std::enable_if_t<std::is_same_v<MyST, Real>>
+HyperviscosityFunctorImplST<ST>::
+hv_scale_tens () const {
+  const bool nh = m_process_nh_vars;
+  const Real nu = m_data.nu, nu_p = m_data.nu_p, nu_s = m_data.nu_s;
+  auto dptens  = m_buffers.dptens;
+  auto ttens   = m_buffers.ttens;
+  auto wtens   = m_buffers.wtens;
+  auto phitens = m_buffers.phitens;
+  auto vtens   = m_buffers.vtens;
+  using md_range_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>>;
+  auto p4 = md_range_t({0,0,0,0}, {m_num_elems,NP,NP,NUM_LEV});
+  Kokkos::parallel_for(p4, KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k) {
+    vtens(ie,0,ip,jp,k) *= -nu;
+    vtens(ie,1,ip,jp,k) *= -nu;
+    ttens(ie,ip,jp,k)   *= -nu;
+    dptens(ie,ip,jp,k)  *= -nu_p;
+    if (nh) {
+      wtens(ie,ip,jp,k)   *= -nu;
+      phitens(ie,ip,jp,k) *= -nu_s;
+    }
+  });
+}
+
+template<typename ST>
+template<typename MyST>
+std::enable_if_t<std::is_same_v<MyST, Real>>
+HyperviscosityFunctorImplST<ST>::
+hv_add_scaled_tens_to (StateSnapshot& dst) const {
+  const bool nh = m_process_nh_vars;
+  const Real dt_hvs = m_data.dt_hvs;
+  auto rspheremp = m_geometry.m_rspheremp;
+  auto dptens  = m_buffers.dptens;
+  auto ttens   = m_buffers.ttens;
+  auto wtens   = m_buffers.wtens;
+  auto phitens = m_buffers.phitens;
+  auto vtens   = m_buffers.vtens;
+  auto dst_dp  = dst.dp3d;
+  auto dst_vth = dst.vtheta_dp;
+  auto dst_v   = dst.v;
+  auto dst_w   = dst.w_i;
+  auto dst_phi = dst.phinh_i;
+  using md_range_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>>;
+  auto p4 = md_range_t({0,0,0,0}, {m_num_elems,NP,NP,NUM_LEV});
+  Kokkos::parallel_for(p4, KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k) {
+    const auto scale = dt_hvs*rspheremp(ie,ip,jp);
+    dst_v(ie,0,ip,jp,k) += scale*vtens(ie,0,ip,jp,k);
+    dst_v(ie,1,ip,jp,k) += scale*vtens(ie,1,ip,jp,k);
+    dst_vth(ie,ip,jp,k) += scale*ttens(ie,ip,jp,k);
+    dst_dp(ie,ip,jp,k)  += scale*dptens(ie,ip,jp,k);
+    if (nh) {
+      dst_w(ie,ip,jp,k)   += scale*wtens(ie,ip,jp,k);
+      dst_phi(ie,ip,jp,k) += scale*phitens(ie,ip,jp,k);
+    }
+  });
+}
+
+template<typename ST>
+template<typename MyST>
+std::enable_if_t<std::is_same_v<MyST, Real>>
+HyperviscosityFunctorImplST<ST>::
+hv_scale_state_into_tens (const StateSnapshot& src) const {
+  const bool nh = m_process_nh_vars;
+  const Real dt_hvs = m_data.dt_hvs;
+  auto rspheremp = m_geometry.m_rspheremp;
+  auto dptens  = m_buffers.dptens;
+  auto ttens   = m_buffers.ttens;
+  auto wtens   = m_buffers.wtens;
+  auto phitens = m_buffers.phitens;
+  auto vtens   = m_buffers.vtens;
+  auto src_dp  = src.dp3d;
+  auto src_vth = src.vtheta_dp;
+  auto src_v   = src.v;
+  auto src_w   = src.w_i;
+  auto src_phi = src.phinh_i;
+  using md_range_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>>;
+  auto p4 = md_range_t({0,0,0,0}, {m_num_elems,NP,NP,NUM_LEV});
+  Kokkos::parallel_for(p4, KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k) {
+    const auto scale = dt_hvs*rspheremp(ie,ip,jp);
+    vtens(ie,0,ip,jp,k) = scale*src_v(ie,0,ip,jp,k);
+    vtens(ie,1,ip,jp,k) = scale*src_v(ie,1,ip,jp,k);
+    ttens(ie,ip,jp,k)   = scale*src_vth(ie,ip,jp,k);
+    dptens(ie,ip,jp,k)  = scale*src_dp(ie,ip,jp,k);
+    if (nh) {
+      wtens(ie,ip,jp,k)   = scale*src_w(ie,ip,jp,k);
+      phitens(ie,ip,jp,k) = scale*src_phi(ie,ip,jp,k);
+    }
+  });
+}
+
+template<typename ST>
+template<typename MyST>
+std::enable_if_t<std::is_same_v<MyST, Real>>
+HyperviscosityFunctorImplST<ST>::
+hv_add_tens_to (StateSnapshot& dst) const {
+  const bool nh = m_process_nh_vars;
+  auto dptens  = m_buffers.dptens;
+  auto ttens   = m_buffers.ttens;
+  auto wtens   = m_buffers.wtens;
+  auto phitens = m_buffers.phitens;
+  auto vtens   = m_buffers.vtens;
+  auto dst_dp  = dst.dp3d;
+  auto dst_vth = dst.vtheta_dp;
+  auto dst_v   = dst.v;
+  auto dst_w   = dst.w_i;
+  auto dst_phi = dst.phinh_i;
+  using md_range_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>>;
+  auto p4 = md_range_t({0,0,0,0}, {m_num_elems,NP,NP,NUM_LEV});
+  Kokkos::parallel_for(p4, KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k) {
+    dst_v(ie,0,ip,jp,k) += vtens(ie,0,ip,jp,k);
+    dst_v(ie,1,ip,jp,k) += vtens(ie,1,ip,jp,k);
+    dst_vth(ie,ip,jp,k) += ttens(ie,ip,jp,k);
+    dst_dp(ie,ip,jp,k)  += dptens(ie,ip,jp,k);
+    if (nh) {
+      dst_w(ie,ip,jp,k)   += wtens(ie,ip,jp,k);
+      dst_phi(ie,ip,jp,k) += phitens(ie,ip,jp,k);
+    }
+  });
+}
+
+template<typename ST>
+template<typename MyST>
+std::enable_if_t<std::is_same_v<MyST, Real>>
+HyperviscosityFunctorImplST<ST>::
+run_linear_core (StateSnapshot& y, const bool forward) const {
+  if (forward) {
+    hv_apply_laplace1(y, m_data.nu_ratio1);          // A1
+    m_be->exchange(m_geometry.m_rspheremp);           // E1 (weighted)
+    hv_apply_laplace2(m_data.nu_ratio2);              // A2
+    hv_scale_tens();                                  // SC1 (-nu family)
+    m_be->exchange();                                 // E2 (unweighted)
+    hv_add_scaled_tens_to(y);                         // SC2 + residual add
+  } else {
+    hv_scale_state_into_tens(y);                      // SC2^T = SC2
+    m_be->exchange();                                 // E2^T = E2
+    hv_scale_tens();                                  // SC1^T = SC1
+    hv_apply_laplace2(m_data.nu_ratio2);              // A2^T = A2
+    m_be->exchange(m_geometry.m_rspheremp);           // E1^T = E1
+    hv_apply_laplace2(m_data.nu_ratio1);              // A1^T = A1 (in place)
+    hv_add_tens_to(y);                                // residual add (no extra scale)
+  }
+}
 
 // Laplace for nu_top
 template<typename ST>

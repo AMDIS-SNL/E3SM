@@ -399,6 +399,14 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
     LABELS AMDIS
   )
 
+  # Hyperviscosity sacado derivatives tests
+  EkatCreateUnitTest ("hv_sacado_ut"
+    "hv_sacado_ut.cpp;hv_interface.F90;thetal_test_interface.F90;${SHARE_UT_DIR}/geometry_interface.F90"
+    COMPILER_CXX_DEFS
+    LIBS thetal_kokkos_ut_lib
+    LABELS AMDIS
+  )
+
   # Tridiag sacado derivatives tests
   EkatCreateUnitTest ("tridiag_sacado_ut"
     tridiag_sacado_ut.cpp
