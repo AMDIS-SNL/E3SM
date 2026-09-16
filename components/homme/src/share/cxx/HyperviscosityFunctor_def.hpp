@@ -94,6 +94,13 @@ void HyperviscosityFunctorST<ST>::run (const int np1, const Real dt, const Real 
   m_hvf_impl->run(np1,dt,eta_ave_w);
 }
 
+template<typename ST>
+HyperviscosityFunctorImplST<ST>& HyperviscosityFunctorST<ST>::impl ()
+{
+  assert (m_hvf_impl);
+  return *m_hvf_impl;
+}
+
 } // namespace Homme
 
 #endif // HOMMEXX_HYPERVISCOSITY_FUNCTOR_DEF_HPP

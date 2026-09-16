@@ -108,12 +108,23 @@ void prim_advance_exp (TimeLevel& tl, const Real dt, const bool compute_diagnost
     diags.run_diagnostics(false,4);
   }
 
-  //// case nu=0 but nu_top>0?  
+  //// case nu=0 but nu_top>0?
   if (params.hypervis_order==2 && params.nu>0) {
     HyperviscosityFunctor& functor = context.get<HyperviscosityFunctor>();
     GPTLstart("tl-ae advance_hypervis_dp");
     functor.run(tl.np1,dt,eta_ave_w);
     GPTLstop("tl-ae advance_hypervis_dp");
+  }
+
+  if (params.store_fwd_state && params.time_step_type==TimeStepType::ttype10_imex) {
+    // Snapshot the state once the dynamics+HV part of the step is complete.
+    // prim_advance_adj needs this (in addition to the pre-HV snapshot already
+    // on the tape) to linearize the HV step, since HV overwrites the state
+    // in place and its adjoint needs both the pre- and post-HV values.
+    using tape_t = Tape<StateSnapshot>;
+    auto& tape = std::any_cast<tape_t&>(context.any_map().at("imex_tape"));
+    tape.shift_fwd();
+    context.get<Elements>().m_state.take_snapshot(tape.curr(),tl.np1,false);
   }
 
   if (params.dcmip16_mu>0) {

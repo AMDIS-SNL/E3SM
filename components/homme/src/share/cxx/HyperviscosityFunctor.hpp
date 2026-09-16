@@ -47,6 +47,10 @@ public:
 
   void run (const int np1, const Real dt, const Real eta_ave_w);
 
+  // Access to the impl, needed by tangent/adjoint callers (init_J/run_JV/run_JtV
+  // only live on the impl, not on this thin wrapper).
+  HyperviscosityFunctorImplST<ST>& impl ();
+
 private:
 
   std::unique_ptr<HyperviscosityFunctorImplST<ST>>  m_hvf_impl;
