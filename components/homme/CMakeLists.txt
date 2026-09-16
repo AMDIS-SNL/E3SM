@@ -4,10 +4,18 @@ IF (NOT DEFINED PROJECT_NAME)
   # Best practice to put cmake required version at the top
   CMAKE_MINIMUM_REQUIRED(VERSION 3.16)
 
-  if (POLICY CMP0144)
-    # Do NOT ignore <PKGNAME>_ROOT env vars
+  # Honor _ROOT env vars if possible. Set defaults (used by subprojects) as well as hard-enforce them
+  set(CMAKE_POLICY_DEFAULT_CMP0074 NEW)
+  set(CMAKE_POLICY_DEFAULT_CMP0144 NEW)
+  cmake_policy(SET CMP0074 NEW)
+  if(POLICY CMP0144)
     cmake_policy(SET CMP0144 NEW)
   endif()
+
+  # CMP0075: Forces compiler check macros (like checking header files or type sizes)
+  # to link against CMAKE_REQUIRED_LIBRARIES
+  set(CMAKE_POLICY_DEFAULT_CMP0075 NEW)
+  cmake_policy(SET CMP0075 NEW)
 
   # Print the sha of the last commit,
   # useful to double check which version was build in the build folder.

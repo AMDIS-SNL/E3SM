@@ -834,7 +834,6 @@ TEST_CASE("caar_adjoint") {
 
   auto& geo = c.create<ElementsGeometry>();
   geo.init(num_elems,false,true,rearth0,1/rearth0,true);
-  geo.randomize(seed);
 
   auto& elems_dp = c.create<ElementsST<DpFadType>>();
   auto& elems_dx = c.create<ElementsST<DxFadType>>();
@@ -863,6 +862,10 @@ TEST_CASE("caar_adjoint") {
   if (!bm->is_connectivity_set()) {
     bm->set_connectivity(conn);
   }
+
+  // Also DSS-assembles rspheremp (needed to ensure exchange(rspheremp), and
+  // hence the adjoint check below, is self-adjoint).
+  geo.randomize(seed, conn, bm);
 
   auto& comm    = c.get<ekat::Comm>();
   const int nm1 = 0, n0 = 1, np1 = 2;
@@ -905,18 +908,6 @@ TEST_CASE("caar_adjoint") {
 
   const Real rtol = 1e-8;
   const Real atol = 1e-8;
-
-  // Make rspheremp equal to 1/BE(spheremp) (needed to ensure adjoint works)
-  Kokkos::deep_copy(geo.m_rspheremp,geo.m_spheremp);
-  BoundaryExchangeST<Real> be_mass(conn,bm);
-  be_mass.set_num_fields(0,1,0);
-  be_mass.register_field(geo.m_rspheremp);
-  be_mass.registration_completed();
-  be_mass.exchange();
-  auto do_inverse = KOKKOS_LAMBDA (int ie, int ip, int jp) {
-    geo.m_rspheremp(ie,ip,jp) = 1 / geo.m_rspheremp(ie,ip,jp);
-  };
-  Kokkos::parallel_for(p3_t({0,0,0},{num_elems,NP,NP}),do_inverse);
 
   // NOTE: cannot yet use hydrostatic=true (requires a scan sum not supported here)
   for (const bool hydrostatic : {false}) {

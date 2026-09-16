@@ -9,7 +9,12 @@
 
 #include "Types.hpp"
 
+#include <memory>
+
 namespace Homme {
+
+class Connectivity;
+class MpiBuffersManager;
 
 /*
  *  A structure to hold views depending on the geometry/quadrature
@@ -60,6 +65,17 @@ public:
              const bool alloc_sphere_coords=false);
 
   void randomize (const int seed);
+
+  // Like randomize(seed), but also DSS-assembles spheremp/rspheremp via a
+  // real boundary exchange, so that at every shared DOF the two are
+  // consistent across all owning elements (spheremp = BE(spheremp),
+  // rspheremp = 1/BE(spheremp)). This is the precondition BoundaryExchange's
+  // weighted exchange(rspheremp) needs to be self-adjoint (see, e.g.,
+  // hv_sphere_ops_discrete_self_adjoint in hv_sacado_ut.cpp): a purely local
+  // spheremp/rspheremp, as produced by randomize(seed) alone, does not
+  // satisfy it.
+  void randomize (const int seed, const std::shared_ptr<Connectivity>& connectivity,
+                  const std::shared_ptr<MpiBuffersManager>& buffers_manager);
 
   KOKKOS_INLINE_FUNCTION
   int num_elems() const { return m_num_elems; }
