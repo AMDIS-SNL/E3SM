@@ -425,4 +425,18 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
     LIBS thetal_kokkos_ut_lib
     LABELS AMDIS
   )
+
+  # Test the full prim_advance_exp adjoint (ttype10 CAAR/DIRK stages + HV +
+  # the w_i(n0) surface fix), via prim_advance_adj
+  set (PRIM_ADVANCE_SACADO_SOURCES
+    prim_advance_sacado_ut.cpp
+    thetal_test_interface.F90
+    ${SHARE_UT_DIR}/geometry_interface.F90
+    ${SRC_THETA_DIR}/cxx/prim_advance_adj.cpp
+  )
+  EkatCreateUnitTest ("prim_advance_sacado_ut"
+    "${PRIM_ADVANCE_SACADO_SOURCES}"
+    LIBS thetal_kokkos_ut_lib
+    LABELS AMDIS
+  )
 endif()
