@@ -122,6 +122,7 @@ SimulationParams init_params () {
 
 TEST_CASE ("hyperviscosity_dp_and_jv_testing")
 {
+  printf("----------------- hyperviscosity_dp_and_jv_testing ----------------\n");
   std::random_device rd;
   const unsigned int catchRngSeed = Catch::rngSeed();
   const unsigned int seed = catchRngSeed==0 ? rd() : catchRngSeed;
@@ -138,10 +139,10 @@ TEST_CASE ("hyperviscosity_dp_and_jv_testing")
 
   constexpr int ne = 2;
   const int np1 = 1;
-  const Real dt = rpdf(1e-4,1e-2)(engine);
+  const Real dt = rpdf(300,1800)(engine);
   const Real eta_ave_w = 1.0;
-  const Real atol = 1e-6;
-  const Real rtol = 1e-4;
+  const Real atol = 1e-10;
+  const Real rtol = 1e-12;
 
   auto params = init_params();
   c.create<SimulationParams>() = params;
@@ -177,16 +178,15 @@ TEST_CASE ("hyperviscosity_dp_and_jv_testing")
   elems_h.m_state.import_values(elems_ref.m_state,np1);
   elems_dp.m_state.import_values(elems_ref.m_state,np1);
 
-  // Note: these hold one Real per *physical* level (or interface level), not
-  // per pack, since they are indexed directly by physical/interface level
-  // below (in set_derivs/set_derivs_int). Sizing them by NUM_LEV/NUM_LEV_P
-  // (the pack counts) instead would leave them far too short and make every
-  // access at k>=NUM_LEV (or NUM_LEV_P) an out-of-bounds read.
-  ExecViewManaged<Real*[2][NP][NP][NUM_PHYSICAL_LEV]> Vv("", num_elems);
-  ExecViewManaged<Real*[NP][NP][NUM_PHYSICAL_LEV]> Vdp("", num_elems);
-  ExecViewManaged<Real*[NP][NP][NUM_PHYSICAL_LEV]> Vvth("", num_elems);
-  ExecViewManaged<Real*[NP][NP][NUM_INTERFACE_LEV]> Vw("", num_elems);
-  ExecViewManaged<Real*[NP][NP][NUM_INTERFACE_LEV]> Vphi("", num_elems);
+  // These will be sued to compute derivs via the jacobian-vector product y = J*x
+  StateSnapshot x(num_elems), y(num_elems);
+
+  // Initialize derivatives
+  auto Vv = ekat::scalarize(x.v);
+  auto Vdp = ekat::scalarize(x.dp3d);
+  auto Vvth = ekat::scalarize(x.vtheta_dp);
+  auto Vw = ekat::scalarize(x.w_i);
+  auto Vphi = ekat::scalarize(x.phinh_i);
   genRandArray(Vv, engine, rpdf(-1.0,1.0));
   genRandArray(Vdp, engine, rpdf(-1.0,1.0));
   genRandArray(Vvth, engine, rpdf(-1.0,1.0));
@@ -198,22 +198,20 @@ TEST_CASE ("hyperviscosity_dp_and_jv_testing")
   auto vth_fad = ekat::scalarize(elems_dp.m_state.m_vtheta_dp);
   auto w_fad = ekat::scalarize(elems_dp.m_state.m_w_i);
   auto phi_fad = ekat::scalarize(elems_dp.m_state.m_phinh_i);
-  auto set_derivs = KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k) {
+  auto set_derivs_mid = KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k) {
     v_fad  (ie,np1,0,ip,jp,k).fastAccessDx(0) = Vv  (ie,0,ip,jp,k);
     v_fad  (ie,np1,1,ip,jp,k).fastAccessDx(0) = Vv  (ie,1,ip,jp,k);
     dp_fad (ie,np1,ip,jp,k).fastAccessDx(0) = Vdp (ie,ip,jp,k);
     vth_fad(ie,np1,ip,jp,k).fastAccessDx(0) = Vvth(ie,ip,jp,k);
+  };
+  auto set_derivs_int = KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k) {
     w_fad  (ie,np1,ip,jp,k).fastAccessDx(0) = Vw  (ie,ip,jp,k);
     phi_fad(ie,np1,ip,jp,k).fastAccessDx(0) = Vphi(ie,ip,jp,k);
   };
-  auto set_derivs_int = KOKKOS_LAMBDA (const int ie, const int ip, const int jp) {
-    w_fad  (ie,np1,ip,jp,last_interface_lev_idx).fastAccessDx(0) = Vw  (ie,ip,jp,last_interface_lev_idx);
-    phi_fad(ie,np1,ip,jp,last_interface_lev_idx).fastAccessDx(0) = Vphi(ie,ip,jp,last_interface_lev_idx);
-  };
-  Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>> p4({0,0,0,0},{num_elems,NP,NP,NUM_PHYSICAL_LEV});
-  Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<3>> p3({0,0,0},{num_elems,NP,NP});
-  Kokkos::parallel_for(p4, set_derivs);
-  Kokkos::parallel_for(p3, set_derivs_int);
+  Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>> p4_mid({0,0,0,0},{num_elems,NP,NP,NUM_PHYSICAL_LEV});
+  Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>> p4_int({0,0,0,0},{num_elems,NP,NP,NUM_INTERFACE_LEV});
+  Kokkos::parallel_for(p4_mid, set_derivs_mid);
+  Kokkos::parallel_for(p4_int, set_derivs_int);
 
   HyperviscosityFunctorImplST<Real> hv_0(params,geo,elems_0.m_state,elems_0.m_derived);
   HyperviscosityFunctorImplST<Real> hv_h(params,geo,elems_h.m_state,elems_h.m_derived);
@@ -270,20 +268,18 @@ TEST_CASE ("hyperviscosity_dp_and_jv_testing")
     auto w_h = ekat::scalarize(elems_h.m_state.m_w_i);
     auto phi_h = ekat::scalarize(elems_h.m_state.m_phinh_i);
 
-    auto perturb = KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k) {
+    auto perturb_mid = KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k) {
       v_h   (ie,np1,0,ip,jp,k) += h*Vv  (ie,0,ip,jp,k);
       v_h   (ie,np1,1,ip,jp,k) += h*Vv  (ie,1,ip,jp,k);
       dp_h (ie,np1,ip,jp,k) += h*Vdp (ie,ip,jp,k);
       vth_h(ie,np1,ip,jp,k) += h*Vvth(ie,ip,jp,k);
+    };
+    auto perturb_int = KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k) {
       w_h  (ie,np1,ip,jp,k) += h*Vw  (ie,ip,jp,k);
       phi_h(ie,np1,ip,jp,k) += h*Vphi(ie,ip,jp,k);
     };
-    auto perturb_int = KOKKOS_LAMBDA (const int ie, const int ip, const int jp) {
-      w_h  (ie,np1,ip,jp,last_interface_lev_idx) += h*Vw  (ie,ip,jp,last_interface_lev_idx);
-      phi_h(ie,np1,ip,jp,last_interface_lev_idx) += h*Vphi(ie,ip,jp,last_interface_lev_idx);
-    };
-    Kokkos::parallel_for(p4, perturb);
-    Kokkos::parallel_for(p3, perturb_int);
+    Kokkos::parallel_for(p4_mid, perturb_mid);
+    Kokkos::parallel_for(p4_int, perturb_int);
 
     hv_h.run(np1,dt,eta_ave_w);
 
@@ -292,41 +288,35 @@ TEST_CASE ("hyperviscosity_dp_and_jv_testing")
     auto vth_out_h = ekat::scalarize(elems_h.m_state.m_vtheta_dp);
     auto w_out_h = ekat::scalarize(elems_h.m_state.m_w_i);
     auto phi_out_h = ekat::scalarize(elems_h.m_state.m_phinh_i);
-    auto linf = KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k, Real& accum) {
+    auto linf_mid = KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k, Real& accum) {
       const Real du_fd   = (v_out_h(ie,np1,0,ip,jp,k) - v_0(ie,np1,0,ip,jp,k))/h;
       const Real dv_fd   = (v_out_h(ie,np1,1,ip,jp,k) - v_0(ie,np1,1,ip,jp,k))/h;
       const Real ddp_fd  = (dp_out_h(ie,np1,ip,jp,k)  - dp_0 (ie,np1,ip,jp,k))/h;
       const Real dvth_fd = (vth_out_h(ie,np1,ip,jp,k) - vth_0(ie,np1,ip,jp,k))/h;
-      const Real dw_fd   = (w_out_h(ie,np1,ip,jp,k)   - w_0(ie,np1,ip,jp,k))/h;
-      const Real dphi_fd = (phi_out_h(ie,np1,ip,jp,k) - phi_0(ie,np1,ip,jp,k))/h;
       const Real du_ex   = v_dp(ie,np1,0,ip,jp,k).fastAccessDx(0);
       const Real dv_ex   = v_dp(ie,np1,1,ip,jp,k).fastAccessDx(0);
       const Real ddp_ex  = dp_dp (ie,np1,ip,jp,k).fastAccessDx(0);
       const Real dvth_ex = vth_dp(ie,np1,ip,jp,k).fastAccessDx(0);
-      const Real dw_ex   = w_dp(ie,np1,ip,jp,k).fastAccessDx(0);
-      const Real dphi_ex = phi_dp(ie,np1,ip,jp,k).fastAccessDx(0);
       Real lcl = Kokkos::abs(du_fd-du_ex);
       lcl = Kokkos::max(lcl, Kokkos::abs(dv_fd-dv_ex));
       lcl = Kokkos::max(lcl, Kokkos::abs(ddp_fd-ddp_ex));
       lcl = Kokkos::max(lcl, Kokkos::abs(dvth_fd-dvth_ex));
-      lcl = Kokkos::max(lcl, Kokkos::abs(dw_fd-dw_ex));
-      lcl = Kokkos::max(lcl, Kokkos::abs(dphi_fd-dphi_ex));
       if (lcl > accum) accum = lcl;
     };
-    auto linf_int = KOKKOS_LAMBDA (const int ie, const int ip, const int jp, Real& accum) {
-      const Real dwl_fd   = (w_out_h(ie,np1,ip,jp,last_interface_lev_idx)   - w_0(ie,np1,ip,jp,last_interface_lev_idx))/h;
-      const Real dphil_fd = (phi_out_h(ie,np1,ip,jp,last_interface_lev_idx) - phi_0(ie,np1,ip,jp,last_interface_lev_idx))/h;
-      const Real dwl_ex   = w_dp(ie,np1,ip,jp,last_interface_lev_idx).fastAccessDx(0);
-      const Real dphil_ex = phi_dp(ie,np1,ip,jp,last_interface_lev_idx).fastAccessDx(0);
+    auto linf_int = KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k, Real& accum) {
+      const Real dwl_fd   = (w_out_h(ie,np1,ip,jp,k)   - w_0(ie,np1,ip,jp,k))/h;
+      const Real dphil_fd = (phi_out_h(ie,np1,ip,jp,k) - phi_0(ie,np1,ip,jp,k))/h;
+      const Real dwl_ex   = w_dp(ie,np1,ip,jp,k).fastAccessDx(0);
+      const Real dphil_ex = phi_dp(ie,np1,ip,jp,k).fastAccessDx(0);
       Real lcl = Kokkos::abs(dwl_fd-dwl_ex);
       lcl = Kokkos::max(lcl, Kokkos::abs(dphil_fd-dphil_ex));
       if (lcl > accum) accum = lcl;
     };
-    Real err_phys = 0;
+    Real err_mid = 0;
     Real err_int  = 0;
-    Kokkos::parallel_reduce(p4, linf, Kokkos::Max<Real>(err_phys));
-    Kokkos::parallel_reduce(p3, linf_int, Kokkos::Max<Real>(err_int));
-    err_fd.emplace_back(Kokkos::max(err_phys,err_int));
+    Kokkos::parallel_reduce(p4_mid, linf_mid, Kokkos::Max<Real>(err_mid));
+    Kokkos::parallel_reduce(p4_int, linf_int, Kokkos::Max<Real>(err_int));
+    err_fd.emplace_back(Kokkos::max(err_mid,err_int));
   }
 
   std::cout << std::setprecision(16)
@@ -340,11 +330,6 @@ TEST_CASE ("hyperviscosity_dp_and_jv_testing")
   // it, then run() (the real, nonlinear forward pass) must run again before
   // run_JV can be called.
   elems_0.m_state.import_values(elems_ref.m_state,np1);
-
-  // x = the same direction V used for the FD/DpFadType check above (extracted
-  // as a StateSnapshot from elems_dp's stored derivative), y = J*x.
-  StateSnapshot x = elems_dp.m_state.take_deriv_snapshot(np1,0);
-  StateSnapshot y = x.clone();
 
   hv_0.init_J(np1);
   hv_0.run(np1,dt,eta_ave_w);
@@ -407,6 +392,7 @@ TEST_CASE ("hyperviscosity_dp_and_jv_testing")
 }
 
 TEST_CASE ("hyperviscosity_jtv_testing") {
+  printf("------------------- hyperviscosity_jtv_testing --------------------\n");
   std::random_device rd;
   const unsigned int catchRngSeed = Catch::rngSeed();
   const unsigned int seed = catchRngSeed==0 ? rd() : catchRngSeed;
@@ -491,31 +477,28 @@ TEST_CASE ("hyperviscosity_jtv_testing") {
   auto yb_w = ekat::scalarize(yb.w_i);
   auto yb_phi = ekat::scalarize(yb.phinh_i);
 
-  Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>> p4({0,0,0,0},{num_elems,NP,NP,NUM_PHYSICAL_LEV});
-  Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<3>> p3({0,0,0},{num_elems,NP,NP});
-  Real2 dot;
-  Real2 dot_int;
+  Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>> p4_mid({0,0,0,0},{num_elems,NP,NP,NUM_PHYSICAL_LEV});
+  Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>> p4_int({0,0,0,0},{num_elems,NP,NP,NUM_INTERFACE_LEV});
+  Real2 dot_mid, dot_int;
   // (xa,yb) = (xa,J*xb) = (J^T*xa,xb) = (ya,xb)
-  Kokkos::parallel_reduce(p4, KOKKOS_LAMBDA(const int ie, const int ip, const int jp, const int k, Real2& acc) {
+  Kokkos::parallel_reduce(p4_mid, KOKKOS_LAMBDA(const int ie, const int ip, const int jp, const int k, Real2& acc) {
     acc.v[0] += xa_v(ie,0,ip,jp,k) * yb_v(ie,0,ip,jp,k)
              +  xa_v(ie,1,ip,jp,k) * yb_v(ie,1,ip,jp,k)
              +  xa_dp (ie,ip,jp,k) * yb_dp (ie,ip,jp,k)
-             +  xa_vth(ie,ip,jp,k) * yb_vth(ie,ip,jp,k)
-             +  xa_w  (ie,ip,jp,k) * yb_w  (ie,ip,jp,k)
-             +  xa_phi(ie,ip,jp,k) * yb_phi(ie,ip,jp,k);
+             +  xa_vth(ie,ip,jp,k) * yb_vth(ie,ip,jp,k);
     acc.v[1] += ya_v(ie,0,ip,jp,k) * xb_v(ie,0,ip,jp,k)
              +  ya_v(ie,1,ip,jp,k) * xb_v(ie,1,ip,jp,k)
              +  ya_dp (ie,ip,jp,k) * xb_dp (ie,ip,jp,k)
-             +  ya_vth(ie,ip,jp,k) * xb_vth(ie,ip,jp,k)
-             +  ya_w  (ie,ip,jp,k) * xb_w  (ie,ip,jp,k)
+             +  ya_vth(ie,ip,jp,k) * xb_vth(ie,ip,jp,k);
+  }, dot_mid);
+  Kokkos::parallel_reduce(p4_int, KOKKOS_LAMBDA(const int ie, const int ip, const int jp, const int k, Real2& acc) {
+    acc.v[0] += xa_w  (ie,ip,jp,k) * yb_w  (ie,ip,jp,k)
+             +  xa_phi(ie,ip,jp,k) * yb_phi(ie,ip,jp,k);
+    acc.v[1] += ya_w  (ie,ip,jp,k) * xb_w  (ie,ip,jp,k)
              +  ya_phi(ie,ip,jp,k) * xb_phi(ie,ip,jp,k);
-  }, dot);
-  Kokkos::parallel_reduce(p3, KOKKOS_LAMBDA(const int ie, const int ip, const int jp, Real2& acc) {
-    acc.v[0] += xa_w  (ie,ip,jp,last_interface_lev_idx) * yb_w  (ie,ip,jp,last_interface_lev_idx)
-             +  xa_phi(ie,ip,jp,last_interface_lev_idx) * yb_phi(ie,ip,jp,last_interface_lev_idx);
-    acc.v[1] += ya_w  (ie,ip,jp,last_interface_lev_idx) * xb_w  (ie,ip,jp,last_interface_lev_idx)
-             +  ya_phi(ie,ip,jp,last_interface_lev_idx) * xb_phi(ie,ip,jp,last_interface_lev_idx);
   }, dot_int);
+
+  auto dot = dot_mid;
   dot += dot_int;
 
   std::cout << std::setprecision(15)
@@ -542,6 +525,7 @@ TEST_CASE ("hyperviscosity_jtv_testing") {
 // If either check fails, run_JV/run_JtV cannot simply reuse the same kernels
 // in reverse: a genuine discrete transpose would need to be written instead.
 TEST_CASE ("hv_sphere_ops_discrete_self_adjoint") {
+  printf("---------------- hv_sphere_ops_discrete_self_adjoint --------------\n");
   std::random_device rd;
   const unsigned int catchRngSeed = Catch::rngSeed();
   const unsigned int seed = catchRngSeed==0 ? rd() : catchRngSeed;
