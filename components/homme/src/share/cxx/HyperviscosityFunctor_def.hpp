@@ -27,7 +27,7 @@ HyperviscosityFunctorST<ST>::HyperviscosityFunctorST ()
   auto& state    = c.get<ElementsStateST<ST>>();
   auto& derived  = c.get<ElementsDerivedStateST<ST>>();
 
-  m_hvf_impl.reset (new HyperviscosityFunctorImplST<ST>(params,geometry,state,derived));
+  m_hvf_impl = std::make_any<HyperviscosityFunctorImplST<ST>>(params,geometry,state,derived);
 }
 
 // This constructor is useful for using buffer functionality without
@@ -39,17 +39,7 @@ HyperviscosityFunctorST<ST>::HyperviscosityFunctorST(const int num_elems, const 
   : is_setup(false)
 {
   // Build functor impl
-  m_hvf_impl.reset (new HyperviscosityFunctorImplST<ST>(num_elems,params));
-}
-
-template<typename ST>
-HyperviscosityFunctorST<ST>::~HyperviscosityFunctorST ()
-{
-  // This empty destructor (where HyperviscosityFunctorImpl type is completely known)
-  // is necessary for pimpl idiom to work with unique_ptr. The issue is the
-  // deleter, which needs to know the size of the stored type, and which
-  // would be called from the implicitly declared default destructor, which
-  // would be in the header file, where HyperviscosityFunctorImpl type is incomplete.
+  m_hvf_impl = std::make_any<HyperviscosityFunctorImplST<ST>>(num_elems,params);
 }
 
 template<typename ST>
@@ -58,47 +48,37 @@ setup(const ElementsGeometry &geometry,
       const ElementsStateST<ST> &state,
       const ElementsDerivedStateST<ST> &derived)
 {
-  assert (m_hvf_impl);
-
   // Sanity check
   assert (!is_setup);
 
-  m_hvf_impl->setup(geometry, state, derived);
+  auto impl = std::any_cast<HyperviscosityFunctorImplST<ST>>(&m_hvf_impl);
+  impl->setup(geometry, state, derived);
   is_setup = true;
 }
 
 template<typename ST>
 int HyperviscosityFunctorST<ST>::requested_buffer_size () const {
-  assert (m_hvf_impl);
-  return m_hvf_impl->requested_buffer_size();
+  auto impl = std::any_cast<HyperviscosityFunctorImplST<ST>>(&m_hvf_impl);
+  return impl->requested_buffer_size();
 }
 
 template<typename ST>
 void HyperviscosityFunctorST<ST>::init_buffers (const FunctorsBuffersManager& fbm) {
-  assert (m_hvf_impl);
-  m_hvf_impl->init_buffers(fbm);
+  auto impl = std::any_cast<HyperviscosityFunctorImplST<ST>>(&m_hvf_impl);
+  impl->init_buffers(fbm);
 }
 
 template<typename ST>
 void HyperviscosityFunctorST<ST>::init_boundary_exchanges () {
-  assert (m_hvf_impl);
-  m_hvf_impl->init_boundary_exchanges();
+  auto impl = std::any_cast<HyperviscosityFunctorImplST<ST>>(&m_hvf_impl);
+  impl->init_boundary_exchanges();
 }
 
 template<typename ST>
 void HyperviscosityFunctorST<ST>::run (const int np1, const Real dt, const Real eta_ave_w)
 {
-  // Sanity check (this should NEVER happen by design)
-  assert (m_hvf_impl);
-
-  m_hvf_impl->run(np1,dt,eta_ave_w);
-}
-
-template<typename ST>
-HyperviscosityFunctorImplST<ST>& HyperviscosityFunctorST<ST>::impl ()
-{
-  assert (m_hvf_impl);
-  return *m_hvf_impl;
+  auto impl = std::any_cast<HyperviscosityFunctorImplST<ST>>(&m_hvf_impl);
+  impl->run(np1,dt,eta_ave_w);
 }
 
 } // namespace Homme

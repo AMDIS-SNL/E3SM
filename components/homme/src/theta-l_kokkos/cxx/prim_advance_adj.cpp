@@ -383,7 +383,7 @@ void prim_advance_adj (const Real dt, StateSnapshot& adj_state)
     const auto& y5_hv = tape.at(11);
 
     auto& scratch = c.create_if_not_there<HVAdjointScratch>(nelem);
-    auto& hv = scratch.hv.impl();
+    auto& hv = std::any_cast<HyperviscosityFunctorImplST<Real>&>(scratch.hv.impl());
     constexpr int slot = 0;
 
     // Base point for the vtheta_dp<->theta linearization: pre-HV (dp,theta).
