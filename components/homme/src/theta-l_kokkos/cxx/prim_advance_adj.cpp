@@ -35,12 +35,14 @@ namespace Homme
 
 namespace {
 
-// Scratch buffers used by ttype10_imex_adjoint, allocated once (the first
-// time they're needed) and reused across calls, rather than reallocated
-// (and, for 'be', re-registered with the boundary exchange machinery) on
-// every single call.
-struct Ttype10AdjointScratch {
-  explicit Ttype10AdjointScratch (int nelem)
+// Scratch buffers used by the IMEX (CAAR/DIRK) stages adjoint -- currently
+// only ttype10_imex_adjoint, but shaped so that other IMEX schemes (e.g. a
+// future ttype7_imex/ttype9_imex adjoint) could reuse it too -- allocated
+// once (the first time they're needed) and reused across calls, rather than
+// reallocated (and, for 'be', re-registered with the boundary exchange
+// machinery) on every single call.
+struct ImexAdjointScratch {
+  explicit ImexAdjointScratch (int nelem)
    : lambda(nelem), lambda_sum(nelem), dDdy0_mu5(nelem), dDdy1_mu5(nelem)
   {}
 
@@ -163,7 +165,7 @@ void ttype10_imex_adjoint(const Real dt_dyn,
   // Hence, lambda is the adjoint var between a CAAR and DIRK stage,
   // while mu is the adjoint var between DIRK and CAAR stages.
   // So mu5 is the adj var at entry, while mu0 is the adj var at exit
-  auto& scratch = c.create_if_not_there<Ttype10AdjointScratch>(nelem);
+  auto& scratch = c.create_if_not_there<ImexAdjointScratch>(nelem);
   StateSnapshot& lambda = scratch.lambda;
   StateSnapshot mu = adj_state;
 
@@ -360,16 +362,16 @@ void prim_advance_adj (const Real dt, StateSnapshot& adj_state)
   auto& c = Context::singleton();
   SimulationParams& params = c.get<SimulationParams>();
 
-  EKAT_REQUIRE_MSG(params.time_step_type==TimeStepType::ttype10_imex,
-      "[prim_advance_adj] Error! Only the ttype10_imex time stepping scheme is supported.\n");
   EKAT_REQUIRE_MSG(not params.prescribed_wind,
       "[prim_advance_adj] Error! 'prescribed_wind' is not supported.\n");
 
   const int  nelem     = adj_state.num_elems;
   const Real eta_ave_w = 1.0/params.dt_tracer_factor;
 
-  // prim_advance_exp runs (in order): w_i(n0) surface fix, ttype10 IMEX
-  // stages, then HV. The adjoint runs the transposes in reverse order.
+  // prim_advance_exp runs (in order): w_i(n0) surface fix, <time-stepping
+  // scheme> stages, then HV. The adjoint runs the transposes in reverse
+  // order, dispatching to the scheme-specific stages adjoint in the switch
+  // below (mirroring the switch in prim_advance_exp.cpp).
 
   if (params.hypervis_order==2 and params.nu>0) {
     GPTLstart("prim_advance_adj-hv");
@@ -378,7 +380,9 @@ void prim_advance_adj (const Real dt, StateSnapshot& adj_state)
 
     // Snapshots taped by prim_advance_exp: state right before, and right
     // after, HV ran (see prim_advance_exp.hpp's ttype10_imex_timestep, and
-    // the store_fwd_state block at the end of prim_advance_exp.cpp).
+    // the store_fwd_state block at the end of prim_advance_exp.cpp). Indices
+    // 10/11 assume ttype10_imex's tape layout (11 stage checkpoints before
+    // the post-HV one); revisit if another scheme's adjoint changes that.
     const auto& y5    = tape.at(10);
     const auto& y5_hv = tape.at(11);
 
@@ -399,7 +403,19 @@ void prim_advance_adj (const Real dt, StateSnapshot& adj_state)
     GPTLstop("prim_advance_adj-hv");
   }
 
-  ttype10_imex_adjoint(dt,eta_ave_w,adj_state);
+  switch (params.time_step_type) {
+    case TimeStepType::ttype10_imex:
+      ttype10_imex_adjoint(dt,eta_ave_w,adj_state);
+      break;
+    default:
+      {
+        std::string msg = "[prim_advance_adj] Error! ";
+        msg += "Adjoint not implemented for time step method ";
+        msg += std::to_string(etoi(params.time_step_type));
+        msg += ".\n";
+        EKAT_ERROR_MSG(msg);
+      }
+  }
 
   if (not params.theta_hydrostatic_mode) {
     // Adjoint of the w_i(n0) surface fix at the top of prim_advance_exp:
