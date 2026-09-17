@@ -266,9 +266,14 @@ TEST_CASE("prim_advance_adj")
 
   auto& sphop_dp = c.create<SphereOperatorsST<DpFadType>>();
   auto& sphop_dx_caar = c.create<SphereOperatorsST<DxFadTypeCaar>>();
+  // Needed by prim_advance_adj's internal (Real-valued) HV adjoint scratch,
+  // via HyperviscosityFunctorImplST<Real>::setup(); in a real run this is the
+  // same SphereOperatorsST<Real> the production CaarFunctor/HyperviscosityFunctor use.
+  auto& sphop_real = c.create<SphereOperatorsST<Real>>();
 
   sphop_dp.setup(geo,ref_FE);
   sphop_dx_caar.setup(geo,ref_FE);
+  sphop_real.setup(geo,ref_FE);
 
   int nm1 = 0;
   int n0  = 1;
