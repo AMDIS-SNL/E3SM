@@ -13,13 +13,10 @@
 #include "ElementsDerivedState.hpp"
 #include "SimulationParams.hpp"
 
-#include <memory>
+#include <any>
 
 namespace Homme
 {
-
-template<typename ST>
-class HyperviscosityFunctorImplST;
 
 struct FunctorsBuffersManager;
 class SimulationParams;
@@ -33,7 +30,7 @@ public:
 
   HyperviscosityFunctorST (const int num_elems, const SimulationParams& params);
 
-  ~HyperviscosityFunctorST ();
+  ~HyperviscosityFunctorST () = default;
 
   bool setup_needed() { return !is_setup; }
   void setup(const ElementsGeometry&           geometry,
@@ -47,9 +44,13 @@ public:
 
   void run (const int np1, const Real dt, const Real eta_ave_w);
 
+  // Access to the impl, needed by tangent/adjoint callers (init_J/run_JV/run_JtV
+  // only live on the impl, not on this thin wrapper).
+  std::any& impl () { return m_hvf_impl; }
+
 private:
 
-  std::unique_ptr<HyperviscosityFunctorImplST<ST>>  m_hvf_impl;
+  std::any m_hvf_impl;
   bool is_setup;
 };
 

@@ -7,7 +7,9 @@
 #include "Context.hpp"
 #include "Diagnostics.hpp"
 #include "Elements.hpp"
+#include "FunctorsBuffersManager.hpp"
 #include "HyperviscosityFunctor.hpp"
+#include "HyperviscosityFunctorImpl.hpp"
 #include "PhysicalConstants.hpp"
 #include "SimulationParams.hpp"
 #include "TimeLevel.hpp"
@@ -30,6 +32,54 @@ void debug_print (const std::string& s) {
 
 namespace Homme
 {
+
+namespace {
+
+// Scratch buffers used by the IMEX (CAAR/DIRK) stages adjoint -- currently
+// only ttype10_imex_adjoint, but shaped so that other IMEX schemes (e.g. a
+// future ttype7_imex/ttype9_imex adjoint) could reuse it too -- allocated
+// once (the first time they're needed) and reused across calls, rather than
+// reallocated (and, for 'be', re-registered with the boundary exchange
+// machinery) on every single call.
+struct ImexAdjointScratch {
+  explicit ImexAdjointScratch (int nelem)
+   : lambda(nelem), lambda_sum(nelem), dDdy0_mu5(nelem), dDdy1_mu5(nelem)
+  {}
+
+  StateSnapshot lambda, lambda_sum, dDdy0_mu5, dDdy1_mu5;
+  std::shared_ptr<BoundaryExchangeST<Real>> be;
+};
+
+// A dedicated (Real-valued) HV functor + its own private state, used only to
+// linearize the hyperviscosity step in prim_advance_adj. This is kept
+// entirely separate from the production Elements/HyperviscosityFunctor: the
+// adjoint never touches the live simulation state, and is instead driven
+// purely by the two StateSnapshots taped by prim_advance_exp (state right
+// before, and right after, HV ran). This avoids replaying HV::run() (with
+// its halo exchanges) just to reconstruct the post-HV state.
+struct HVAdjointScratch {
+  explicit HVAdjointScratch (int nelem)
+    : hv(nelem, Context::singleton().get<SimulationParams>())
+    , seed(nelem)
+  {
+    state.init(nelem);
+    derived.init(nelem);
+    hv.setup(Context::singleton().get<ElementsGeometry>(), state, derived);
+
+    fbm.request_size(hv.requested_buffer_size());
+    fbm.allocate();
+    hv.init_buffers(fbm);
+    hv.init_boundary_exchanges();
+  }
+
+  ElementsStateST<Real> state;
+  ElementsDerivedStateST<Real> derived;
+  FunctorsBuffersManager fbm;
+  HyperviscosityFunctorST<Real> hv;
+  StateSnapshot seed; // holds a copy of the incoming seed (run_JtV needs x != y)
+};
+
+} // anonymous namespace
 
 std::shared_ptr<BoundaryExchangeST<Real>> create_adj_bex (StateSnapshot& adj_state)
 {
@@ -70,7 +120,7 @@ void ttype10_imex_adjoint(const Real dt_dyn,
   GPTLstart("ttype10_imex_adjoint");
   using const_tape_t = const Tape<StateSnapshot>;
 
-  const auto& c = Context::singleton();
+  auto& c = Context::singleton();
   SimulationParams& params = c.get<SimulationParams>();
 
   // Get elements, hvcoord, and functors
@@ -115,7 +165,8 @@ void ttype10_imex_adjoint(const Real dt_dyn,
   // Hence, lambda is the adjoint var between a CAAR and DIRK stage,
   // while mu is the adjoint var between DIRK and CAAR stages.
   // So mu5 is the adj var at entry, while mu0 is the adj var at exit
-  StateSnapshot lambda (nelem);
+  auto& scratch = c.create_if_not_there<ImexAdjointScratch>(nelem);
+  StateSnapshot& lambda = scratch.lambda;
   StateSnapshot mu = adj_state;
 
   // These are all alias of lambda and mu, but they make the code underneath easier to follow
@@ -128,12 +179,15 @@ void ttype10_imex_adjoint(const Real dt_dyn,
   //  - dDirk / dxnm1 (y0,y1) * mu5
   // The first comes from the u0 contrib in each CAAR stage, while the last two come from
   // the last DIRK stage, where the RHS contains contribs from y0 and y1
-  // TODO: these structs should be created ONCE, not every time
-  StateSnapshot lambda_sum(nelem), dDdy0_mu5(nelem), dDdy1_mu5(nelem);
+  StateSnapshot& lambda_sum = scratch.lambda_sum;
+  StateSnapshot& dDdy0_mu5  = scratch.dDdy0_mu5;
+  StateSnapshot& dDdy1_mu5  = scratch.dDdy1_mu5;
   lambda_sum.zero();
 
-  // TODO: this must be created ONCE, not every time
-  auto be = create_adj_bex(lambda);
+  if (not scratch.be) {
+    scratch.be = create_adj_bex(lambda);
+  }
+  auto& be = scratch.be;
 
   const auto& y0 = tape.at(0);
   const auto& u1 = tape.at(1);
@@ -299,6 +353,101 @@ void ttype10_imex_adjoint(const Real dt_dyn,
   mu0.add(lambda_sum);
 
   GPTLstop("ttype10_imex_adjoint");
+}
+
+void prim_advance_adj (const Real dt, StateSnapshot& adj_state)
+{
+  GPTLstart("prim_advance_adj");
+
+  auto& c = Context::singleton();
+  SimulationParams& params = c.get<SimulationParams>();
+
+  EKAT_REQUIRE_MSG(not params.prescribed_wind,
+      "[prim_advance_adj] Error! 'prescribed_wind' is not supported.\n");
+
+  const int  nelem     = adj_state.num_elems;
+  const Real eta_ave_w = 1.0/params.dt_tracer_factor;
+
+  // prim_advance_exp runs (in order): w_i(n0) surface fix, <time-stepping
+  // scheme> stages, then HV. The adjoint runs the transposes in reverse
+  // order, dispatching to the scheme-specific stages adjoint in the switch
+  // below (mirroring the switch in prim_advance_exp.cpp).
+
+  if (params.hypervis_order==2 and params.nu>0) {
+    GPTLstart("prim_advance_adj-hv");
+    using const_tape_t = const Tape<StateSnapshot>;
+    auto& tape = std::any_cast<const_tape_t&>(c.any_map().at("imex_tape"));
+
+    // Snapshots taped by prim_advance_exp: state right before, and right
+    // after, HV ran (see prim_advance_exp.hpp's ttype10_imex_timestep, and
+    // the store_fwd_state block at the end of prim_advance_exp.cpp). Indices
+    // 10/11 assume ttype10_imex's tape layout (11 stage checkpoints before
+    // the post-HV one); revisit if another scheme's adjoint changes that.
+    const auto& y5    = tape.at(10);
+    const auto& y5_hv = tape.at(11);
+
+    auto& scratch = c.create_if_not_there<HVAdjointScratch>(nelem);
+    auto& hv = std::any_cast<HyperviscosityFunctorImplST<Real>&>(scratch.hv.impl());
+    constexpr int slot = 0;
+
+    // Base point for the vtheta_dp<->theta linearization: pre-HV (dp,theta).
+    scratch.state.import_snapshot(y5,slot);
+    hv.init_J(slot);
+
+    // linearize_theta_out_adjoint needs the post-HV (dp,vtheta_dp) state.
+    scratch.state.import_snapshot(y5_hv,slot);
+
+    // run_JtV requires x and y to be different objects.
+    scratch.seed.deep_copy(adj_state);
+    hv.run_JtV(slot,scratch.seed,adj_state);
+    GPTLstop("prim_advance_adj-hv");
+  }
+
+  switch (params.time_step_type) {
+    case TimeStepType::ttype10_imex:
+      ttype10_imex_adjoint(dt,eta_ave_w,adj_state);
+      break;
+    default:
+      {
+        std::string msg = "[prim_advance_adj] Error! ";
+        msg += "Adjoint not implemented for time step method ";
+        msg += std::to_string(etoi(params.time_step_type));
+        msg += ".\n";
+        EKAT_ERROR_MSG(msg);
+      }
+  }
+
+  if (not params.theta_hydrostatic_mode) {
+    // Adjoint of the w_i(n0) surface fix at the top of prim_advance_exp:
+    //   w(surface) = (u_last*gradphis_x + v_last*gradphis_y)/g
+    // This is exactly linear in (u,v), and depends only on (constant)
+    // geometry, so no base point/snapshot is needed. v is only *read* by
+    // the fwd fix, so its adjoint contribution is added into adj_v;
+    // w_i(surface) is fully *overwritten* by the fwd fix (never accumulated
+    // into), so its incoming adjoint is zeroed once transferred to adj_v.
+    GPTLstart("prim_advance_adj-wsurf");
+    const auto& geo = c.get<ElementsGeometry>();
+    auto gradphis = geo.m_gradphis;
+    auto adj_v = ekat::scalarize(adj_state.v);
+    auto adj_w = ekat::scalarize(adj_state.w_i);
+    constexpr int last_mid = NUM_PHYSICAL_LEV-1;
+    constexpr int last_int = NUM_INTERFACE_LEV-1;
+    constexpr Real g = PhysicalConstants::g;
+    using md_range_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<3>>;
+    auto p3 = md_range_t({0,0,0}, {nelem,NP,NP});
+    Kokkos::parallel_for(p3, KOKKOS_LAMBDA (const int ie, const int ip, const int jp) {
+      const Real gx = gradphis(ie,0,ip,jp);
+      const Real gy = gradphis(ie,1,ip,jp);
+      const Real w_adj = adj_w(ie,ip,jp,last_int);
+      adj_v(ie,0,ip,jp,last_mid) += w_adj*gx/g;
+      adj_v(ie,1,ip,jp,last_mid) += w_adj*gy/g;
+      adj_w(ie,ip,jp,last_int) = 0;
+    });
+    Kokkos::fence();
+    GPTLstop("prim_advance_adj-wsurf");
+  }
+
+  GPTLstop("prim_advance_adj");
 }
 
 } // namespace Homme
