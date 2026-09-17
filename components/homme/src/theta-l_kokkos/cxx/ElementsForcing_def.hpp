@@ -36,6 +36,14 @@ void ElementsForcingST<ST>::randomize (const int seed, const Real min_f, const R
   genRandArray(m_fphi,    engine, random_dist);
 }
 
+template<typename ST>
+void ElementsForcingST<ST>::zero () {
+  Kokkos::deep_copy(m_fm,0);
+  Kokkos::deep_copy(m_fvtheta,0);
+  Kokkos::deep_copy(m_ft,0);
+  Kokkos::deep_copy(m_fphi,0);
+}
+
 } // namespace Homme
 
 #endif // HOMME_ELEMENTS_FORCING_DEF_HPP

@@ -204,6 +204,20 @@ IF (HOMMEXX_BFB_TESTING)
   cxx_unit_test (forcing_ut "${FORCING_UT_F90_SRCS}" "${FORCING_UT_CXX_SRCS}" "${FORCING_UT_INCLUDE_DIRS}" "${CONFIG_DEFINES}" ${NUM_CPUS})
   TARGET_LINK_LIBRARIES(forcing_ut thetal_kokkos_ut_lib)
 
+  ### Forcing adjoint unit test (dJ/dF, states_forcing_adj) ###
+
+  if (NOT HOMMEXX_ENABLE_FWD_SENS)
+    # states_forcing_adj is Real-only (see the static_assert in
+    # ForcingFunctor.hpp), so it isn't usable when ForcingFunctor's
+    # ScalarValue is a Fad type. Purely local (no MPI/connectivity), so
+    # unlike most other thetal_kokkos_ut tests it needs no F90 sources.
+    EkatCreateUnitTest ("forcing_adjoint_ut"
+      "forcing_adjoint_ut.cpp"
+      LIBS thetal_kokkos_ut_lib
+      LABELS AMDIS
+    )
+  endif()
+
   # ### Caar functor unit test
 
   SET (CAAR_UT_CXX_SRCS

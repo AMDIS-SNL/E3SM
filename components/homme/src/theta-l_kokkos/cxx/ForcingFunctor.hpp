@@ -19,7 +19,11 @@
 #include "KernelVariables.hpp"
 #include "profiling.hpp"
 
+#include "StateSnapshot.hpp"
+
 #include "utilities/BfbUtils.hpp"
+
+#include <type_traits>
 
 namespace Homme {
 
@@ -31,6 +35,7 @@ class ForcingFunctorST
 public:
 
   struct TagStates {};
+  struct TagStatesAdjoint {};
   struct TagTracersPre {};
   struct TagTracers {};
   struct TagTracersPost {};
@@ -46,13 +51,16 @@ public:
    , m_num_tracers(m_tracers.num_tracers())
    , is_setup(true)
    , m_policy_states(1,1)       // Need to init in constructor. Fix sizes in the body.
+   , m_policy_states_adj(1,1)
    , m_policy_tracers_pre(1,1)
    , m_policy_tracers(1,1)
    , m_policy_tracers_post(1,1)
    , m_tu_states(m_policy_states)
+   , m_tu_states_adj(m_policy_states_adj)
    , m_tu_tracers_pre(m_policy_tracers_pre)
    , m_tu_tracers(m_policy_tracers)
    , m_tu_tracers_post(m_policy_tracers_post)
+   , m_lambda(0) // Placeholder; reassigned (shallow) by states_forcing_adj
   {
     // Check everything is init-ed
     assert (m_state.num_elems()>0);
@@ -78,13 +86,16 @@ public:
     , m_num_tracers(num_tracers)
     , is_setup(false)
     , m_policy_states(1,1)       // Need to init in constructor. Fix sizes in the body.
+    , m_policy_states_adj(1,1)
     , m_policy_tracers_pre(1,1)
     , m_policy_tracers(1,1)
     , m_policy_tracers_post(1,1)
     , m_tu_states(m_policy_states)
+    , m_tu_states_adj(m_policy_states_adj)
     , m_tu_tracers_pre(m_policy_tracers_pre)
     , m_tu_tracers(m_policy_tracers)
     , m_tu_tracers_post(m_policy_tracers_post)
+    , m_lambda(0) // Placeholder; reassigned (shallow) by states_forcing_adj
   {
     assert (m_hvcoord.m_inited);
 
@@ -111,11 +122,13 @@ public:
   void init_team_policies ()
   {
     m_policy_states = Homme::get_default_team_policy<ExecSpace,TagStates>(m_num_state_elems);
+    m_policy_states_adj = Homme::get_default_team_policy<ExecSpace,TagStatesAdjoint>(m_num_state_elems);
     m_policy_tracers_pre = Homme::get_default_team_policy<ExecSpace,TagTracersPre>(m_num_tracer_elems);
     m_policy_tracers = Homme::get_default_team_policy<ExecSpace,TagTracers>(m_num_tracer_elems*m_num_tracers);
     m_policy_tracers_post = Homme::get_default_team_policy<ExecSpace,TagTracersPost>(m_num_tracer_elems);
 
     m_tu_states       = TeamUtils<ExecSpace>(m_policy_states);
+    m_tu_states_adj   = TeamUtils<ExecSpace>(m_policy_states_adj);
     m_tu_tracers_pre  = TeamUtils<ExecSpace>(m_policy_tracers_pre);
     m_tu_tracers      = TeamUtils<ExecSpace>(m_policy_tracers);
     m_tu_tracers_post = TeamUtils<ExecSpace>(m_policy_tracers_post);
@@ -212,6 +225,53 @@ public:
     Kokkos::fence();
   }
 
+  // Adjoint of states_forcing. states_forcing is an exactly affine map of
+  // (state(np1), forcing) -> state(np1) (a per-level += for v/w_i/vtheta_dp/
+  // phinh_i, followed by an overwrite of w_i's surface level using a linear
+  // combination of the *just-forced* horizontal velocity), so no state or
+  // forcing values are needed here at all: the Jacobian is constant.
+  //
+  // On entry, lambda holds dJ/d(state(np1) after states_forcing ran); on
+  // exit, it holds dJ/d(state(np1) before states_forcing ran). forcing_grad
+  // accumulates (+=, not overwrites) dJ/d(fm), dJ/d(fvtheta), dJ/d(fphi) --
+  // this is the "dJ/d(applied_forcing)" deposit described in the adjoint
+  // battleplan's Step 1/2: since ST=ScalarValue's fm IS the NN's FM output
+  // (and fvtheta/fphi are, in turn, produced from FT by tracers_forcing --
+  // not yet implemented), forcing_grad is deliberately just an
+  // ElementsForcingST<ST> (same shape as the forcing it differentiates),
+  // reused as the dJ/dF accumulator rather than inventing a new type. The
+  // caller owns forcing_grad's lifecycle (zero() it once, then accumulate
+  // across calls); this function never zeroes it itself.
+  void states_forcing_adj (const Real dt, const int np1,
+                           StateSnapshot& lambda,
+                           ElementsForcingST<ST>& forcing_grad) {
+    // StateSnapshot's scalar type is fixed to Real; only that specialization
+    // of ForcingFunctorST can be paired with it here. Extending this to a
+    // Fad-typed ForcingFunctorST (used elsewhere for forward sensitivities)
+    // would need a templated adjoint-state container instead of
+    // StateSnapshot.
+    static_assert(std::is_same<ST,Real>::value,
+                  "states_forcing_adj requires ForcingFunctorST<Real>.");
+
+    // The Functor needs to be fully setup to use this function
+    assert (is_setup);
+
+    m_dt = dt;
+    m_np1 = np1;
+    // Shallow copies: m_lambda/m_forcing_grad's Views are reseated to alias
+    // lambda/forcing_grad's underlying (device-accessible) data, exactly
+    // like m_state/m_forcing are aliased to the Context's data. A raw
+    // pointer to lambda/forcing_grad would not be safe here, since *this is
+    // copied by value into the parallel_for below (and, on a GPU build, to
+    // the device), so anything reachable only via a host pointer would be
+    // unusable inside operator().
+    m_lambda = lambda;
+    m_forcing_grad = forcing_grad;
+
+    Kokkos::parallel_for("adjoint of states forcing",m_policy_states_adj,*this);
+    Kokkos::fence();
+  }
+
   KOKKOS_INLINE_FUNCTION
   void operator() (const TagStates&, const TeamMember& team) const {
     constexpr int LAST_MID_PACK     = ColInfo<NUM_PHYSICAL_LEV>::LastPack;
@@ -253,6 +313,62 @@ public:
       w(LAST_INT_PACK)[LAST_INT_PACK_END] =
         (u(LAST_MID_PACK)[LAST_MID_PACK_END]*m_geometry.m_gradphis(kv.ie,0,igp,jgp) +
          v(LAST_MID_PACK)[LAST_MID_PACK_END]*m_geometry.m_gradphis(kv.ie,1,igp,jgp)) / PhysicalConstants::g;
+    });
+  }
+
+  // Adjoint of operator()(TagStates,...), run in exact reverse order of the
+  // forward stages there: first undo the w_i surface fix (an overwrite, so
+  // it both deposits into lambda_u/lambda_v and cuts off lambda_w's incoming
+  // path at that one level), then undo the per-level += of the forcing.
+  KOKKOS_INLINE_FUNCTION
+  void operator() (const TagStatesAdjoint&, const TeamMember& team) const {
+    constexpr int LAST_MID_PACK     = ColInfo<NUM_PHYSICAL_LEV>::LastPack;
+    constexpr int LAST_MID_PACK_END = ColInfo<NUM_PHYSICAL_LEV>::LastPackEnd;
+    constexpr int LAST_INT_PACK     = ColInfo<NUM_INTERFACE_LEV>::LastPack;
+    constexpr int LAST_INT_PACK_END = ColInfo<NUM_INTERFACE_LEV>::LastPackEnd;
+
+    KernelVariables kv(team, m_tu_states_adj);
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(kv.team,NP*NP),
+                         [&](const int idx) {
+
+      const int igp  = idx / NP;
+      const int jgp  = idx % NP;
+
+      auto lambda_u      = Homme::subview(m_lambda.v,kv.ie,0,igp,jgp);
+      auto lambda_v      = Homme::subview(m_lambda.v,kv.ie,1,igp,jgp);
+      auto lambda_w      = Homme::subview(m_lambda.w_i,kv.ie,igp,jgp);
+      auto lambda_vtheta = Homme::subview(m_lambda.vtheta_dp,kv.ie,igp,jgp);
+      auto lambda_phi    = Homme::subview(m_lambda.phinh_i,kv.ie,igp,jgp);
+
+      auto fm_x_grad    = Homme::subview(m_forcing_grad.m_fm,kv.ie,0,igp,jgp);
+      auto fm_y_grad    = Homme::subview(m_forcing_grad.m_fm,kv.ie,1,igp,jgp);
+      auto fm_z_grad    = Homme::subview(m_forcing_grad.m_fm,kv.ie,2,igp,jgp);
+      auto fvtheta_grad = Homme::subview(m_forcing_grad.m_fvtheta,kv.ie,igp,jgp);
+      auto fphi_grad    = Homme::subview(m_forcing_grad.m_fphi,kv.ie,igp,jgp);
+
+      // Reverse of the w_i surface fix. It *overwrote* (not accumulated)
+      // that one level using the forced u,v at the last mid level, so:
+      //  - lambda_w at that level deposits into lambda_u/lambda_v there,
+      //  - lambda_w at that level is then zeroed (nothing upstream of the
+      //    overwrite should see a gradient through it).
+      const Real lambda_w_surf = lambda_w(LAST_INT_PACK)[LAST_INT_PACK_END];
+      lambda_u(LAST_MID_PACK)[LAST_MID_PACK_END] +=
+        lambda_w_surf*m_geometry.m_gradphis(kv.ie,0,igp,jgp) / PhysicalConstants::g;
+      lambda_v(LAST_MID_PACK)[LAST_MID_PACK_END] +=
+        lambda_w_surf*m_geometry.m_gradphis(kv.ie,1,igp,jgp) / PhysicalConstants::g;
+      lambda_w(LAST_INT_PACK)[LAST_INT_PACK_END] = 0.0;
+
+      // Reverse of the per-level accumulation: state += dt*forcing, so
+      // dJ/d(forcing) += dt*lambda(state), while lambda(state) itself is
+      // unchanged (d(state_out)/d(state_in) = 1 for a plain +=).
+      Kokkos::parallel_for(Kokkos::ThreadVectorRange(kv.team,NUM_LEV),
+                           [&](const int ilev) {
+        fvtheta_grad(ilev) += m_dt*lambda_vtheta(ilev);
+        fphi_grad(ilev)    += m_dt*lambda_phi(ilev);
+        fm_x_grad(ilev)    += m_dt*lambda_u(ilev);
+        fm_y_grad(ilev)    += m_dt*lambda_v(ilev);
+        fm_z_grad(ilev)    += m_dt*lambda_w(ilev);
+      });
     });
   }
 
@@ -580,11 +696,19 @@ private:
   bool m_adjust_ps;
   Real m_dt;
 
-  Kokkos::TeamPolicy<ExecSpace,TagStates>       m_policy_states;
-  Kokkos::TeamPolicy<ExecSpace,TagTracersPre>   m_policy_tracers_pre;
-  Kokkos::TeamPolicy<ExecSpace,TagTracers>      m_policy_tracers;
-  Kokkos::TeamPolicy<ExecSpace,TagTracersPost>  m_policy_tracers_post;
-  TeamUtils<ExecSpace> m_tu_states, m_tu_tracers_pre, m_tu_tracers, m_tu_tracers_post;
+  Kokkos::TeamPolicy<ExecSpace,TagStates>        m_policy_states;
+  Kokkos::TeamPolicy<ExecSpace,TagStatesAdjoint>  m_policy_states_adj;
+  Kokkos::TeamPolicy<ExecSpace,TagTracersPre>    m_policy_tracers_pre;
+  Kokkos::TeamPolicy<ExecSpace,TagTracers>       m_policy_tracers;
+  Kokkos::TeamPolicy<ExecSpace,TagTracersPost>   m_policy_tracers_post;
+  TeamUtils<ExecSpace> m_tu_states, m_tu_states_adj, m_tu_tracers_pre, m_tu_tracers, m_tu_tracers_post;
+
+  // Shallow aliases (reassigned by states_forcing_adj to whatever
+  // lambda/forcing_grad were passed in for that call) rather than pointers,
+  // since *this is copied by value to the device for the parallel_for launch
+  // -- see states_forcing_adj for details.
+  StateSnapshot m_lambda;
+  ElementsForcingST<ST> m_forcing_grad;
 };
 
 using ForcingFunctor = ForcingFunctorST<ScalarValue>;
