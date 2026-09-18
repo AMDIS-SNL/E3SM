@@ -8,7 +8,6 @@
 #include <pio.h>
 #include <mpi.h>
 
-#include <algorithm>
 #include <filesystem>
 #include <numeric>
 #include <sstream>
@@ -33,113 +32,103 @@ int pio_real_type () {
   return std::is_same<Real,double>::value ? PIO_DOUBLE : PIO_FLOAT;
 }
 
-// Number of physical (unpadded) Real entries *per element* a rank 3/4/5
-// (elem, ...) view holds, i.e. everything but the leading "elem" extent.
-// Computed from extents alone (no device access).
+// Allocates a fresh device view shaped like `view` but with its last extent
+// trimmed to phys_last_extent, uninitialized. Real-valued and LayoutRight,
+// so its host mirror's data() is exactly the flat, element-major buffer
+// PIOc_write_darray/PIOc_read_darray expect for a rank's local contribution
+// (matching the offsets build_compmap() constructs). Only needed when there
+// actually *is* padding to strip; see write_darray_field/read_darray_field.
 template<typename ViewT>
-size_t per_elem_stride (const ViewT& view, const int phys_last_extent) {
+auto make_compact_view (const ViewT& view, const int phys_last_extent) {
+  using ExecSpace = typename ViewT::execution_space;
   constexpr int N = ViewT::rank;
   static_assert (N==3 or N==4 or N==5, "Unsupported rank for checkpoint I/O.\n");
+
   if constexpr (N==3) {
-    return static_cast<size_t>(view.extent(1))*phys_last_extent;
+    Kokkos::View<Real***,Kokkos::LayoutRight,ExecSpace> compact(
+        "checkpoint_compact",view.extent(0),view.extent(1),phys_last_extent);
+    return compact;
   } else if constexpr (N==4) {
-    return static_cast<size_t>(view.extent(1))*view.extent(2)*phys_last_extent;
+    Kokkos::View<Real****,Kokkos::LayoutRight,ExecSpace> compact(
+        "checkpoint_compact",view.extent(0),view.extent(1),view.extent(2),phys_last_extent);
+    return compact;
   } else { // N==5
-    return static_cast<size_t>(view.extent(1))*view.extent(2)*view.extent(3)*phys_last_extent;
+    Kokkos::View<Real*****,Kokkos::LayoutRight,ExecSpace> compact(
+        "checkpoint_compact",view.extent(0),view.extent(1),view.extent(2),view.extent(3),phys_last_extent);
+    return compact;
   }
 }
 
-// Reads the physical (unpadded) entries of a (already-scalarized, so
-// Real-valued) rank 3/4/5 view into a flat, row-major (element-major) host
-// buffer -- exactly the layout PIOc_write_darray/PIOc_read_darray expect
-// for a rank's local contribution, given a decomposition built by
-// build_compmap() below. Packed fields (v, vtheta_dp, dp3d, w_i, phinh_i)
-// must be passed through ekat::scalarize() first; their packing only ever
-// pads the *last* dimension, so only phys_last_extent (<= the view's last
-// extent) entries along it are read -- the rest is padding, and must not be
-// written to disk (it may be uninitialized). When there is no padding at
-// all (ps_v, which was never packed; or any packed field on a build with
-// pack size 1, e.g. GPU builds), the mirror's own storage already *is* the
-// buffer we want, so no per-index copy is needed -- just one bulk copy of
-// its data.
-template<typename ViewT>
-std::vector<Real> view_to_flat_buffer (const ViewT& view, const int phys_last_extent) {
-  auto h = Kokkos::create_mirror_view(view);
-  Kokkos::deep_copy(h,view);
-
+// Device kernel: compact(...,k) = view(...,k) for k<phys_last_extent -- the
+// padding past phys_last_extent in view (if any) is simply never read. Used
+// to strip padding *before* moving data to host, rather than after (a slow
+// serial loop over an already-host-side buffer).
+template<typename ViewT, typename CompactViewT>
+void copy_into_compact (const ViewT& view, const CompactViewT& compact, const int phys_last_extent) {
+  using ExecSpace = typename ViewT::execution_space;
   constexpr int N = ViewT::rank;
   static_assert (N==3 or N==4 or N==5, "Unsupported rank for checkpoint I/O.\n");
 
-  std::vector<Real> buf(static_cast<size_t>(view.extent(0))*per_elem_stride(view,phys_last_extent));
-
-  if (view.extent_int(N-1)==phys_last_extent) {
-    std::copy(h.data(),h.data()+buf.size(),buf.begin());
-    return buf;
-  }
-
-  size_t idx = 0;
   if constexpr (N==3) {
-    for (int i=0; i<view.extent_int(0); ++i)
-      for (int j=0; j<view.extent_int(1); ++j)
-        for (int k=0; k<phys_last_extent; ++k)
-          buf[idx++] = h(i,j,k);
+    Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<3>> policy(
+        {0,0,0},{view.extent_int(0),view.extent_int(1),phys_last_extent});
+    Kokkos::parallel_for("checkpoint_strip_padding",policy,
+        KOKKOS_LAMBDA(const int i, const int j, const int k) {
+      compact(i,j,k) = view(i,j,k);
+    });
   } else if constexpr (N==4) {
-    for (int i=0; i<view.extent_int(0); ++i)
-      for (int j=0; j<view.extent_int(1); ++j)
-        for (int k=0; k<view.extent_int(2); ++k)
-          for (int l=0; l<phys_last_extent; ++l)
-            buf[idx++] = h(i,j,k,l);
+    Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>> policy(
+        {0,0,0,0},{view.extent_int(0),view.extent_int(1),view.extent_int(2),phys_last_extent});
+    Kokkos::parallel_for("checkpoint_strip_padding",policy,
+        KOKKOS_LAMBDA(const int i, const int j, const int k, const int l) {
+      compact(i,j,k,l) = view(i,j,k,l);
+    });
   } else { // N==5
-    for (int i=0; i<view.extent_int(0); ++i)
-      for (int j=0; j<view.extent_int(1); ++j)
-        for (int k=0; k<view.extent_int(2); ++k)
-          for (int l=0; l<view.extent_int(3); ++l)
-            for (int m=0; m<phys_last_extent; ++m)
-              buf[idx++] = h(i,j,k,l,m);
+    Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<5>> policy(
+        {0,0,0,0,0},{view.extent_int(0),view.extent_int(1),view.extent_int(2),view.extent_int(3),phys_last_extent});
+    Kokkos::parallel_for("checkpoint_strip_padding",policy,
+        KOKKOS_LAMBDA(const int i, const int j, const int k, const int l, const int m) {
+      compact(i,j,k,l,m) = view(i,j,k,l,m);
+    });
   }
-  return buf;
+  Kokkos::fence();
 }
 
-// Inverse of view_to_flat_buffer. Deliberately does *not* touch the padding
-// past phys_last_extent (when there is any): a fresh create_mirror_view's
-// padding is whatever the allocator happened to give it, most likely
-// uninitialized garbage, and leaving it that way is more likely to make any
-// accidental use of it visibly break (NaN, crash) than a quietly-plausible
-// zero would.
-template<typename ViewT>
-void flat_buffer_to_view (const std::vector<Real>& buf, const ViewT& view, const int phys_last_extent) {
-  auto h = Kokkos::create_mirror_view(view);
-
+// Inverse of copy_into_compact: view(...,k) = compact(...,k) for
+// k<phys_last_extent, leaving view's own padding (if any) untouched -- a
+// fresh create_mirror_view's padding is whatever the allocator happened to
+// give it, most likely uninitialized garbage, and leaving it that way is
+// more likely to make any accidental use of it visibly break (NaN, crash)
+// than a quietly-plausible zero would.
+template<typename CompactViewT, typename ViewT>
+void copy_from_compact (const CompactViewT& compact, const ViewT& view, const int phys_last_extent) {
+  using ExecSpace = typename ViewT::execution_space;
   constexpr int N = ViewT::rank;
   static_assert (N==3 or N==4 or N==5, "Unsupported rank for checkpoint I/O.\n");
 
-  if (view.extent_int(N-1)==phys_last_extent) {
-    std::copy(buf.begin(),buf.begin()+buf.size(),h.data());
-    Kokkos::deep_copy(view,h);
-    return;
-  }
-
-  size_t idx = 0;
   if constexpr (N==3) {
-    for (int i=0; i<view.extent_int(0); ++i)
-      for (int j=0; j<view.extent_int(1); ++j)
-        for (int k=0; k<phys_last_extent; ++k)
-          h(i,j,k) = buf[idx++];
+    Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<3>> policy(
+        {0,0,0},{view.extent_int(0),view.extent_int(1),phys_last_extent});
+    Kokkos::parallel_for("checkpoint_expand_padding",policy,
+        KOKKOS_LAMBDA(const int i, const int j, const int k) {
+      view(i,j,k) = compact(i,j,k);
+    });
   } else if constexpr (N==4) {
-    for (int i=0; i<view.extent_int(0); ++i)
-      for (int j=0; j<view.extent_int(1); ++j)
-        for (int k=0; k<view.extent_int(2); ++k)
-          for (int l=0; l<phys_last_extent; ++l)
-            h(i,j,k,l) = buf[idx++];
+    Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>> policy(
+        {0,0,0,0},{view.extent_int(0),view.extent_int(1),view.extent_int(2),phys_last_extent});
+    Kokkos::parallel_for("checkpoint_expand_padding",policy,
+        KOKKOS_LAMBDA(const int i, const int j, const int k, const int l) {
+      view(i,j,k,l) = compact(i,j,k,l);
+    });
   } else { // N==5
-    for (int i=0; i<view.extent_int(0); ++i)
-      for (int j=0; j<view.extent_int(1); ++j)
-        for (int k=0; k<view.extent_int(2); ++k)
-          for (int l=0; l<view.extent_int(3); ++l)
-            for (int m=0; m<phys_last_extent; ++m)
-              h(i,j,k,l,m) = buf[idx++];
+    Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<5>> policy(
+        {0,0,0,0,0},{view.extent_int(0),view.extent_int(1),view.extent_int(2),view.extent_int(3),phys_last_extent});
+    Kokkos::parallel_for("checkpoint_expand_padding",policy,
+        KOKKOS_LAMBDA(const int i, const int j, const int k, const int l, const int m) {
+      view(i,j,k,l,m) = compact(i,j,k,l,m);
+    });
   }
-  Kokkos::deep_copy(view,h);
+  Kokkos::fence();
 }
 
 // One contiguous block of `stride` consecutive 0-based offsets per local
@@ -186,22 +175,54 @@ int init_decomp (const int iosysid, const int rearranger, const int global_num_e
 // Writes local_view's (already scalarized) local data as record snap_idx of
 // varid, via the given decomposition. Collective (every rank must call this
 // with its own local slice; scorpio's rearranger does the rest).
+//
+// If local_view has no padding to strip (ps_v, which was never packed; or
+// any packed field on a pack-size-1 build, e.g. GPU), its own host mirror
+// already *is* the buffer PIO wants, so there's nothing to do beyond one
+// deep_copy. Otherwise, the padding is stripped with a device kernel first
+// (copy_into_compact) rather than after moving to host: a device kernel
+// parallelizes the same way the rest of HOMME's code does, where a host
+// for-loop over the whole field would just be slow.
 template<typename ViewT>
 void write_darray_field (const int ncid, const int varid, const int decompid, const int snap_idx,
                           const ViewT& local_view, const int phys_ext) {
   check_pio_noerr(PIOc_setframe(ncid,varid,snap_idx),"setframe");
-  const auto buf = view_to_flat_buffer(local_view,phys_ext);
-  check_pio_noerr(PIOc_write_darray(ncid,varid,decompid,buf.size(),buf.data(),nullptr),"write_darray");
+
+  constexpr int N = ViewT::rank;
+  if (local_view.extent_int(N-1)==phys_ext) {
+    auto h = Kokkos::create_mirror_view(local_view);
+    Kokkos::deep_copy(h,local_view);
+    check_pio_noerr(PIOc_write_darray(ncid,varid,decompid,h.size(),h.data(),nullptr),"write_darray");
+  } else {
+    auto compact = make_compact_view(local_view,phys_ext);
+    copy_into_compact(local_view,compact,phys_ext);
+    auto h = Kokkos::create_mirror_view(compact);
+    Kokkos::deep_copy(h,compact);
+    check_pio_noerr(PIOc_write_darray(ncid,varid,decompid,h.size(),h.data(),nullptr),"write_darray");
+  }
 }
 
-// Inverse of write_darray_field.
+// Inverse of write_darray_field: mirrors it symmetrically -- read straight
+// into local_view's own host mirror when there's no padding to worry about,
+// otherwise read into a compact host/device buffer and expand it into
+// local_view's physical entries with a device kernel (copy_from_compact).
 template<typename ViewT>
 void read_darray_field (const int ncid, const int varid, const int decompid, const int snap_idx,
                          ViewT local_view, const int phys_ext) {
   check_pio_noerr(PIOc_setframe(ncid,varid,snap_idx),"setframe");
-  std::vector<Real> buf(static_cast<size_t>(local_view.extent(0))*per_elem_stride(local_view,phys_ext));
-  check_pio_noerr(PIOc_read_darray(ncid,varid,decompid,buf.size(),buf.data()),"read_darray");
-  flat_buffer_to_view(buf,local_view,phys_ext);
+
+  constexpr int N = ViewT::rank;
+  if (local_view.extent_int(N-1)==phys_ext) {
+    auto h = Kokkos::create_mirror_view(local_view);
+    check_pio_noerr(PIOc_read_darray(ncid,varid,decompid,h.size(),h.data()),"read_darray");
+    Kokkos::deep_copy(local_view,h);
+  } else {
+    auto compact = make_compact_view(local_view,phys_ext);
+    auto h = Kokkos::create_mirror_view(compact);
+    check_pio_noerr(PIOc_read_darray(ncid,varid,decompid,h.size(),h.data()),"read_darray");
+    Kokkos::deep_copy(compact,h);
+    copy_from_compact(compact,local_view,phys_ext);
+  }
 }
 
 } // anonymous namespace
