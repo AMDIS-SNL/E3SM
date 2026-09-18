@@ -183,6 +183,12 @@ MACRO(THETAL_KOKKOS_SETUP)
     ${SRC_SHARE_DIR}/cxx/utilities/IOUtils.cpp
   )
 
+  if (NOT BUILD_HOMME_WITHOUT_PIOLIBRARY AND HOMME_USE_SCORPIO)
+    list(APPEND THETAL_DEPS_CXX
+      ${TARGET_DIR}/cxx/CheckpointIO.cpp
+    )
+  endif()
+
   if (HOMMEXX_ENABLE_FAD_TYPES)
     list(APPEND THETAL_DEPS_CXX
       ${TARGET_DIR}/cxx/prim_advance_adj.cpp
