@@ -7,18 +7,25 @@ namespace Homme {
 StateSnapshot::
 StateSnapshot(int nelem, bool alloc_ps)
  : num_elems(nelem)
- , v ("v",nelem)
- , vtheta_dp ("vtheta_dp",nelem)
- , dp3d ("dp3d",nelem)
- , w_i ("w",nelem)
- , phinh_i ("phinh",nelem)
 {
+  EKAT_REQUIRE_MSG (num_elems>=0,
+      "Error! Input num elems must be non-negative.\n");
+
+ v         = decltype(v)        ("v",nelem);
+ vtheta_dp = decltype(vtheta_dp)("vtheta_dp",nelem);
+ dp3d      = decltype(dp3d)     ("dp3d",nelem);
+ w_i       = decltype(w_i)      ("w",nelem);
+ phinh_i   = decltype(phinh_i)  ("phinh",nelem);
   if (alloc_ps)
     ps_v = decltype(ps_v)("ps",nelem);
 }
 
 void StateSnapshot::deep_copy (const StateSnapshot& src)
 {
+  EKAT_REQUIRE_MSG (num_elems==src.num_elems,
+      "Error! LHS and RHS StateSnapshot must have the same number of elements.\n"
+      " LHS: " + std::to_string(num_elems) + "\n"
+      " RHS: " + std::to_string(src.num_elems) + "\n");
   EKAT_REQUIRE_MSG ((ps_v.data()!=nullptr)==(src.ps_v.data()!=nullptr),
       "Error! Src and tgt StateSnapshot must agree on whether to use ps_v.\n");
   Kokkos::deep_copy(v,src.v);
@@ -53,6 +60,11 @@ void StateSnapshot::zero ()
 
 void StateSnapshot::add (const StateSnapshot& x)
 {
+  EKAT_REQUIRE_MSG (num_elems==x.num_elems,
+      "Error! LHS and RHS StateSnapshot must have the same number of elements.\n"
+      " LHS: " + std::to_string(num_elems) + "\n"
+      " RHS: " + std::to_string(x.num_elems) + "\n");
+
   using md_range_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>>;
   auto p4_mid = md_range_t({0,0,0,0},{num_elems,NP,NP,NUM_LEV});
   auto p4_int = md_range_t({0,0,0,0},{num_elems,NP,NP,NUM_LEV_P});
@@ -92,6 +104,15 @@ void StateSnapshot::add_weighted (const StateSnapshot& x,
                                   const ExecViewManaged<Real*[NP][NP]>& weight,
                                   const Real scale)
 {
+  EKAT_REQUIRE_MSG (num_elems==x.num_elems,
+      "Error! LHS and RHS StateSnapshot must have the same number of elements.\n"
+      " LHS: " + std::to_string(num_elems) + "\n"
+      " RHS: " + std::to_string(x.num_elems) + "\n");
+  EKAT_REQUIRE_MSG (num_elems==weight.extent_int(0),
+      "Error! weight view first extent must match the snapshot's num_elems.\n"
+      " LHS: " + std::to_string(num_elems) + "\n"
+      " weight: " + std::to_string(weight.extent_int(0)) + "\n");
+
   using md_range_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>>;
   auto p4_mid = md_range_t({0,0,0,0},{num_elems,NP,NP,NUM_LEV});
   auto p4_int = md_range_t({0,0,0,0},{num_elems,NP,NP,NUM_LEV_P});

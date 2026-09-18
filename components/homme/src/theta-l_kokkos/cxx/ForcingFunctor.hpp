@@ -19,7 +19,11 @@
 #include "KernelVariables.hpp"
 #include "profiling.hpp"
 
+#include "StateSnapshot.hpp"
+
 #include "utilities/BfbUtils.hpp"
+
+#include <type_traits>
 
 namespace Homme {
 
@@ -31,6 +35,7 @@ class ForcingFunctorST
 public:
 
   struct TagStates {};
+  struct TagStatesAdjoint {};
   struct TagTracersPre {};
   struct TagTracers {};
   struct TagTracersPost {};
@@ -53,6 +58,7 @@ public:
    , m_tu_tracers_pre(m_policy_tracers_pre)
    , m_tu_tracers(m_policy_tracers)
    , m_tu_tracers_post(m_policy_tracers_post)
+   , m_lambda(0) // Placeholder; reassigned (shallow) by states_forcing_adj
   {
     // Check everything is init-ed
     assert (m_state.num_elems()>0);
@@ -85,6 +91,7 @@ public:
     , m_tu_tracers_pre(m_policy_tracers_pre)
     , m_tu_tracers(m_policy_tracers)
     , m_tu_tracers_post(m_policy_tracers_post)
+    , m_lambda(0) // Placeholder; reassigned (shallow) by states_forcing_adj
   {
     assert (m_hvcoord.m_inited);
 
@@ -212,6 +219,57 @@ public:
     Kokkos::fence();
   }
 
+  // Adjoint of states_forcing. states_forcing is an exactly affine map of
+  // (state(np1), forcing) -> state(np1) (a per-level += for v/w_i/vtheta_dp/
+  // phinh_i, followed by an overwrite of w_i's surface level using a linear
+  // combination of the *just-forced* horizontal velocity), so no state or
+  // forcing values are needed here at all: the Jacobian is constant.
+  //
+  // On entry, lambda holds dJ/d(state(np1) after states_forcing ran); on
+  // exit, it holds dJ/d(state(np1) before states_forcing ran). dJ_dforcing
+  // accumulates (+=, not overwrites) dJ/d(fm), dJ/d(fvtheta), dJ/d(fphi).
+  // fm, fvtheta and fphi are exactly the tendencies states_forcing itself
+  // reads, so dJ_dforcing is deliberately just an ElementsForcingST<ST> (the
+  // same type/shape as the forcing it differentiates) rather than a new
+  // type. The caller owns its lifecycle (zero() it once, then accumulate
+  // into it across calls); this function never zeroes it itself.
+  void states_forcing_adj (const Real dt, const int np1,
+                           StateSnapshot& lambda,
+                           ElementsForcingST<ST>& dJ_dforcing) {
+    // StateSnapshot's scalar type is fixed to Real; only that specialization
+    // of ForcingFunctorST can be paired with it here. Extending this to a
+    // Fad-typed ForcingFunctorST (used elsewhere for forward sensitivities)
+    // would need a templated adjoint-state container instead of
+    // StateSnapshot.
+    static_assert(std::is_same<ST,Real>::value,
+                  "states_forcing_adj requires ForcingFunctorST<Real>.");
+
+    // The Functor needs to be fully setup to use this function
+    assert (is_setup);
+
+    m_dt = dt;
+    m_np1 = np1;
+    // Shallow copies: m_lambda/m_dJ_dforcing's Views are reseated to alias
+    // lambda/dJ_dforcing's underlying (device-accessible) data, exactly
+    // like m_state/m_forcing are aliased to the Context's data. A raw
+    // pointer to lambda/dJ_dforcing would not be safe here, since *this is
+    // copied by value into the parallel_for below (and, on a GPU build, to
+    // the device), so anything reachable only via a host pointer would be
+    // unusable inside operator().
+    m_lambda = lambda;
+    m_dJ_dforcing = dJ_dforcing;
+
+    // Same index space as states_forcing (one entry per element), so reuse
+    // m_policy_states'/m_tu_states' sizing rather than recomputing it; only
+    // the work tag (which selects operator(TagStatesAdjoint,...) below) has
+    // to differ from m_policy_states itself.
+    Kokkos::TeamPolicy<ExecSpace,TagStatesAdjoint> policy_adj(
+        m_policy_states.league_size(), m_policy_states.team_size(), m_policy_states.vector_length());
+    policy_adj.set_chunk_size(1);
+    Kokkos::parallel_for("adjoint of states forcing",policy_adj,*this);
+    Kokkos::fence();
+  }
+
   KOKKOS_INLINE_FUNCTION
   void operator() (const TagStates&, const TeamMember& team) const {
     constexpr int LAST_MID_PACK     = ColInfo<NUM_PHYSICAL_LEV>::LastPack;
@@ -253,6 +311,62 @@ public:
       w(LAST_INT_PACK)[LAST_INT_PACK_END] =
         (u(LAST_MID_PACK)[LAST_MID_PACK_END]*m_geometry.m_gradphis(kv.ie,0,igp,jgp) +
          v(LAST_MID_PACK)[LAST_MID_PACK_END]*m_geometry.m_gradphis(kv.ie,1,igp,jgp)) / PhysicalConstants::g;
+    });
+  }
+
+  // Adjoint of operator()(TagStates,...), run in exact reverse order of the
+  // forward stages there: first undo the w_i surface fix (an overwrite, so
+  // it both deposits into lambda_u/lambda_v and cuts off lambda_w's incoming
+  // path at that one level), then undo the per-level += of the forcing.
+  KOKKOS_INLINE_FUNCTION
+  void operator() (const TagStatesAdjoint&, const TeamMember& team) const {
+    constexpr int LAST_MID_PACK     = ColInfo<NUM_PHYSICAL_LEV>::LastPack;
+    constexpr int LAST_MID_PACK_END = ColInfo<NUM_PHYSICAL_LEV>::LastPackEnd;
+    constexpr int LAST_INT_PACK     = ColInfo<NUM_INTERFACE_LEV>::LastPack;
+    constexpr int LAST_INT_PACK_END = ColInfo<NUM_INTERFACE_LEV>::LastPackEnd;
+
+    KernelVariables kv(team, m_tu_states);
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(kv.team,NP*NP),
+                         [&](const int idx) {
+
+      const int igp  = idx / NP;
+      const int jgp  = idx % NP;
+
+      auto lambda_u      = Homme::subview(m_lambda.v,kv.ie,0,igp,jgp);
+      auto lambda_v      = Homme::subview(m_lambda.v,kv.ie,1,igp,jgp);
+      auto lambda_w      = Homme::subview(m_lambda.w_i,kv.ie,igp,jgp);
+      auto lambda_vtheta = Homme::subview(m_lambda.vtheta_dp,kv.ie,igp,jgp);
+      auto lambda_phi    = Homme::subview(m_lambda.phinh_i,kv.ie,igp,jgp);
+
+      auto dJ_dfm_x      = Homme::subview(m_dJ_dforcing.m_fm,kv.ie,0,igp,jgp);
+      auto dJ_dfm_y      = Homme::subview(m_dJ_dforcing.m_fm,kv.ie,1,igp,jgp);
+      auto dJ_dfm_z      = Homme::subview(m_dJ_dforcing.m_fm,kv.ie,2,igp,jgp);
+      auto dJ_dfvtheta   = Homme::subview(m_dJ_dforcing.m_fvtheta,kv.ie,igp,jgp);
+      auto dJ_dfphi      = Homme::subview(m_dJ_dforcing.m_fphi,kv.ie,igp,jgp);
+
+      // Reverse of the w_i surface fix. It *overwrote* (not accumulated)
+      // that one level using the forced u,v at the last mid level, so:
+      //  - lambda_w at that level deposits into lambda_u/lambda_v there,
+      //  - lambda_w at that level is then zeroed (nothing upstream of the
+      //    overwrite should see a gradient through it).
+      const Real lambda_w_surf = lambda_w(LAST_INT_PACK)[LAST_INT_PACK_END];
+      lambda_u(LAST_MID_PACK)[LAST_MID_PACK_END] +=
+        lambda_w_surf*m_geometry.m_gradphis(kv.ie,0,igp,jgp) / PhysicalConstants::g;
+      lambda_v(LAST_MID_PACK)[LAST_MID_PACK_END] +=
+        lambda_w_surf*m_geometry.m_gradphis(kv.ie,1,igp,jgp) / PhysicalConstants::g;
+      lambda_w(LAST_INT_PACK)[LAST_INT_PACK_END] = 0.0;
+
+      // Reverse of the per-level accumulation: state += dt*forcing, so
+      // dJ/d(forcing) += dt*lambda(state), while lambda(state) itself is
+      // unchanged (d(state_out)/d(state_in) = 1 for a plain +=).
+      Kokkos::parallel_for(Kokkos::ThreadVectorRange(kv.team,NUM_LEV),
+                           [&](const int ilev) {
+        dJ_dfvtheta(ilev) += m_dt*lambda_vtheta(ilev);
+        dJ_dfphi(ilev)    += m_dt*lambda_phi(ilev);
+        dJ_dfm_x(ilev)    += m_dt*lambda_u(ilev);
+        dJ_dfm_y(ilev)    += m_dt*lambda_v(ilev);
+        dJ_dfm_z(ilev)    += m_dt*lambda_w(ilev);
+      });
     });
   }
 
@@ -580,11 +694,18 @@ private:
   bool m_adjust_ps;
   Real m_dt;
 
-  Kokkos::TeamPolicy<ExecSpace,TagStates>       m_policy_states;
-  Kokkos::TeamPolicy<ExecSpace,TagTracersPre>   m_policy_tracers_pre;
-  Kokkos::TeamPolicy<ExecSpace,TagTracers>      m_policy_tracers;
-  Kokkos::TeamPolicy<ExecSpace,TagTracersPost>  m_policy_tracers_post;
+  Kokkos::TeamPolicy<ExecSpace,TagStates>        m_policy_states;
+  Kokkos::TeamPolicy<ExecSpace,TagTracersPre>    m_policy_tracers_pre;
+  Kokkos::TeamPolicy<ExecSpace,TagTracers>       m_policy_tracers;
+  Kokkos::TeamPolicy<ExecSpace,TagTracersPost>   m_policy_tracers_post;
   TeamUtils<ExecSpace> m_tu_states, m_tu_tracers_pre, m_tu_tracers, m_tu_tracers_post;
+
+  // Shallow aliases (reassigned by states_forcing_adj to whatever
+  // lambda/dJ_dforcing were passed in for that call) rather than pointers,
+  // since *this is copied by value to the device for the parallel_for launch
+  // -- see states_forcing_adj for details.
+  StateSnapshot m_lambda;
+  ElementsForcingST<ST> m_dJ_dforcing;
 };
 
 using ForcingFunctor = ForcingFunctorST<ScalarValue>;

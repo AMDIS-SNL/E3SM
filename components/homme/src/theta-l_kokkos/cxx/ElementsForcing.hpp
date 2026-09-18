@@ -21,6 +21,11 @@ public:
   void init (const int num_elems);
   void randomize (const int seed, const Real min_f = -1.0, const Real max_f = 1.0);
 
+  // Sets all forcing fields to 0. Used to reset a ForcingFunctor adjoint's
+  // dJ/dF accumulator (see ForcingFunctorST::states_forcing_adj) before it
+  // starts accumulating contributions.
+  void zero ();
+
   int num_elems () const { return m_num_elems; }
 
 private:
