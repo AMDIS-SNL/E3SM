@@ -128,6 +128,25 @@ private:
   int m_decomp_int = -1;
   int m_decomp_ps  = -1;
 
+  // Persistent scratch buffers for staging a field's data to/from host (and,
+  // when a field is packed with padding past its physical extent, for
+  // stripping/expanding that padding on device first) -- reused by every
+  // save()/load() call and every field sharing a given shape, so no device
+  // or host allocation happens on the save()/load() hot path. Allocated
+  // once, in the constructor, at each shape's physical (unpadded) size
+  // (fixed for the life of this object, since m_num_elems is fixed): "v" (2
+  // x np x np x lev), "mid" (np x np x lev, shared by vtheta_dp and dp3d),
+  // "int" (np x np x ilev, shared by w_i and phinh_i), "ps" (np x np, used
+  // by ps_v, which is never packed).
+  Kokkos::View<Real*****,Kokkos::LayoutRight,ExecSpace> m_buf_v_dev;
+  Kokkos::View<Real*****,Kokkos::LayoutRight,ExecSpace>::HostMirror m_buf_v_host;
+  Kokkos::View<Real****, Kokkos::LayoutRight,ExecSpace> m_buf_mid_dev;
+  Kokkos::View<Real****, Kokkos::LayoutRight,ExecSpace>::HostMirror m_buf_mid_host;
+  Kokkos::View<Real****, Kokkos::LayoutRight,ExecSpace> m_buf_int_dev;
+  Kokkos::View<Real****, Kokkos::LayoutRight,ExecSpace>::HostMirror m_buf_int_host;
+  Kokkos::View<Real***,  Kokkos::LayoutRight,ExecSpace> m_buf_ps_dev;
+  Kokkos::View<Real***,  Kokkos::LayoutRight,ExecSpace>::HostMirror m_buf_ps_host;
+
   // Currently-open file handles (a file is "open" here in the sense of "we
   // haven't moved on to another nn_call yet", not necessarily that its ncid
   // is live at every instant -- see the .cpp).

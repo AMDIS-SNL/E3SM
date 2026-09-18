@@ -32,33 +32,6 @@ int pio_real_type () {
   return std::is_same<Real,double>::value ? PIO_DOUBLE : PIO_FLOAT;
 }
 
-// Allocates a fresh device view shaped like `view` but with its last extent
-// trimmed to phys_last_extent, uninitialized. Real-valued and LayoutRight,
-// so its host mirror's data() is exactly the flat, element-major buffer
-// PIOc_write_darray/PIOc_read_darray expect for a rank's local contribution
-// (matching the offsets build_compmap() constructs). Only needed when there
-// actually *is* padding to strip; see write_darray_field/read_darray_field.
-template<typename ViewT>
-auto make_compact_view (const ViewT& view, const int phys_last_extent) {
-  using ExecSpace = typename ViewT::execution_space;
-  constexpr int N = ViewT::rank;
-  static_assert (N==3 or N==4 or N==5, "Unsupported rank for checkpoint I/O.\n");
-
-  if constexpr (N==3) {
-    Kokkos::View<Real***,Kokkos::LayoutRight,ExecSpace> compact(
-        "checkpoint_compact",view.extent(0),view.extent(1),phys_last_extent);
-    return compact;
-  } else if constexpr (N==4) {
-    Kokkos::View<Real****,Kokkos::LayoutRight,ExecSpace> compact(
-        "checkpoint_compact",view.extent(0),view.extent(1),view.extent(2),phys_last_extent);
-    return compact;
-  } else { // N==5
-    Kokkos::View<Real*****,Kokkos::LayoutRight,ExecSpace> compact(
-        "checkpoint_compact",view.extent(0),view.extent(1),view.extent(2),view.extent(3),phys_last_extent);
-    return compact;
-  }
-}
-
 // Device kernel: compact(...,k) = view(...,k) for k<phys_last_extent -- the
 // padding past phys_last_extent in view (if any) is simply never read. Used
 // to strip padding *before* moving data to host, rather than after (a slow
@@ -176,52 +149,52 @@ int init_decomp (const int iosysid, const int rearranger, const int global_num_e
 // varid, via the given decomposition. Collective (every rank must call this
 // with its own local slice; scorpio's rearranger does the rest).
 //
+// buf_dev/buf_host are CheckpointStore's own persistent, pre-sized scratch
+// buffers for local_view's shape (see the class's m_buf_* members) -- reused
+// across every call, so this never allocates.
+//
 // If local_view has no padding to strip (ps_v, which was never packed; or
-// any packed field on a pack-size-1 build, e.g. GPU), its own host mirror
-// already *is* the buffer PIO wants, so there's nothing to do beyond one
-// deep_copy. Otherwise, the padding is stripped with a device kernel first
-// (copy_into_compact) rather than after moving to host: a device kernel
-// parallelizes the same way the rest of HOMME's code does, where a host
-// for-loop over the whole field would just be slow.
-template<typename ViewT>
+// any packed field on a pack-size-1 build, e.g. GPU), buf_host already *is*
+// the buffer PIO wants once deep-copied from local_view directly, so
+// buf_dev goes unused. Otherwise, the padding is stripped with a device
+// kernel first (copy_into_compact), into buf_dev, then staged to buf_host --
+// a device kernel parallelizes the same way the rest of HOMME's code does,
+// where a host for-loop over the whole field would just be slow.
+template<typename ViewT, typename BufDevT, typename BufHostT>
 void write_darray_field (const int ncid, const int varid, const int decompid, const int snap_idx,
-                          const ViewT& local_view, const int phys_ext) {
+                          const ViewT& local_view, const int phys_ext,
+                          const BufDevT& buf_dev, const BufHostT& buf_host) {
   check_pio_noerr(PIOc_setframe(ncid,varid,snap_idx),"setframe");
 
   constexpr int N = ViewT::rank;
   if (local_view.extent_int(N-1)==phys_ext) {
-    auto h = Kokkos::create_mirror_view(local_view);
-    Kokkos::deep_copy(h,local_view);
-    check_pio_noerr(PIOc_write_darray(ncid,varid,decompid,h.size(),h.data(),nullptr),"write_darray");
+    Kokkos::deep_copy(buf_host,local_view);
   } else {
-    auto compact = make_compact_view(local_view,phys_ext);
-    copy_into_compact(local_view,compact,phys_ext);
-    auto h = Kokkos::create_mirror_view(compact);
-    Kokkos::deep_copy(h,compact);
-    check_pio_noerr(PIOc_write_darray(ncid,varid,decompid,h.size(),h.data(),nullptr),"write_darray");
+    copy_into_compact(local_view,buf_dev,phys_ext);
+    Kokkos::deep_copy(buf_host,buf_dev);
   }
+  check_pio_noerr(PIOc_write_darray(ncid,varid,decompid,buf_host.size(),buf_host.data(),nullptr),"write_darray");
 }
 
 // Inverse of write_darray_field: mirrors it symmetrically -- read straight
-// into local_view's own host mirror when there's no padding to worry about,
-// otherwise read into a compact host/device buffer and expand it into
-// local_view's physical entries with a device kernel (copy_from_compact).
-template<typename ViewT>
+// into buf_host and deep_copy it into local_view when there's no padding to
+// worry about, otherwise read into buf_host, stage it to buf_dev, and
+// expand it into local_view's physical entries with a device kernel
+// (copy_from_compact).
+template<typename ViewT, typename BufDevT, typename BufHostT>
 void read_darray_field (const int ncid, const int varid, const int decompid, const int snap_idx,
-                         ViewT local_view, const int phys_ext) {
+                         ViewT local_view, const int phys_ext,
+                         const BufDevT& buf_dev, const BufHostT& buf_host) {
   check_pio_noerr(PIOc_setframe(ncid,varid,snap_idx),"setframe");
+
+  check_pio_noerr(PIOc_read_darray(ncid,varid,decompid,buf_host.size(),buf_host.data()),"read_darray");
 
   constexpr int N = ViewT::rank;
   if (local_view.extent_int(N-1)==phys_ext) {
-    auto h = Kokkos::create_mirror_view(local_view);
-    check_pio_noerr(PIOc_read_darray(ncid,varid,decompid,h.size(),h.data()),"read_darray");
-    Kokkos::deep_copy(local_view,h);
+    Kokkos::deep_copy(local_view,buf_host);
   } else {
-    auto compact = make_compact_view(local_view,phys_ext);
-    auto h = Kokkos::create_mirror_view(compact);
-    check_pio_noerr(PIOc_read_darray(ncid,varid,decompid,h.size(),h.data()),"read_darray");
-    Kokkos::deep_copy(compact,h);
-    copy_from_compact(compact,local_view,phys_ext);
+    Kokkos::deep_copy(buf_dev,buf_host);
+    copy_from_compact(buf_dev,local_view,phys_ext);
   }
 }
 
@@ -258,6 +231,19 @@ CheckpointStore::CheckpointStore (const std::string& dir, const ekat::Comm& comm
   m_decomp_mid = init_decomp(m_iosysid,PIO_REARR_SUBSET,m_global_num_elems,m_num_elems,m_elem_offset,{NP,NP,NUM_PHYSICAL_LEV});
   m_decomp_int = init_decomp(m_iosysid,PIO_REARR_SUBSET,m_global_num_elems,m_num_elems,m_elem_offset,{NP,NP,NUM_INTERFACE_LEV});
   m_decomp_ps  = init_decomp(m_iosysid,PIO_REARR_SUBSET,m_global_num_elems,m_num_elems,m_elem_offset,{NP,NP});
+
+  // Persistent scratch buffers (see the member declarations), sized once
+  // here at each field shape's physical (unpadded) extent -- m_num_elems is
+  // fixed for the life of this object, so this is the only allocation
+  // save()/load() will ever need.
+  m_buf_v_dev    = decltype(m_buf_v_dev)  ("checkpoint_buf_v",  m_num_elems,2,NP,NP,NUM_PHYSICAL_LEV);
+  m_buf_v_host   = Kokkos::create_mirror_view(m_buf_v_dev);
+  m_buf_mid_dev  = decltype(m_buf_mid_dev)("checkpoint_buf_mid",m_num_elems,  NP,NP,NUM_PHYSICAL_LEV);
+  m_buf_mid_host = Kokkos::create_mirror_view(m_buf_mid_dev);
+  m_buf_int_dev  = decltype(m_buf_int_dev)("checkpoint_buf_int",m_num_elems,  NP,NP,NUM_INTERFACE_LEV);
+  m_buf_int_host = Kokkos::create_mirror_view(m_buf_int_dev);
+  m_buf_ps_dev   = decltype(m_buf_ps_dev) ("checkpoint_buf_ps", m_num_elems,  NP,NP);
+  m_buf_ps_host  = Kokkos::create_mirror_view(m_buf_ps_dev);
 }
 
 CheckpointStore::~CheckpointStore ()
@@ -394,13 +380,13 @@ void CheckpointStore::save (const CheckpointId& id, const StateSnapshot& snap)
   const int snap_idx = m_next_snap_idx[id.nn_call]++;
   m_snap_idx[std::make_tuple(id.nn_call,id.subcycle_call,id.step)] = snap_idx;
 
-  write_darray_field(m_write_ncid,m_write_var_ids.v,        m_decomp_v,  snap_idx,ekat::scalarize(snap.v),        NUM_PHYSICAL_LEV);
-  write_darray_field(m_write_ncid,m_write_var_ids.vtheta_dp,m_decomp_mid,snap_idx,ekat::scalarize(snap.vtheta_dp),NUM_PHYSICAL_LEV);
-  write_darray_field(m_write_ncid,m_write_var_ids.dp3d,     m_decomp_mid,snap_idx,ekat::scalarize(snap.dp3d),     NUM_PHYSICAL_LEV);
-  write_darray_field(m_write_ncid,m_write_var_ids.w_i,      m_decomp_int,snap_idx,ekat::scalarize(snap.w_i),      NUM_INTERFACE_LEV);
-  write_darray_field(m_write_ncid,m_write_var_ids.phinh_i,  m_decomp_int,snap_idx,ekat::scalarize(snap.phinh_i),  NUM_INTERFACE_LEV);
+  write_darray_field(m_write_ncid,m_write_var_ids.v,        m_decomp_v,  snap_idx,ekat::scalarize(snap.v),        NUM_PHYSICAL_LEV, m_buf_v_dev,  m_buf_v_host);
+  write_darray_field(m_write_ncid,m_write_var_ids.vtheta_dp,m_decomp_mid,snap_idx,ekat::scalarize(snap.vtheta_dp),NUM_PHYSICAL_LEV, m_buf_mid_dev,m_buf_mid_host);
+  write_darray_field(m_write_ncid,m_write_var_ids.dp3d,     m_decomp_mid,snap_idx,ekat::scalarize(snap.dp3d),     NUM_PHYSICAL_LEV, m_buf_mid_dev,m_buf_mid_host);
+  write_darray_field(m_write_ncid,m_write_var_ids.w_i,      m_decomp_int,snap_idx,ekat::scalarize(snap.w_i),      NUM_INTERFACE_LEV,m_buf_int_dev,m_buf_int_host);
+  write_darray_field(m_write_ncid,m_write_var_ids.phinh_i,  m_decomp_int,snap_idx,ekat::scalarize(snap.phinh_i),  NUM_INTERFACE_LEV,m_buf_int_dev,m_buf_int_host);
   if (snap.ps_v.data()!=nullptr) {
-    write_darray_field(m_write_ncid,m_write_var_ids.ps_v,m_decomp_ps,snap_idx,snap.ps_v,NP);
+    write_darray_field(m_write_ncid,m_write_var_ids.ps_v,m_decomp_ps,snap_idx,snap.ps_v,NP,m_buf_ps_dev,m_buf_ps_host);
   }
 
   check_pio_noerr(PIOc_sync(m_write_ncid),"sync");
@@ -435,13 +421,13 @@ void CheckpointStore::load (const CheckpointId& id, StateSnapshot& snap)
   EKAT_REQUIRE_MSG ((ids.ps_v>=0)==(snap.ps_v.data()!=nullptr),
       "Error! Checkpoint's ps_v allocation does not match the target StateSnapshot's.\n");
 
-  read_darray_field(ncid,ids.v,        m_decomp_v,  snap_idx,ekat::scalarize(snap.v),        NUM_PHYSICAL_LEV);
-  read_darray_field(ncid,ids.vtheta_dp,m_decomp_mid,snap_idx,ekat::scalarize(snap.vtheta_dp),NUM_PHYSICAL_LEV);
-  read_darray_field(ncid,ids.dp3d,     m_decomp_mid,snap_idx,ekat::scalarize(snap.dp3d),     NUM_PHYSICAL_LEV);
-  read_darray_field(ncid,ids.w_i,      m_decomp_int,snap_idx,ekat::scalarize(snap.w_i),      NUM_INTERFACE_LEV);
-  read_darray_field(ncid,ids.phinh_i,  m_decomp_int,snap_idx,ekat::scalarize(snap.phinh_i),  NUM_INTERFACE_LEV);
+  read_darray_field(ncid,ids.v,        m_decomp_v,  snap_idx,ekat::scalarize(snap.v),        NUM_PHYSICAL_LEV, m_buf_v_dev,  m_buf_v_host);
+  read_darray_field(ncid,ids.vtheta_dp,m_decomp_mid,snap_idx,ekat::scalarize(snap.vtheta_dp),NUM_PHYSICAL_LEV, m_buf_mid_dev,m_buf_mid_host);
+  read_darray_field(ncid,ids.dp3d,     m_decomp_mid,snap_idx,ekat::scalarize(snap.dp3d),     NUM_PHYSICAL_LEV, m_buf_mid_dev,m_buf_mid_host);
+  read_darray_field(ncid,ids.w_i,      m_decomp_int,snap_idx,ekat::scalarize(snap.w_i),      NUM_INTERFACE_LEV,m_buf_int_dev,m_buf_int_host);
+  read_darray_field(ncid,ids.phinh_i,  m_decomp_int,snap_idx,ekat::scalarize(snap.phinh_i),  NUM_INTERFACE_LEV,m_buf_int_dev,m_buf_int_host);
   if (snap.ps_v.data()!=nullptr) {
-    read_darray_field(ncid,ids.ps_v,m_decomp_ps,snap_idx,snap.ps_v,NP);
+    read_darray_field(ncid,ids.ps_v,m_decomp_ps,snap_idx,snap.ps_v,NP,m_buf_ps_dev,m_buf_ps_host);
   }
 }
 
