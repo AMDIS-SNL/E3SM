@@ -287,7 +287,16 @@ std::string CheckpointStore::filename (const int nn_call) const
 
 void CheckpointStore::open_for_write (const int nn_call, const StateSnapshot& snap)
 {
+  const bool has_ps = snap.ps_v.data()!=nullptr;
+
   if (m_write_ncid>=0 && m_write_nn_call==nn_call) {
+    EKAT_REQUIRE_MSG (has_ps==(m_write_var_ids.ps_v>=0),
+        "Error! Every StateSnapshot save()'d under the same nn_call must agree on\n"
+        "whether ps_v is allocated -- a mismatch would silently skip writing (or\n"
+        "reading) that field for this record.\n"
+        " - nn_call: " + std::to_string(nn_call) + "\n"
+        " - has_ps of this snapshot : " + std::to_string(has_ps) + "\n"
+        " - has_ps of this nn_call's open file: " + std::to_string(m_write_var_ids.ps_v>=0) + "\n");
     return;
   }
   if (m_write_ncid>=0) {
@@ -297,7 +306,6 @@ void CheckpointStore::open_for_write (const int nn_call, const StateSnapshot& sn
   }
 
   const auto fname = filename(nn_call);
-  const bool has_ps = snap.ps_v.data()!=nullptr;
 
   int ncid;
   int iotype = PIO_IOTYPE_NETCDF;

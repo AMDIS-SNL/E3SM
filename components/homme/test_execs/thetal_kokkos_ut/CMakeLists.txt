@@ -229,11 +229,13 @@ IF (HOMMEXX_BFB_TESTING)
 
   ### Checkpoint I/O unit test (on-disk StateSnapshot round trip, battleplan Step 3) ###
 
-  if (HOMME_USE_SCORPIO)
+  if (NOT BUILD_HOMME_WITHOUT_PIOLIBRARY AND HOMME_USE_SCORPIO)
     # CheckpointIO.{hpp,cpp} needs a PIO/scorpio library to link against
     # (thetal_kokkos_ut_lib already links piof/pioc in this configuration --
-    # see above). Purely local (no MPI collectives, no F90 sources): each
-    # rank checkpoints to its own private file.
+    # see above). Its I/O (PIOc_write_darray/read_darray, through a real
+    # decomposition) is collective over its communicator and all ranks
+    # share one file per NN call -- this just happens to run single-rank
+    # here, so the collectives degenerate to the trivial case.
     EkatCreateUnitTest ("checkpoint_io_ut"
       "checkpoint_io_ut.cpp"
       LIBS thetal_kokkos_ut_lib
