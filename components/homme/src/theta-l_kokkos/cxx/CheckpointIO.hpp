@@ -3,8 +3,6 @@
 
 #include "Hommexx_config.h"
 
-#ifdef HOMMEXX_ENABLE_CHECKPOINT_IO
-
 #include "StateSnapshot.hpp"
 
 #include <ekat_comm.hpp>
@@ -79,7 +77,5 @@ private:
 };
 
 } // namespace Homme
-
-#endif // HOMMEXX_ENABLE_CHECKPOINT_IO
 
 #endif // HOMMEXX_CHECKPOINT_IO_HPP

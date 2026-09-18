@@ -1,7 +1,5 @@
 #include "CheckpointIO.hpp"
 
-#ifdef HOMMEXX_ENABLE_CHECKPOINT_IO
-
 #include "Dimensions.hpp"
 
 #include <ekat_assert.hpp>
@@ -287,5 +285,3 @@ void CheckpointStore::load (const CheckpointId& id, StateSnapshot& snap) const
 }
 
 } // namespace Homme
-
-#endif // HOMMEXX_ENABLE_CHECKPOINT_IO

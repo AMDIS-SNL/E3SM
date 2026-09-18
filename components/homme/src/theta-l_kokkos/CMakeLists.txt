@@ -145,7 +145,6 @@ MACRO(THETAL_KOKKOS_SETUP)
     ${TARGET_DIR}/cxx/cxx_f90_interface_theta.cpp
     ${TARGET_DIR}/cxx/prim_advance_exp.cpp
     ${TARGET_DIR}/cxx/StateSnapshot.cpp
-    ${TARGET_DIR}/cxx/CheckpointIO.cpp
     ${SRC_SHARE_DIR}/cxx/CaarFunctor.cpp
     ${SRC_SHARE_DIR}/cxx/Elements.cpp
     ${SRC_SHARE_DIR}/cxx/ElementsDerivedState.cpp
@@ -183,6 +182,12 @@ MACRO(THETAL_KOKKOS_SETUP)
     ${SRC_SHARE_DIR}/cxx/utilities/InternalDiagnostics.cpp
     ${SRC_SHARE_DIR}/cxx/utilities/IOUtils.cpp
   )
+
+  if (HOMME_USE_SCORPIO)
+    list(APPEND THETAL_DEPS_CXX
+      ${TARGET_DIR}/cxx/CheckpointIO.cpp
+    )
+  endif()
 
   if (HOMMEXX_ENABLE_FAD_TYPES)
     list(APPEND THETAL_DEPS_CXX

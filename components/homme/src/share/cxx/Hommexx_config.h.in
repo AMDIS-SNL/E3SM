@@ -45,9 +45,8 @@
 /* Whether forward sensitivities are enabled */
 #cmakedefine HOMMEXX_ENABLE_FWD_SENS
 
-// Whether HOMME was configured with a PIO/scorpio library available, so that
-// on-disk adjoint checkpointing (CheckpointIO.hpp) can be built.
-#cmakedefine HOMMEXX_ENABLE_CHECKPOINT_IO
+// Whether HOMME was configured with a PIO/scorpio library available
+#cmakedefine HOMME_USE_SCORPIO
 
 // User-defined VECTOR_SIZE
 #define HOMMEXX_VECTOR_SIZE ${HOMMEXX_VECTOR_SIZE}

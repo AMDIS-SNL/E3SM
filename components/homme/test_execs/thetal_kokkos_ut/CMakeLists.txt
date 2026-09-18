@@ -229,7 +229,7 @@ IF (HOMMEXX_BFB_TESTING)
 
   ### Checkpoint I/O unit test (on-disk StateSnapshot round trip, battleplan Step 3) ###
 
-  if (NOT BUILD_HOMME_WITHOUT_PIOLIBRARY)
+  if (HOMME_USE_SCORPIO)
     # CheckpointIO.{hpp,cpp} needs a PIO/scorpio library to link against
     # (thetal_kokkos_ut_lib already links piof/pioc in this configuration --
     # see above). Purely local (no MPI collectives, no F90 sources): each
