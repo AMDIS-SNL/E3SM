@@ -218,6 +218,20 @@ IF (HOMMEXX_BFB_TESTING)
     )
   endif()
 
+  ### Checkpoint I/O unit test (on-disk StateSnapshot round trip, battleplan Step 3) ###
+
+  if (NOT BUILD_HOMME_WITHOUT_PIOLIBRARY)
+    # CheckpointIO.{hpp,cpp} needs a PIO/scorpio library to link against
+    # (thetal_kokkos_ut_lib already links piof/pioc in this configuration --
+    # see above). Purely local (no MPI collectives, no F90 sources): each
+    # rank checkpoints to its own private file.
+    EkatCreateUnitTest ("checkpoint_io_ut"
+      "checkpoint_io_ut.cpp"
+      LIBS thetal_kokkos_ut_lib
+      LABELS AMDIS
+    )
+  endif()
+
   # ### Caar functor unit test
 
   SET (CAAR_UT_CXX_SRCS

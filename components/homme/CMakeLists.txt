@@ -370,6 +370,15 @@ IF (HOMME_USE_KOKKOS)
     SET (HOMMEXX_DEBUG ON)
   ENDIF()
 
+  # CheckpointIO.cpp needs a PIO/scorpio library to link against. This is
+  # available whenever BUILD_HOMME_WITHOUT_PIOLIBRARY is off, regardless of
+  # whether HOMME builds scorpio itself (HOMME_BUILD_SCORPIO) or reuses an
+  # already-defined pioc/piof target (e.g. when built as part of full E3SM).
+  SET (HOMMEXX_ENABLE_CHECKPOINT_IO ${HOMME_USE_KOKKOS})
+  IF (BUILD_HOMME_WITHOUT_PIOLIBRARY)
+    SET (HOMMEXX_ENABLE_CHECKPOINT_IO FALSE)
+  ENDIF ()
+
   CONFIGURE_FILE (${CMAKE_CURRENT_SOURCE_DIR}/src/share/cxx/Hommexx_config.h.in
                   ${HOMME_BINARY_DIR}/src/share/cxx/Hommexx_config.h)
 
