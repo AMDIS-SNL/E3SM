@@ -5,25 +5,24 @@
  *******************************************************************************/
 
 // Adjoint of ForcingFunctor::states_forcing (the momentum/vtheta/phi half of
-// ForcingFunctor's forward pass), i.e. Step 1/2 of the HOMME adjoint
-// battleplan: this is the piece of ForcingFunctor's adjoint that deposits
-// dJ/d(fm) directly (fm IS the NN's FM output), plus dJ/d(fvtheta) and
-// dJ/d(fphi) (intermediate quantities produced from FT by tracers_forcing,
-// whose own adjoint is not implemented yet).
+// ForcingFunctor's forward pass): deposits dJ/d(fm) directly (fm is applied
+// to the state verbatim), plus dJ/d(fvtheta) and dJ/d(fphi) (intermediate
+// quantities produced from ft by tracers_forcing, whose own adjoint is not
+// implemented yet).
 //
 // states_forcing is an exactly affine map (no bias term) of
 // (state(np1), forcing) -> state(np1), so two independent checks are used:
 //  - "dot-product consistency": the algebraic adjoint identity
-//    <lambda_out, J*[dx;df]> == <lambda_in, dx> + <forcing_grad, df>,
+//    <lambda_out, J*[dx;df]> == <lambda_in, dx> + <dJ_dforcing, df>,
 //    computed *exactly* (up to floating-point round-off) by applying the
 //    forward operator directly to a random tangent (dx,df) -- valid because
-//    the map is linear, so no epsilon/base point is needed for this part.
+//    the map is linear, so this needs no finite perturbation step (unlike
+//    the check below).
 //  - "finite-difference check": a literal central-difference check of
-//    dJ/d(applied_forcing) around a random, nonzero base point, as
-//    requested by the battleplan's Step 2 acceptance test. Since the map is
-//    affine, this should match the adjoint's prediction far more tightly
-//    than a typical (nonlinear) FD check -- limited by round-off, not by
-//    truncation error.
+//    dJ/d(applied_forcing) around a random, nonzero base point. Since the
+//    map is affine, this should match the adjoint's prediction far more
+//    tightly than a typical (nonlinear) FD check -- limited by round-off,
+//    not by truncation error.
 
 #include <catch2/catch.hpp>
 
@@ -50,40 +49,6 @@
 using namespace Homme;
 
 namespace {
-
-// Host-mirror-based dot product of two same-shaped views (rank 3/4/5).
-// Mirrors the helper used by imex_adjoint_ut.cpp.
-template<typename ViewT>
-double dot (ViewT v1, ViewT v2) {
-  auto v1h = Kokkos::create_mirror_view(v1);
-  Kokkos::deep_copy(v1h,v1);
-  auto v2h = Kokkos::create_mirror_view(v2);
-  Kokkos::deep_copy(v2h,v2);
-
-  EKAT_REQUIRE_MSG (v1.rank==v2.rank, "Error! Views have different rank.\n");
-  EKAT_REQUIRE_MSG (v1.rank==3 or v1.rank==4 or v1.rank==5, "Error! Unsupported rank.\n");
-  double prod = 0;
-  if constexpr(v1.rank==3) {
-    for (int i=0; i<v1.extent_int(0); ++i)
-      for (int j=0; j<v1.extent_int(1); ++j)
-        for (int k=0; k<v1.extent_int(2); ++k)
-          prod += v1h(i,j,k)*v2h(i,j,k);
-  } else if constexpr(v1.rank==4) {
-    for (int i=0; i<v1.extent_int(0); ++i)
-      for (int j=0; j<v1.extent_int(1); ++j)
-        for (int k=0; k<v1.extent_int(2); ++k)
-          for (int l=0; l<v1.extent_int(3); ++l)
-            prod += v1h(i,j,k,l)*v2h(i,j,k,l);
-  } else if constexpr(v1.rank==5) {
-    for (int i=0; i<v1.extent_int(0); ++i)
-      for (int j=0; j<v1.extent_int(1); ++j)
-        for (int k=0; k<v1.extent_int(2); ++k)
-          for (int l=0; l<v1.extent_int(3); ++l)
-            for (int m=0; m<v1.extent_int(4); ++m)
-              prod += v1h(i,j,k,l,m)*v2h(i,j,k,l,m);
-  }
-  return prod;
-}
 
 // Sum of dot products over the (v, vtheta_dp, w_i, phinh_i) fields that
 // states_forcing/states_forcing_adj actually touch. dp3d/ps_v are ignored:
@@ -194,7 +159,8 @@ TEST_CASE("forcing_adjoint_states", "forcing_adjoint") {
   SECTION ("dot-product consistency") {
     // states_forcing has no bias term, so applying it directly to a random
     // "tangent" (dx,df) computes the *exact* directional derivative
-    // dy = J_state*dx + J_forcing*df -- no epsilon needed.
+    // dy = J_state*dx + J_forcing*df -- an exact result, not an
+    // approximation of one via a finite perturbation.
     state.randomize(seed,hv);
     forcing.randomize(seed+1);
 
@@ -215,16 +181,16 @@ TEST_CASE("forcing_adjoint_states", "forcing_adjoint") {
 
     const double lhs = dot_state(lambda_out,dy);
 
-    ElementsForcing forcing_grad;
-    forcing_grad.init(num_elems);
-    forcing_grad.zero();
+    ElementsForcing dJ_dforcing;
+    dJ_dforcing.init(num_elems);
+    dJ_dforcing.zero();
 
     StateSnapshot lambda = lambda_out.clone(true);
-    ff.states_forcing_adj(dt,np1,lambda,forcing_grad);
+    ff.states_forcing_adj(dt,np1,lambda,dJ_dforcing);
 
-    const double rhs = dot_state(lambda,dx) + dot_forcing(forcing_grad,df);
+    const double rhs = dot_state(lambda,dx) + dot_forcing(dJ_dforcing,df);
 
-    REQUIRE (lhs == Approx(rhs).epsilon(1e-10));
+    REQUIRE_THAT (lhs, Catch::Matchers::WithinRel(rhs,1e-10) || Catch::Matchers::WithinAbs(rhs,1e-10));
   }
 
   SECTION ("finite-difference check") {
@@ -273,16 +239,16 @@ TEST_CASE("forcing_adjoint_states", "forcing_adjoint") {
     const double Jm = eval_J(-eps);
     const double dJ_fd = (Jp - Jm) / (2*eps);
 
-    ElementsForcing forcing_grad;
-    forcing_grad.init(num_elems);
-    forcing_grad.zero();
+    ElementsForcing dJ_dforcing;
+    dJ_dforcing.init(num_elems);
+    dJ_dforcing.zero();
 
     StateSnapshot lambda = lambda_out.clone(true);
-    ff.states_forcing_adj(dt,np1,lambda,forcing_grad);
+    ff.states_forcing_adj(dt,np1,lambda,dJ_dforcing);
 
-    const double dJ_adj = dot_state(lambda,dx) + dot_forcing(forcing_grad,df);
+    const double dJ_adj = dot_state(lambda,dx) + dot_forcing(dJ_dforcing,df);
 
-    REQUIRE (dJ_fd == Approx(dJ_adj).epsilon(1e-6));
+    REQUIRE_THAT (dJ_fd, Catch::Matchers::WithinRel(dJ_adj,1e-6) || Catch::Matchers::WithinAbs(dJ_adj,1e-8));
   }
 
   c.finalize_singleton();

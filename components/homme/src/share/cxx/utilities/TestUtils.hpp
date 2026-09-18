@@ -166,6 +166,46 @@ views_are_equal(const V1& v1, const V2& v2, int last_extent = 0)
   return true;
 }
 
+// Dot product of two same-shaped views (rank 3, 4, or 5), via a host-mirror
+// round trip. If last_dim>0, only the first last_dim entries along the last
+// dimension are summed (e.g. to skip padding past the physical extent);
+// otherwise the full last dimension is used.
+template<typename ViewT>
+double dot (ViewT v1, ViewT v2, int last_dim = -1) {
+  auto v1h = Kokkos::create_mirror_view(v1);
+  Kokkos::deep_copy(v1h,v1);
+  auto v2h = Kokkos::create_mirror_view(v2);
+  Kokkos::deep_copy(v2h,v2);
+
+  EKAT_REQUIRE_MSG (v1.rank==v2.rank, "Error! Views have different rank.\n");
+  EKAT_REQUIRE_MSG (v1.rank==3 or v1.rank==4 or v1.rank==5, "Error! Unsupported rank.\n");
+  double prod = 0;
+  if constexpr(v1.rank==3) {
+    auto last_ext = last_dim > 0 ? last_dim : v1.extent_int(2);
+    for (int i=0; i<v1.extent_int(0); ++i)
+      for (int j=0; j<v1.extent_int(1); ++j)
+        for (int k=0; k<last_ext; ++k)
+          prod += v1h(i,j,k)*v2h(i,j,k);
+  } else if constexpr(v1.rank==4) {
+    auto last_ext = last_dim > 0 ? last_dim : v1.extent_int(3);
+    for (int i=0; i<v1.extent_int(0); ++i)
+      for (int j=0; j<v1.extent_int(1); ++j)
+        for (int k=0; k<v1.extent_int(2); ++k)
+          for (int l=0; l<last_ext; ++l)
+            prod += v1h(i,j,k,l)*v2h(i,j,k,l);
+  } else if constexpr(v1.rank==5) {
+    auto last_ext = last_dim > 0 ? last_dim : v1.extent_int(4);
+    for (int i=0; i<v1.extent_int(0); ++i)
+      for (int j=0; j<v1.extent_int(1); ++j)
+        for (int k=0; k<v1.extent_int(2); ++k)
+          for (int l=0; l<v1.extent_int(3); ++l)
+            for (int m=0; m<last_ext; ++m)
+              prod += v1h(i,j,k,l,m)*v2h(i,j,k,l,m);
+  }
+
+  return prod;
+}
+
 } // namespace Homme
 
 #endif // HOMMEXX_TEST_UTILS_HPP
