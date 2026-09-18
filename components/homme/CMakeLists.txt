@@ -465,7 +465,15 @@ if (HOMME_BUILD_SCORPIO)
     # Need to use scorpio's older genf90 for now
     SET(PIO_ENABLE_TOOLS OFF CACHE BOOL "Disabling Scorpio tool build")
     ADD_SUBDIRECTORY(utils/externals/scorpio)
-    SET(PIO_INCLUDE_DIRS "${CMAKE_CURRENT_BINARY_DIR}/utils/externals/scorpio/src/flib")
+    # flib is scorpio's Fortran interface (needed by HOMME's existing F90
+    # restart code); clib is scorpio's C library, whose public header
+    # (pio.h) is needed by CheckpointIO.cpp -- the first C++ code in HOMME
+    # to talk to PIOc directly, so nothing needed this path before.
+    SET(PIO_INCLUDE_DIRS
+      "${CMAKE_CURRENT_BINARY_DIR}/utils/externals/scorpio/src/flib"
+      "${CMAKE_CURRENT_SOURCE_DIR}/utils/externals/scorpio/src/clib"
+      "${CMAKE_CURRENT_BINARY_DIR}/utils/externals/scorpio/src/clib"
+    )
   else ()
     # The default I/O library used in "Scorpio classic"
     ADD_SUBDIRECTORY(utils/externals/scorpio_classic)
