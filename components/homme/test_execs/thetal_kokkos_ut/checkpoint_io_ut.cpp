@@ -11,9 +11,11 @@
 // through a trajectory must stay unaffected by whatever happens to the live
 // state afterwards.
 //
-// This test is purely local (no MPI/connectivity, no F90 sources): a
-// StateSnapshot is just a bundle of Kokkos views, and CheckpointStore only
-// needs a communicator (to make per-rank filenames distinct) and a directory.
+// No F90 sources needed (a StateSnapshot is just a bundle of Kokkos views),
+// but CheckpointStore's own I/O (PIOc_write_darray/read_darray, run through
+// a real decomposition) is collective over its communicator -- harmless
+// with the single rank this test runs with (the collectives just degenerate
+// to the trivial case), but exercised for real nonetheless.
 
 #include <catch2/catch.hpp>
 
@@ -71,7 +73,7 @@ TEST_CASE("checkpoint_io_roundtrip", "checkpoint_io") {
   rngAlg engine(seed);
 
   ekat::Comm comm(MPI_COMM_WORLD);
-  CheckpointStore store(scratch_dir(),comm);
+  CheckpointStore store(scratch_dir(),comm,num_elems);
 
   SECTION ("round trip, with ps") {
     StateSnapshot orig(num_elems,/*alloc_ps=*/true);
@@ -93,7 +95,7 @@ TEST_CASE("checkpoint_io_roundtrip", "checkpoint_io") {
     REQUIRE(views_are_equal(ekat::scalarize(orig.phinh_i),  ekat::scalarize(loaded.phinh_i),  NUM_INTERFACE_LEV));
     REQUIRE(views_are_equal(orig.ps_v,loaded.ps_v,NP));
 
-    store.remove(id);
+    store.discard(id.nn_call);
     REQUIRE_FALSE(store.has(id));
   }
 
@@ -113,7 +115,45 @@ TEST_CASE("checkpoint_io_roundtrip", "checkpoint_io") {
     REQUIRE(views_are_equal(ekat::scalarize(orig.v),ekat::scalarize(loaded.v),NUM_PHYSICAL_LEV));
     REQUIRE(views_are_equal(ekat::scalarize(orig.phinh_i),ekat::scalarize(loaded.phinh_i),NUM_INTERFACE_LEV));
 
-    store.remove(id);
+    store.discard(id.nn_call);
+  }
+
+  SECTION ("multiple snapshots share one file") {
+    // Successive checkpoints within the same nn_call must land in the same
+    // file (as distinct records), not clobber one another, and be
+    // independently reloadable regardless of the order they're loaded back
+    // in -- the backward sweep reads them in the reverse of save() order.
+    constexpr int nn_call = 3;
+    StateSnapshot snap_a(num_elems,/*alloc_ps=*/true);
+    StateSnapshot snap_b(num_elems,/*alloc_ps=*/true);
+    StateSnapshot snap_c(num_elems,/*alloc_ps=*/true);
+    randomize_state_snapshot(snap_a,engine,dpdf(-1,1));
+    randomize_state_snapshot(snap_b,engine,dpdf(-1,1));
+    randomize_state_snapshot(snap_c,engine,dpdf(-1,1));
+
+    const CheckpointId id_a{nn_call,0,0};
+    const CheckpointId id_b{nn_call,0,1};
+    const CheckpointId id_c{nn_call,1,0};
+    store.save(id_a,snap_a);
+    store.save(id_b,snap_b);
+    store.save(id_c,snap_c);
+
+    StateSnapshot loaded(num_elems,/*alloc_ps=*/true);
+
+    // Load in reverse order, on purpose.
+    loaded.zero();
+    store.load(id_c,loaded);
+    REQUIRE(views_are_equal(ekat::scalarize(snap_c.v),ekat::scalarize(loaded.v),NUM_PHYSICAL_LEV));
+
+    loaded.zero();
+    store.load(id_a,loaded);
+    REQUIRE(views_are_equal(ekat::scalarize(snap_a.v),ekat::scalarize(loaded.v),NUM_PHYSICAL_LEV));
+
+    loaded.zero();
+    store.load(id_b,loaded);
+    REQUIRE(views_are_equal(ekat::scalarize(snap_b.v),ekat::scalarize(loaded.v),NUM_PHYSICAL_LEV));
+
+    store.discard(nn_call);
   }
 
   SECTION ("resume forward integration") {
@@ -145,6 +185,6 @@ TEST_CASE("checkpoint_io_roundtrip", "checkpoint_io") {
     // should now differ from what was (and still is) on disk.
     REQUIRE_FALSE(views_are_equal(ekat::scalarize(live.v),ekat::scalarize(reloaded.v),NUM_PHYSICAL_LEV));
 
-    store.remove(id);
+    store.discard(id.nn_call);
   }
 }
