@@ -30,7 +30,7 @@ struct StateSnapshot {
   void randomize (const int seed, const Real p_max, const Real p0, const Real hyai0,
                   const ExecViewUnmanaged<const Real*[NP][NP]>& phis);
 
-  int num_elems;
+  int num_elems = -1;
 
   ExecViewManaged<PT * [2][NP][NP][NUM_LEV  ]> v;          // Horizontal velocity
   ExecViewManaged<PT *    [NP][NP][NUM_LEV  ]> vtheta_dp;  // Virtual potential temperature (mass)
