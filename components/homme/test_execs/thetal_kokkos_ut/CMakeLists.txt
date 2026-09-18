@@ -75,6 +75,15 @@ ENDIF ()
 # Setting this once and for all, good for all unit tests.
 SET (CONFIG_DEFINES HAVE_CONFIG_H)
 
+# EkatCreateUnitTest is defined by ekat's own CMake module. Included here,
+# unconditionally and before any use, rather than down where the
+# state_ut/sacado tests use it (its previous spot): some uses of it (e.g.
+# forcing_adjoint_ut, checkpoint_io_ut below) are gated inside
+# IF(HOMMEXX_BFB_TESTING), and using a CMake command before its module is
+# include()'d is an "Unknown CMake command" configure-time error regardless
+# of where in the file that first use is.
+include (EkatCreateUnitTest)
+
 IF (HOMMEXX_BFB_TESTING)
   ### Equation of state unit tests
 
@@ -395,7 +404,8 @@ if (NOT HOMMEXX_ENABLE_FWD_SENS)
   cxx_unit_test_add_test(gllfvremap_planar_ut gllfvremap_ut ${NUM_CPUS} "hommexx -planar")
 endif()
 
-include (EkatCreateUnitTest)
+# EkatCreateUnitTest is now included earlier in this file (see above, near
+# forcing_adjoint_ut/checkpoint_io_ut).
 # State generic tests
 EkatCreateUnitTest (state_ut
   state_ut.cpp
