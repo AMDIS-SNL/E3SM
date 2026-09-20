@@ -49,6 +49,16 @@ public:
     return limiter_option == 8 || limiter_option == 9;
   }
 
+  // Exposes the concrete impl object directly, for callers that need
+  // functionality not forwarded above (e.g. euler_step_adj/
+  // set_tape_for_adjoint, battleplan Step 4's adjoint of euler_step, which
+  // -- like HyperviscosityFunctorImplST::run_JtV -- is Real-only and
+  // reached this way rather than via a pimpl-forwarded wrapper method, to
+  // avoid the explicit-instantiation-doesn't-cover-member-templates pitfall
+  // that SFINAE'd wrapper methods would hit). Callers must include
+  // "EulerStepFunctorImpl.hpp" themselves to use the returned pointer.
+  std::shared_ptr<EulerStepFunctorImplST<ST>> get_impl () { return p_; }
+
 private:
   bool is_setup;
 };
