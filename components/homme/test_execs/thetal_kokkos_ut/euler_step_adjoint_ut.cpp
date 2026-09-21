@@ -373,11 +373,12 @@ TEST_CASE("euler_step_adjoint")
   bmm[MPI_EXCHANGE]->set_connectivity(conn_ptr);
   bmm[MPI_EXCHANGE_MIN_MAX]->set_connectivity(conn_ptr);
 
-  // EulerStepFunctorST<Real>'s default constructor pulls ElementsGeometry/
+  // EulerStepFunctorST<Real>::setup() pulls ElementsGeometry/
   // ElementsDerivedStateST<Real>/TracersST<Real>/ReferenceElement/
   // HybridVCoord/SphereOperatorsST<Real> straight out of Context, so all of
   // the above must be registered first.
-  EulerStepFunctorST<Real> euler;
+  EulerStepFunctorST<Real> euler(num_elems);
+  euler.setup();
   euler.reset(params);
 
   FunctorsBuffersManager fbm;
@@ -386,7 +387,7 @@ TEST_CASE("euler_step_adjoint")
   euler.init_buffers(fbm);
   euler.init_boundary_exchanges();
 
-  auto& impl = *euler.get_impl();
+  auto& impl = std::any_cast<EulerStepFunctorImplST<Real>&>(euler.get_impl());
 
   const int n0_qdp  = 0;
   const int np1_qdp = 1; // != n0_qdp: avoids the (legal, but adjoint-wise
@@ -840,14 +841,15 @@ TEST_CASE("euler_step_adjoint_dot_product")
   bmm[MPI_EXCHANGE]->set_connectivity(conn_ptr);
   bmm[MPI_EXCHANGE_MIN_MAX]->set_connectivity(conn_ptr);
 
-  EulerStepFunctorST<Real> euler_r;
+  EulerStepFunctorST<Real> euler_r(num_elems);
+  euler_r.setup();
   euler_r.reset(params);
   FunctorsBuffersManager fbm_r;
   fbm_r.request_size(euler_r.requested_buffer_size());
   fbm_r.allocate();
   euler_r.init_buffers(fbm_r);
   euler_r.init_boundary_exchanges();
-  auto& impl_r = *euler_r.get_impl();
+  auto& impl_r = std::any_cast<EulerStepFunctorImplST<Real>&>(euler_r.get_impl());
 
   // ---- DpFadType-typed stack: the forward-tangent half. Shares geo/
   // ref_FE/hvcoord/bmm/Connectivity with the Real stack above (all
@@ -862,7 +864,8 @@ TEST_CASE("euler_step_adjoint_dot_product")
   auto& sphops_dp = c.create<SphereOperatorsST<DpFadType>>();
   sphops_dp.setup(geo,ref_FE);
 
-  EulerStepFunctorST<DpFadType> euler_dp;
+  EulerStepFunctorST<DpFadType> euler_dp(num_elems);
+  euler_dp.setup();
   euler_dp.reset(params);
   FunctorsBuffersManager fbm_dp;
   fbm_dp.request_size(euler_dp.requested_buffer_size());
