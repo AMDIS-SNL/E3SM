@@ -617,13 +617,10 @@ public:
     // device-copyable) Views into the KOKKOS_LAMBDA below.
     bool tape = false;
     ExecViewManaged<RPT*[QSIZE_D][2][NUM_LEV]> adj_qlim_pre_local, adj_qlim_pre_exchange;
-    if constexpr (std::is_same_v<ST,Real>) {
-      tape = m_tape_for_adjoint;
-      if (tape) {
-        auto& adj_tape = get_adjoint_tape();
-        adj_qlim_pre_local    = adj_tape.qlim_pre_local;
-        adj_qlim_pre_exchange = adj_tape.qlim_pre_exchange;
-      }
+    if (m_tape_for_adjoint) {
+      auto& adj_tape = get_adjoint_tape();
+      adj_qlim_pre_local    = adj_tape.qlim_pre_local;
+      adj_qlim_pre_exchange = adj_tape.qlim_pre_exchange;
     }
     Kokkos::parallel_for(
       m_tv_policy,
@@ -790,30 +787,30 @@ private:
       // this (`*this`-dispatched) kernel launches -- see their declaration
       // above for why this function can't fetch them from Context itself.
       if constexpr (std::is_same_v<ST,Real>) {
-      if (m_tape_for_adjoint) {
-        const auto ptens = Homme::subview(m_tracers.qtens_biharmonic, kv.ie, kv.iq);
-        const auto tape_ptens = Homme::subview(m_adj_qtens_prelimiter_dev, kv.ie, kv.iq);
-        const auto qlim = Homme::subview(m_tracers.qlim, kv.ie, kv.iq);
-        const auto tape_qlim = Homme::subview(m_adj_qlim_final_dev, kv.ie, kv.iq);
-        Kokkos::parallel_for(
-          Kokkos::TeamThreadRange(kv.team, NP*NP),
-          [&] (const int loop_idx) {
-            const int i = loop_idx / NP;
-            const int j = loop_idx % NP;
-            Kokkos::parallel_for(
-              Kokkos::ThreadVectorRange(kv.team, NUM_LEV),
-              [&] (const int& k) {
-                tape_ptens(i,j,k) = ptens(i,j,k);
-              });
-          });
-        Kokkos::parallel_for(
-          Kokkos::TeamThreadRange(kv.team, NUM_LEV),
-          [&] (const int& k) {
-            tape_qlim(0,k) = qlim(0,k);
-            tape_qlim(1,k) = qlim(1,k);
-          });
-        kv.team_barrier();
-      }
+        if (m_tape_for_adjoint) {
+          const auto ptens = Homme::subview(m_tracers.qtens_biharmonic, kv.ie, kv.iq);
+          const auto tape_ptens = Homme::subview(m_adj_qtens_prelimiter_dev, kv.ie, kv.iq);
+          const auto qlim = Homme::subview(m_tracers.qlim, kv.ie, kv.iq);
+          const auto tape_qlim = Homme::subview(m_adj_qlim_final_dev, kv.ie, kv.iq);
+          Kokkos::parallel_for(
+            Kokkos::TeamThreadRange(kv.team, NP*NP),
+            [&] (const int loop_idx) {
+              const int i = loop_idx / NP;
+              const int j = loop_idx % NP;
+              Kokkos::parallel_for(
+                Kokkos::ThreadVectorRange(kv.team, NUM_LEV),
+                [&] (const int& k) {
+                  tape_ptens(i,j,k) = ptens(i,j,k);
+                });
+            });
+          Kokkos::parallel_for(
+            Kokkos::TeamThreadRange(kv.team, NUM_LEV),
+            [&] (const int& k) {
+              tape_qlim(0,k) = qlim(0,k);
+              tape_qlim(1,k) = qlim(1,k);
+            });
+          kv.team_barrier();
+        }
       }
       limiter_clip_and_sum(kv);
       kv.team_barrier();
@@ -1134,11 +1131,8 @@ public: // Expose for unit testing.
 
 public:
   // ============================================================
-  // Adjoint of euler_step (battleplan Step 4). Real-only (mirrors
-  // HyperviscosityFunctorImplST::run_JtV and
-  // ForcingFunctor::states_forcing_adj); a pure state-adjoint (lambda-in,
-  // lambda-out) propagator with no Theta/dJ-dF-shaped output (Theta -- the
-  // NN weights -- never appears in this functor).
+  // Adjoint of euler_step, a pure state-adjoint (lambda-in,
+  // lambda-out) propagator
   //
   // Preconditions (documented, not all enforced):
   //  - limiter_option must be 9 (limiter_clip_and_sum); anything else
@@ -1191,13 +1185,13 @@ public:
   //    DSS-prep+exchange, further accumulated with compute_dp's own
   //    contribution to m_divdp_proj if that's the one DSSopt selects.
   // ============================================================
-  template<typename MyST = ST>
-  std::enable_if_t<std::is_same_v<MyST, Real>>
-  euler_step_adj (const int np1_qdp, const int n0_qdp, const Real dt,
-                   const Real rhs_multiplier, const DSSOption DSSopt,
-                   TracersST<Real>& adj_tracers,
-                   ElementsDerivedStateST<Real>& adj_derived)
+  void euler_step_adj (const int np1_qdp, const int n0_qdp, const Real dt,
+                       const Real rhs_multiplier, const DSSOption DSSopt,
+                       TracersST<Real>& adj_tracers,
+                       ElementsDerivedStateST<Real>& adj_derived)
   {
+    EKAT_REQUIRE_MSG((std::is_same_v<ST,Real>),
+      "[euler_step_adj] Error! Adjoint is only implemented for Real scalar type.\n");
     EKAT_REQUIRE_MSG(EulerStepFunctorST<ST>::is_quasi_monotone(m_data.limiter_option),
       "[euler_step_adj] Error! Adjoint is only implemented when euler_step "
       "used a quasi-monotone limiter (limiter_option 8 or 9).\n");
@@ -1741,9 +1735,7 @@ public:
   // only). Must be set to true before the specific euler_step() call that
   // will later be passed to euler_step_adj; may be reset to false right
   // after (taping costs a handful of extra elementwise copies per call).
-  template<typename MyST = ST>
-  std::enable_if_t<std::is_same_v<MyST, Real>>
-  set_tape_for_adjoint (const bool tape) {
+  void set_tape_for_adjoint (const bool tape) {
     if (tape) alloc_adjoint_tape();
     m_tape_for_adjoint = tape;
   }
@@ -1762,9 +1754,7 @@ private:
   // m_adj_qtens_prelimiter_dev/m_adj_qlim_final_dev's declaration above for
   // the one case, run_tracer_phase, where the adjoint tape is needed from
   // code that may run on a GPU device, and how that's handled instead).
-  template<typename MyST = ST>
-  std::enable_if_t<std::is_same_v<MyST, Real>, EulerStepAdjointTape&>
-  get_adjoint_tape () const {
+  EulerStepAdjointTape& get_adjoint_tape () const {
     auto& any_map = Context::singleton().any_map();
     auto it = any_map.find(s_adjoint_tape_key);
     EKAT_REQUIRE_MSG(it != any_map.end(),
@@ -1780,9 +1770,7 @@ private:
   // Views could, a size mismatch instead reconstructs and reassigns the
   // whole EulerStepAdjointTape entry, which reallocates all 9 of its Views
   // together -- equivalent net behavior, just at struct granularity.
-  template<typename MyST = ST>
-  std::enable_if_t<std::is_same_v<MyST, Real>>
-  alloc_adjoint_tape () {
+  void alloc_adjoint_tape () {
     const int ne = m_geometry.num_elems();
     const int qs = m_data.qsize;
     assert(qs >= 0); // reset() must have been called already
@@ -1801,10 +1789,8 @@ private:
     it->second = EulerStepAdjointTape(ne, qs);
   }
 
-  template<typename MyST = ST>
-  std::enable_if_t<std::is_same_v<MyST, Real>>
-  init_adjoint_boundary_exchanges (TracersST<Real>& adj_tracers,
-                                    ElementsDerivedStateST<Real>& adj_derived) {
+  void init_adjoint_boundary_exchanges (TracersST<Real>& adj_tracers,
+                                        ElementsDerivedStateST<Real>& adj_derived) {
     auto& adj_tape = get_adjoint_tape();
     if (adj_tape.bex_ready) return;
     auto bm_exchange = Context::singleton().get<MpiBuffersManagerMap>()[MPI_EXCHANGE];
