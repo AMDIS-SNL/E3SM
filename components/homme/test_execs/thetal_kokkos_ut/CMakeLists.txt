@@ -245,23 +245,28 @@ IF (HOMMEXX_BFB_TESTING)
 
   ### Euler step (tracer advection limiter) adjoint unit test (battleplan Step 4) ###
 
-  if (NOT HOMMEXX_ENABLE_FWD_SENS)
-    # euler_step_adj is Real-only (like states_forcing_adj/HV's run_JtV), so
-    # it isn't usable when EulerStepFunctor's ScalarValue is a Fad type.
-    # Needs the F90 mesh/connectivity init (unlike forcing_adjoint_ut):
-    # euler_step always runs a regular DSS boundary exchange, even when the
-    # neighbor min-max exchange itself isn't exercised.
-    set (EULER_STEP_ADJOINT_SOURCES
-      euler_step_adjoint_ut.cpp
-      thetal_test_interface.F90
-      ${SHARE_UT_DIR}/geometry_interface.F90
-    )
-    EkatCreateUnitTest ("euler_step_adjoint_ut"
-      "${EULER_STEP_ADJOINT_SOURCES}"
-      LIBS thetal_kokkos_ut_lib
-      LABELS AMDIS
-    )
-  endif()
+  # euler_step_adjoint_ut.cpp builds its own explicit TracersST<Real>/
+  # ElementsDerivedStateST<Real>/EulerStepFunctorST<Real> (and, under
+  # HOMMEXX_ENABLE_FAD_TYPES, TracersST<DpFadType>/
+  # ElementsDerivedStateST<DpFadType>/EulerStepFunctorST<DpFadType> too, for
+  # its dot-product TEST_CASE), independent of whatever ScalarValue the
+  # HOMMEXX_ENABLE_FWD_SENS build setting would otherwise alias
+  # Tracers/ElementsDerivedState/EulerStepFunctor to -- see the file's own
+  # header comment. So, unlike before, this test needs no
+  # HOMMEXX_ENABLE_FWD_SENS gate at all: it builds and passes either way.
+  # Needs the F90 mesh/connectivity init (unlike forcing_adjoint_ut):
+  # euler_step always runs a regular DSS boundary exchange, even when the
+  # neighbor min-max exchange itself isn't exercised.
+  set (EULER_STEP_ADJOINT_SOURCES
+    euler_step_adjoint_ut.cpp
+    thetal_test_interface.F90
+    ${SHARE_UT_DIR}/geometry_interface.F90
+  )
+  EkatCreateUnitTest ("euler_step_adjoint_ut"
+    "${EULER_STEP_ADJOINT_SOURCES}"
+    LIBS thetal_kokkos_ut_lib
+    LABELS AMDIS
+  )
 
   # ### Caar functor unit test
 
