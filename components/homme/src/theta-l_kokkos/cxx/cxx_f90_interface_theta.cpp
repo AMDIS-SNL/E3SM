@@ -105,9 +105,14 @@ void create_functors_impl ()
   // Some functors might have been previously created, so
   // use the create_if_not_there() function.
   auto& caar = c.create_if_not_there<CaarFunctorST<ST>>(elems,tracers,ref_FE,hvcoord,sph_op,params);
-  if (params.transport_alg == 0) c.create_if_not_there<EulerStepFunctorST<ST>>();
+  if (params.transport_alg == 0)
+    c.create_if_not_there<EulerStepFunctorST<ST>>(elems.num_elems());
+  else
 #ifdef HOMME_ENABLE_COMPOSE
-  else                           c.create_if_not_there<ComposeTransport>();
+    c.create_if_not_there<ComposeTransport>();
+#else
+    EKAT_ERROR_MSG ("Error! HOMME_ENABLE_COMPOSE must be enabled for this transport alg.\n"
+                    " - transport_alg: " + std::to_string(params.transport_alg) + "\n");
 #endif
   auto& hvf     = c.create_if_not_there<HyperviscosityFunctorST<ST>>();
   auto& ff      = c.create_if_not_there<ForcingFunctorST<ST>>();

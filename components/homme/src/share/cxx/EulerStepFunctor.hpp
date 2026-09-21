@@ -7,25 +7,18 @@
 #ifndef HOMMEXX_EULER_STEP_FUNCTOR_HPP
 #define HOMMEXX_EULER_STEP_FUNCTOR_HPP
 
-#include <memory>
-
 #include "Types.hpp"
 #include "SimulationParams.hpp"
 
-namespace Homme {
+#include <any>
 
-template<typename ST>
-class EulerStepFunctorImplST;
+namespace Homme {
 
 struct FunctorsBuffersManager;
 
 template<typename ST>
 class EulerStepFunctorST {
-  std::shared_ptr<EulerStepFunctorImplST<ST>> p_;
-
 public:
-  EulerStepFunctorST();
-
   EulerStepFunctorST(const int num_elems);
 
   bool setup_needed() { return !is_setup; }
@@ -49,18 +42,13 @@ public:
     return limiter_option == 8 || limiter_option == 9;
   }
 
-  // Exposes the concrete impl object directly, for callers that need
-  // functionality not forwarded above (e.g. euler_step_adj/
-  // set_tape_for_adjoint, battleplan Step 4's adjoint of euler_step, which
-  // -- like HyperviscosityFunctorImplST::run_JtV -- is Real-only and
-  // reached this way rather than via a pimpl-forwarded wrapper method, to
-  // avoid the explicit-instantiation-doesn't-cover-member-templates pitfall
-  // that SFINAE'd wrapper methods would hit). Callers must include
-  // "EulerStepFunctorImpl.hpp" themselves to use the returned pointer.
-  std::shared_ptr<EulerStepFunctorImplST<ST>> get_impl () { return p_; }
+  // Exposes the concrete impl object, but still wrapped inside a std::any
+  std::any& get_impl () { return m_impl; }
 
 private:
-  bool is_setup;
+  std::any m_impl;
+
+  bool is_setup = false;
 };
 
 using EulerStepFunctor = EulerStepFunctorST<ScalarValue>;
