@@ -11,6 +11,7 @@
 #include "ReferenceElement.hpp"
 #include "ElementsGeometry.hpp"
 #include "ElementsDerivedState.hpp"
+#include "EulerStepAdjointTape.hpp"
 #include "FunctorsBuffersManager.hpp"
 #include "ErrorDefs.hpp"
 #include "EulerStepFunctor.hpp"
@@ -120,60 +121,41 @@ class EulerStepFunctorImplST {
   // ============================================================
   // Adjoint of euler_step (limiter_option==9 only). See euler_step_adj
   // for the full design writeup. Real-only (mirrors how HV's run_JtV and
-  // ForcingFunctor::states_forcing_adj are Real-only): these members exist
-  // (harmlessly unused) for any ST, but are only allocated/written/read
-  // when ST==Real.
+  // ForcingFunctor::states_forcing_adj are Real-only). The bulk of the
+  // adjoint's scratch/tape storage (9 Views, plus the lazily-built
+  // boundary-exchange objects) used to live here as plain data members,
+  // which meant every instantiation of this class template -- including
+  // ST==DpFadType, ST==DxFadTypeCaar, etc., none of which ever touch the
+  // adjoint -- carried it (harmlessly, but wastefully) unused. It now lives
+  // once, lazily, in Context::singleton().any_map() as an
+  // EulerStepAdjointTape (see EulerStepAdjointTape.hpp for the struct
+  // itself and its fields' meanings), fetched via get_adjoint_tape()/
+  // alloc_adjoint_tape() below, mirroring how Tape<StateSnapshot> is
+  // stashed there under "imex_tape" for the CAAR/DIRK adjoint.
   // ============================================================
   using RPT = PackType<Real>;
 
   bool m_tape_for_adjoint = false;
 
-  // Taped forward-pass data (recorded by compute_qmin_qmax/run_tracer_phase
-  // when m_tape_for_adjoint is set), consumed by euler_step_adj:
-  //  - m_adj_qtens_prelimiter: compute_qtens's raw output, per (elem,
-  //    tracer,i,j,level), before limiter_clip_and_sum mutates it in place.
-  //  - m_adj_qlim_pre_local: qlim as it stood on entry to compute_qmin_qmax
-  //    (matters only for rhs_multiplier==1, where the running min/max is
-  //    seeded from a *previous* euler_step call's qlim).
-  //  - m_adj_qlim_pre_exchange: qlim right after compute_qmin_qmax's own
-  //    per-element reduction, before any neighbor/MPI min-max exchange.
-  //  - m_adj_qlim_final: qlim as it enters limiter_clip_and_sum (i.e. after
-  //    whichever neighbor exchange ran, or unchanged if none did), before
-  //    with_limiter_shell's own 0-floor/mass-relaxation adjustments.
-  ExecViewManaged<RPT**[NP][NP][NUM_LEV]>   m_adj_qtens_prelimiter;
-  ExecViewManaged<RPT*[QSIZE_D][2][NUM_LEV]> m_adj_qlim_pre_local;
-  ExecViewManaged<RPT*[QSIZE_D][2][NUM_LEV]> m_adj_qlim_pre_exchange;
-  ExecViewManaged<RPT*[QSIZE_D][2][NUM_LEV]> m_adj_qlim_final;
-
-  // Adjoint-only scratch (zeroed and populated fresh by every
-  // euler_step_adj call): running accumulators for quantities that are
-  // shared across the qsize tracer loop (dp, dpdissk, vstar are all
-  // per-element only, not per-tracer, in the forward code), and the
-  // group-level dJ/d(qlim_final) produced by the limiter's reverse pass.
-  ExecViewManaged<RPT*[NP][NP][NUM_LEV]>    m_adj_dp;
-  ExecViewManaged<RPT*[NP][NP][NUM_LEV]>    m_adj_dpdissk;
-  ExecViewManaged<RPT*[2][NP][NP][NUM_LEV]> m_adj_vstar;
-  ExecViewManaged<RPT*[QSIZE_D][2][NUM_LEV]> m_adj_qlim_final_grad;
-  // m_adj_qlim_final_grad, after being summed across each element's
-  // connectivity group (adjoint of exchange_min_max's implicit multi-way
-  // min/max broadcast -- see euler_step_adj stage 2 for the derivation).
-  // Only meaningful (and only computed) when has_exchange; single-rank
-  // only, see there.
-  ExecViewManaged<RPT*[QSIZE_D][2][NUM_LEV]> m_adj_qlim_final_grad_summed;
-
-  // Boundary-exchange objects for the DSS-type (non-min/max) exchanges,
-  // registered against the *adjoint* tracers/derived-state fields passed
-  // to euler_step_adj, mirroring m_bes/m_mmqb_be but pointed at adjoint
-  // storage. Self-adjoint DSS exchanges (see euler_step_adj) are applied
-  // directly to the adjoint fields via these. Lazily built by
-  // init_adjoint_boundary_exchanges() the first time euler_step_adj is
-  // called; NOTE: they bind to the specific adj_tracers/adj_derived
-  // objects passed on that first call, so the caller must keep reusing the
-  // *same* adj_tracers/adj_derived instances across calls (documented
-  // precondition, akin to run_JtV's "x and y must be different objects").
-  Kokkos::Array<std::shared_ptr<BoundaryExchangeST<Real>>, 3*Q_NUM_TIME_LEVELS> m_adj_bes;
-  std::shared_ptr<BoundaryExchangeST<Real>> m_adj_mmqb_be;
-  bool m_adj_bex_ready = false;
+  // Real-only, device-reachable cache of two of the Context-held adjoint
+  // tape's Views (EulerStepAdjointTape::qtens_prelimiter and ::qlim_final).
+  // Unlike every other adjoint-tape access in this file (which fetch
+  // straight from Context in a host-only function and capture local Views
+  // into a KOKKOS_LAMBDA, costing nothing extra), run_tracer_phase is a
+  // KOKKOS_INLINE_FUNCTION invoked via the `*this`-dispatched
+  // Kokkos::parallel_for in advect_and_limit() (see
+  // operator()(const AALTracerPhase&, ...)), so its body can execute on a
+  // GPU device. Context::singleton().any_map() (std::map/std::any) cannot
+  // be touched from device code, so these two Views must already be part
+  // of `*this` -- a plain Kokkos::View is a cheap, device-copyable handle,
+  // unlike the map/any lookup needed to reach it inside Context -- by the
+  // time that parallel_for launches. advect_and_limit() refreshes these
+  // (a shallow View-handle copy, no allocation) from the Context-owned
+  // EulerStepAdjointTape right before dispatch. For any ST other than
+  // Real, these stay default-constructed (unallocated, unused), same as
+  // every other adjoint-only member of this class.
+  ExecViewManaged<RPT**[NP][NP][NUM_LEV]>    m_adj_qtens_prelimiter_dev;
+  ExecViewManaged<RPT*[QSIZE_D][2][NUM_LEV]> m_adj_qlim_final_dev;
 
 public:
 
@@ -478,6 +460,20 @@ public:
 
   void advect_and_limit() {
     profiling_resume();
+    // Refresh the device-reachable adjoint-tape View cache (see
+    // m_adj_qtens_prelimiter_dev/m_adj_qlim_final_dev's declaration) from
+    // the Context-held EulerStepAdjointTape right before the `*this`-
+    // dispatched kernels below launch; run_tracer_phase (invoked from the
+    // AALTracerPhase kernel) needs these two Views but, unlike every other
+    // adjoint-tape use in this file, cannot fetch them from Context itself
+    // since it may execute on a GPU device.
+    if constexpr (std::is_same_v<ST,Real>) {
+      if (m_tape_for_adjoint) {
+        auto& adj_tape = get_adjoint_tape();
+        m_adj_qtens_prelimiter_dev = adj_tape.qtens_prelimiter;
+        m_adj_qlim_final_dev       = adj_tape.qlim_final;
+      }
+    }
     Kokkos::parallel_for(
       Homme::get_default_team_policy<ExecSpace, AALSetupPhase>(
         m_geometry.num_elems(), m_tpref),
@@ -607,19 +603,28 @@ public:
     const auto qtens_biharmonic = m_tracers.qtens_biharmonic;
     const auto qlim = m_tracers.qlim;
     // Adjoint taping (limiter_option==9 only; see euler_step_adj): record
-    // qlim as it stood on entry to this call (m_adj_qlim_pre_local -- only
+    // qlim as it stood on entry to this call (qlim_pre_local -- only
     // meaningful when rhs_multiplier==1, where the running min/max is
     // seeded from the *previous* call's qlim rather than reset here), and
     // as it stands right after the local (per-element) reduction below, but
-    // before any neighbor/MPI min-max reduction (m_adj_qlim_pre_exchange).
-    // Both are cheap [ne][qsize][2][NUM_LEV] copies, harmless when taping
-    // is off (the branch is skipped entirely for other ST, and a no-op
-    // Kokkos::View write is elided) and required because qlim is mutated
-    // in place by this function and by the subsequent neighbor exchange.
+    // before any neighbor/MPI min-max reduction (qlim_pre_exchange). Both
+    // are cheap [ne][qsize][2][NUM_LEV] copies, harmless when taping is off
+    // (the branch is skipped entirely for other ST, and no Context lookup
+    // happens at all) and required because qlim is mutated in place by
+    // this function and by the subsequent neighbor exchange. This function
+    // is host-only (no KOKKOS_INLINE_FUNCTION), so it is safe to fetch the
+    // Context-held adjoint tape here directly and capture its (plain,
+    // device-copyable) Views into the KOKKOS_LAMBDA below.
     bool tape = false;
-    if constexpr (std::is_same_v<ST,Real>) tape = m_tape_for_adjoint;
-    const auto adj_qlim_pre_local    = m_adj_qlim_pre_local;
-    const auto adj_qlim_pre_exchange = m_adj_qlim_pre_exchange;
+    ExecViewManaged<RPT*[QSIZE_D][2][NUM_LEV]> adj_qlim_pre_local, adj_qlim_pre_exchange;
+    if constexpr (std::is_same_v<ST,Real>) {
+      tape = m_tape_for_adjoint;
+      if (tape) {
+        auto& adj_tape = get_adjoint_tape();
+        adj_qlim_pre_local    = adj_tape.qlim_pre_local;
+        adj_qlim_pre_exchange = adj_tape.qlim_pre_exchange;
+      }
+    }
     Kokkos::parallel_for(
       m_tv_policy,
       KOKKOS_LAMBDA (const TeamMember& team) {
@@ -773,18 +778,23 @@ private:
       kv.team_barrier();
     } else if (m_data.limiter_option == 9) {
       // Adjoint taping (limiter_option==9, Real only; see euler_step_adj):
-      // record compute_qtens's raw output (m_adj_qtens_prelimiter) and the
-      // qlim entering the limiter (m_adj_qlim_final -- "final" in the sense
-      // that it is qlim as fully reduced by compute_qmin_qmax/the neighbor
-      // exchange, and it is also the value the limiter's own 0-floor and
-      // mass-relaxation logic will further, locally, adjust), both BEFORE
-      // limiter_clip_and_sum mutates qtens_biharmonic/qlim in place.
+      // record compute_qtens's raw output (m_adj_qtens_prelimiter_dev) and
+      // the qlim entering the limiter (m_adj_qlim_final_dev -- "final" in
+      // the sense that it is qlim as fully reduced by compute_qmin_qmax/the
+      // neighbor exchange, and it is also the value the limiter's own
+      // 0-floor and mass-relaxation logic will further, locally, adjust),
+      // both BEFORE limiter_clip_and_sum mutates qtens_biharmonic/qlim in
+      // place. m_adj_qtens_prelimiter_dev/m_adj_qlim_final_dev are a
+      // device-reachable cache of two Views owned by the Context-held
+      // EulerStepAdjointTape, refreshed by advect_and_limit() right before
+      // this (`*this`-dispatched) kernel launches -- see their declaration
+      // above for why this function can't fetch them from Context itself.
       if constexpr (std::is_same_v<ST,Real>) {
       if (m_tape_for_adjoint) {
         const auto ptens = Homme::subview(m_tracers.qtens_biharmonic, kv.ie, kv.iq);
-        const auto tape_ptens = Homme::subview(m_adj_qtens_prelimiter, kv.ie, kv.iq);
+        const auto tape_ptens = Homme::subview(m_adj_qtens_prelimiter_dev, kv.ie, kv.iq);
         const auto qlim = Homme::subview(m_tracers.qlim, kv.ie, kv.iq);
-        const auto tape_qlim = Homme::subview(m_adj_qlim_final, kv.ie, kv.iq);
+        const auto tape_qlim = Homme::subview(m_adj_qlim_final_dev, kv.ie, kv.iq);
         Kokkos::parallel_for(
           Kokkos::TeamThreadRange(kv.team, NP*NP),
           [&] (const int loop_idx) {
@@ -1222,11 +1232,31 @@ public:
     const Real scale_factor_inv = m_sphere_ops.m_scale_factor_inv;
     const auto hvcoord = m_hvcoord;
 
+    // Real-only Context-held adjoint scratch/tape (see
+    // EulerStepAdjointTape.hpp). Fetched once here, then copied into local
+    // named references below, exactly mirroring the existing pattern of
+    // this function copying adj_tracers/adj_derived Views into locals
+    // before every Kokkos::parallel_for -- that local-copy step already
+    // has to happen regardless, so fetching from Context instead of
+    // `this` costs nothing extra.
+    auto& adj_tape = get_adjoint_tape();
+    const auto adj_dp                     = adj_tape.dp;
+    const auto adj_dpdissk                = adj_tape.dpdissk;
+    const auto adj_vstar                  = adj_tape.vstar;
+    const auto adj_qlim_final_grad        = adj_tape.qlim_final_grad;
+    const auto adj_qlim_final_grad_summed = adj_tape.qlim_final_grad_summed;
+    const auto adj_qtens_prelimiter       = adj_tape.qtens_prelimiter;
+    const auto adj_qlim_final             = adj_tape.qlim_final;
+    const auto adj_qlim_pre_exchange      = adj_tape.qlim_pre_exchange;
+    const auto adj_qlim_pre_local         = adj_tape.qlim_pre_local;
+    const auto& adj_bes                   = adj_tape.bes;
+    const auto& adj_mmqb_be               = adj_tape.mmqb_be;
+
     // ---- 0. Zero the per-call adjoint scratch accumulators. ----
-    Kokkos::deep_copy(m_adj_dp, Real(0));
-    Kokkos::deep_copy(m_adj_dpdissk, Real(0));
-    Kokkos::deep_copy(m_adj_vstar, Real(0));
-    Kokkos::deep_copy(m_adj_qlim_final_grad, Real(0));
+    Kokkos::deep_copy(adj_dp, Real(0));
+    Kokkos::deep_copy(adj_dpdissk, Real(0));
+    Kokkos::deep_copy(adj_vstar, Real(0));
+    Kokkos::deep_copy(adj_qlim_final_grad, Real(0));
 
     // ---- 5. Reverse of exchange_qdp_dss_var(): self-adjoint DSS exchange,
     // applied directly to adj_tracers.qdp(np1_qdp,...) and whichever of
@@ -1235,7 +1265,7 @@ public:
     // m_bes[idx] bundles them forward). ----
     {
       const int idx = 3*np1_qdp + static_cast<int>(DSSopt);
-      m_adj_bes[idx]->exchange(rspheremp);
+      adj_bes[idx]->exchange(rspheremp);
     }
     Kokkos::fence();
 
@@ -1258,19 +1288,22 @@ public:
 
     // ---- 4b-ii. Reverse of limiter_clip_and_sum. Per (elem,tracer,level)
     // group of NP2=16 GLL points: replay the forward clip+redistribute
-    // logic bit-exactly from taped/still-live data (m_adj_qtens_prelimiter,
-    // m_adj_qlim_final, and the still-valid m_buffers.dpdissk/
+    // logic bit-exactly from taped/still-live data (adj_qtens_prelimiter,
+    // adj_qlim_final, and the still-valid m_buffers.dpdissk/
     // m_geometry.m_spheremp -- no separate flag tape is needed since every
     // branch condition is exactly recomputable), then differentiate that
     // short, purely local sequence in reverse. See the design writeup
     // above euler_step_adj for the derivation. ----
     {
       auto adj_qtens    = adj_tracers.qtens_biharmonic; // bufA in, bufB out
-      auto tape_ptens    = m_adj_qtens_prelimiter;        // ptens_in (pre-limiter)
-      auto tape_qlimF    = m_adj_qlim_final;              // minp0/maxp0 (pre 0-floor/relax)
+      auto tape_ptens    = adj_qtens_prelimiter;          // ptens_in (pre-limiter)
+      auto tape_qlimF    = adj_qlim_final;                // minp0/maxp0 (pre 0-floor/relax)
       auto dpdissk       = m_buffers.dpdissk;             // dpmass
-      auto adj_dpdissk   = m_adj_dpdissk;
-      auto adj_qlimFgrad = m_adj_qlim_final_grad;
+      // adj_dpdissk itself is already a local (fetched once at the top of
+      // this function from the Context-held adjoint tape); no re-copy
+      // needed here, unlike tape_ptens/tape_qlimF/adj_qlimFgrad above/below
+      // which give it a block-local name distinct from the outer one.
+      auto adj_qlimFgrad = adj_qlim_final_grad;
       Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<3>> pol({0,0,0},{ne,qsize,NUM_PHYSICAL_LEV});
       Kokkos::parallel_for(pol, KOKKOS_LAMBDA (const int ie, const int iq, const int lev) {
         const int vpi = lev/VECTOR_SIZE, vsi = lev%VECTOR_SIZE;
@@ -1416,7 +1449,8 @@ public:
     {
       auto adj_qdp   = adj_tracers.qdp;
       auto adj_qtens = adj_tracers.qtens_biharmonic;
-      auto adj_vstar = m_adj_vstar;
+      // adj_vstar is already a local (fetched once at the top of this
+      // function from the Context-held adjoint tape); no re-copy needed.
       auto vstar_fwd = m_buffers.vstar;
       auto qdp_fwd   = m_tracers.qdp;
       const Real alpha = -dt;
@@ -1487,7 +1521,7 @@ public:
         Kokkos::fence();
       };
       laplace_pass();
-      m_adj_mmqb_be->exchange(rspheremp);
+      adj_mmqb_be->exchange(rspheremp);
       laplace_pass();
       // adj_qtb (== adj_tracers.qtens_biharmonic) now holds g_bih.
     }
@@ -1516,7 +1550,7 @@ public:
     // version of this fix; a full mesh is one connected component under
     // *transitive* adjacency, but the reduction is only ever 1-hop).
     // The correct adjoint is a SCATTER, not a sum: element ie's own
-    // downstream seed (m_adj_qlim_final_grad(ie), from the limiter's
+    // downstream seed (adj_qlim_final_grad(ie), from the limiter's
     // reverse above) must be routed entirely to whichever ONE of
     // {ie itself, ie's direct neighbors} actually produced ie's own
     // final(ie) -- bit-exact comparison against the pre-exchange tape,
@@ -1537,13 +1571,13 @@ public:
         "for a single-rank run (see the comment above); a genuine "
         "multi-rank version needs real MPI communication for the "
         "SHARED connections too, which is out of scope for this step.\n");
-      auto grad_h = Kokkos::create_mirror_view(m_adj_qlim_final_grad);
-      Kokkos::deep_copy(grad_h, m_adj_qlim_final_grad);
-      auto preexch_h = Kokkos::create_mirror_view(m_adj_qlim_pre_exchange);
-      Kokkos::deep_copy(preexch_h, m_adj_qlim_pre_exchange);
-      auto final_h = Kokkos::create_mirror_view(m_adj_qlim_final);
-      Kokkos::deep_copy(final_h, m_adj_qlim_final);
-      auto sum_h = Kokkos::create_mirror_view(m_adj_qlim_final_grad_summed);
+      auto grad_h = Kokkos::create_mirror_view(adj_qlim_final_grad);
+      Kokkos::deep_copy(grad_h, adj_qlim_final_grad);
+      auto preexch_h = Kokkos::create_mirror_view(adj_qlim_pre_exchange);
+      Kokkos::deep_copy(preexch_h, adj_qlim_pre_exchange);
+      auto final_h = Kokkos::create_mirror_view(adj_qlim_final);
+      Kokkos::deep_copy(final_h, adj_qlim_final);
+      auto sum_h = Kokkos::create_mirror_view(adj_qlim_final_grad_summed);
       Kokkos::deep_copy(sum_h, Real(0)); // scatter target, starts empty
       const auto h_ucon     = conn.get_h_ucon();
       const auto h_ucon_ptr = conn.get_h_ucon_ptr();
@@ -1570,20 +1604,21 @@ public:
               }
             }
       }
-      Kokkos::deep_copy(m_adj_qlim_final_grad_summed, sum_h);
+      Kokkos::deep_copy(adj_qlim_final_grad_summed, sum_h);
     }
 
     {
       auto adj_qdp      = adj_tracers.qdp;
       auto adj_qlim      = adj_tracers.qlim;
       auto g_bih_view     = adj_tracers.qtens_biharmonic;
-      auto qlim_grad      = has_exchange ? m_adj_qlim_final_grad_summed
-                                         : m_adj_qlim_final_grad;
-      auto tape_preexch    = m_adj_qlim_pre_exchange;
-      auto tape_prelocal   = m_adj_qlim_pre_local;
+      auto qlim_grad      = has_exchange ? adj_qlim_final_grad_summed
+                                         : adj_qlim_final_grad;
+      auto tape_preexch    = adj_qlim_pre_exchange;
+      auto tape_prelocal   = adj_qlim_pre_local;
       auto qdp_fwd         = m_tracers.qdp;
       auto dp_fwd          = m_buffers.dp;
-      auto adj_dp          = m_adj_dp;
+      // adj_dp is already a local (fetched once at the top of this
+      // function from the Context-held adjoint tape); no re-copy needed.
       const bool has_bih      = (rhs_multiplier == 2.0);
       const bool reuse_prev   = (rhs_multiplier == 1.0);
 
@@ -1649,11 +1684,11 @@ public:
       Kokkos::fence();
 
       auto adj_vn0        = adj_derived.m_vn0;
-      auto adj_dp          = m_adj_dp;
+      // adj_dp/adj_vstar/adj_dpdissk are already locals (fetched once at
+      // the top of this function from the Context-held adjoint tape); no
+      // re-copy needed.
       auto adj_divdp       = adj_derived.m_divdp;
       auto adj_dpdiss_bih  = adj_derived.m_dpdiss_biharmonic;
-      auto adj_vstar       = m_adj_vstar;
-      auto adj_dpdissk     = m_adj_dpdissk;
       auto vstar_fwd       = m_buffers.vstar;
       auto dp_fwd           = m_buffers.dp;
       const bool add_ps_diss = (m_data.nu_p > 0 && m_data.rhs_viss != 0.0);
@@ -1686,7 +1721,8 @@ public:
 
     // ---- 1. Reverse of compute_dp: buf = dp - rhs_multiplier*dt*divdp_proj. ----
     {
-      auto adj_dp          = m_adj_dp;
+      // adj_dp is already a local (fetched once at the top of this
+      // function from the Context-held adjoint tape); no re-copy needed.
       auto adj_derived_dp   = adj_derived.m_dp;
       auto adj_divdp_proj   = adj_derived.m_divdp_proj;
       const Real rhsmdt = rhs_multiplier*dt;
@@ -1713,39 +1749,70 @@ public:
   }
 
 private:
+  // Key under which the Real-only Euler-step adjoint scratch/tape is
+  // stashed in Context::singleton().any_map(), mirroring how
+  // Tape<StateSnapshot> is stashed there under "imex_tape" for the
+  // CAAR/DIRK adjoint (see EulerStepAdjointTape.hpp).
+  static constexpr const char* s_adjoint_tape_key = "euler_step_adjoint_tape";
+
+  // Fetch the Context-held adjoint tape, assuming it has already been
+  // allocated (at the current num_elems/qsize) by alloc_adjoint_tape() --
+  // i.e. that set_tape_for_adjoint(true) has already been called. Host-only
+  // (this must never be called from a `*this`-dispatched device kernel; see
+  // m_adj_qtens_prelimiter_dev/m_adj_qlim_final_dev's declaration above for
+  // the one case, run_tracer_phase, where the adjoint tape is needed from
+  // code that may run on a GPU device, and how that's handled instead).
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, Real>, EulerStepAdjointTape&>
+  get_adjoint_tape () const {
+    auto& any_map = Context::singleton().any_map();
+    auto it = any_map.find(s_adjoint_tape_key);
+    EKAT_REQUIRE_MSG(it != any_map.end(),
+      "[EulerStepFunctorImplST] Error! The Euler-step adjoint tape was "
+      "requested before set_tape_for_adjoint(true) allocated it.\n");
+    return std::any_cast<EulerStepAdjointTape&>(it->second);
+  }
+
+  // Ensures the Context-held adjoint tape exists and is sized for the
+  // current (num_elems, qsize), (re)constructing it if not. This replaces
+  // this class's old per-member allocate-if-wrong-size logic: since a
+  // std::any-held struct can't be resized field by field the way individual
+  // Views could, a size mismatch instead reconstructs and reassigns the
+  // whole EulerStepAdjointTape entry, which reallocates all 9 of its Views
+  // together -- equivalent net behavior, just at struct granularity.
   template<typename MyST = ST>
   std::enable_if_t<std::is_same_v<MyST, Real>>
   alloc_adjoint_tape () {
     const int ne = m_geometry.num_elems();
     const int qs = m_data.qsize;
     assert(qs >= 0); // reset() must have been called already
-    if (static_cast<int>(m_adj_qtens_prelimiter.extent(0)) == ne &&
-        static_cast<int>(m_adj_qtens_prelimiter.extent(1)) == qs) {
+    auto& any_map = Context::singleton().any_map();
+    auto it = any_map.find(s_adjoint_tape_key);
+    if (it == any_map.end()) {
+      any_map.try_emplace(s_adjoint_tape_key,
+                           std::in_place_type<EulerStepAdjointTape>, ne, qs);
+      return;
+    }
+    auto& tape = std::any_cast<EulerStepAdjointTape&>(it->second);
+    if (static_cast<int>(tape.qtens_prelimiter.extent(0)) == ne &&
+        static_cast<int>(tape.qtens_prelimiter.extent(1)) == qs) {
       return; // already sized correctly
     }
-    m_adj_qtens_prelimiter  = decltype(m_adj_qtens_prelimiter) ("euler_step_adj qtens prelimiter tape", ne, qs);
-    m_adj_qlim_pre_local    = decltype(m_adj_qlim_pre_local)   ("euler_step_adj qlim pre-local tape",    ne, qs);
-    m_adj_qlim_pre_exchange = decltype(m_adj_qlim_pre_exchange)("euler_step_adj qlim pre-exchange tape",  ne, qs);
-    m_adj_qlim_final        = decltype(m_adj_qlim_final)       ("euler_step_adj qlim final tape",         ne, qs);
-    m_adj_dp                = decltype(m_adj_dp)                ("euler_step_adj dp accum",       ne);
-    m_adj_dpdissk            = decltype(m_adj_dpdissk)           ("euler_step_adj dpdissk accum",  ne);
-    m_adj_vstar              = decltype(m_adj_vstar)             ("euler_step_adj vstar accum",    ne);
-    m_adj_qlim_final_grad    = decltype(m_adj_qlim_final_grad)   ("euler_step_adj qlim final grad",ne, qs);
-    m_adj_qlim_final_grad_summed = decltype(m_adj_qlim_final_grad_summed)
-      ("euler_step_adj qlim final grad summed",ne, qs);
+    it->second = EulerStepAdjointTape(ne, qs);
   }
 
   template<typename MyST = ST>
   std::enable_if_t<std::is_same_v<MyST, Real>>
   init_adjoint_boundary_exchanges (TracersST<Real>& adj_tracers,
                                     ElementsDerivedStateST<Real>& adj_derived) {
-    if (m_adj_bex_ready) return;
+    auto& adj_tape = get_adjoint_tape();
+    if (adj_tape.bex_ready) return;
     auto bm_exchange = Context::singleton().get<MpiBuffersManagerMap>()[MPI_EXCHANGE];
     DSSOption dss_vars[3] = {DSSOption::ETA, DSSOption::OMEGA, DSSOption::DIV_VDP_AVE};
     for (int np1_qdp = 0, k = 0; np1_qdp < Q_NUM_TIME_LEVELS; ++np1_qdp) {
       for (auto dssi : dss_vars) {
-        m_adj_bes[k] = std::make_shared<BoundaryExchangeST<Real>>();
-        BoundaryExchangeST<Real>& be = *m_adj_bes[k];
+        adj_tape.bes[k] = std::make_shared<BoundaryExchangeST<Real>>();
+        BoundaryExchangeST<Real>& be = *adj_tape.bes[k];
         be.set_buffers_manager(bm_exchange);
         int num_mid = dssi==DSSOption::ETA ? 0 : 1;
         int num_int = 1 - num_mid;
@@ -1767,13 +1834,13 @@ private:
       }
     }
 
-    m_adj_mmqb_be = std::make_shared<BoundaryExchangeST<Real>>();
-    m_adj_mmqb_be->set_buffers_manager(bm_exchange);
-    m_adj_mmqb_be->set_num_fields(0, 0, m_data.qsize);
-    m_adj_mmqb_be->register_field(adj_tracers.qtens_biharmonic, m_data.qsize, 0);
-    m_adj_mmqb_be->registration_completed();
+    adj_tape.mmqb_be = std::make_shared<BoundaryExchangeST<Real>>();
+    adj_tape.mmqb_be->set_buffers_manager(bm_exchange);
+    adj_tape.mmqb_be->set_num_fields(0, 0, m_data.qsize);
+    adj_tape.mmqb_be->register_field(adj_tracers.qtens_biharmonic, m_data.qsize, 0);
+    adj_tape.mmqb_be->registration_completed();
 
-    m_adj_bex_ready = true;
+    adj_tape.bex_ready = true;
   }
 };
 
