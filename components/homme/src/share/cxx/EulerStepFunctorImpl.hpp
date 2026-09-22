@@ -618,6 +618,7 @@ public:
     bool tape = false;
     ExecViewManaged<RPT*[QSIZE_D][2][NUM_LEV]> adj_qlim_pre_local, adj_qlim_pre_exchange;
     if (m_tape_for_adjoint) {
+      tape = true;
       auto& adj_tape = get_adjoint_tape();
       adj_qlim_pre_local    = adj_tape.qlim_pre_local;
       adj_qlim_pre_exchange = adj_tape.qlim_pre_exchange;
