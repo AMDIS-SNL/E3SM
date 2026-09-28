@@ -7,25 +7,18 @@
 #ifndef HOMMEXX_EULER_STEP_FUNCTOR_HPP
 #define HOMMEXX_EULER_STEP_FUNCTOR_HPP
 
-#include <memory>
-
 #include "Types.hpp"
 #include "SimulationParams.hpp"
 
-namespace Homme {
+#include <any>
 
-template<typename ST>
-class EulerStepFunctorImplST;
+namespace Homme {
 
 struct FunctorsBuffersManager;
 
 template<typename ST>
 class EulerStepFunctorST {
-  std::shared_ptr<EulerStepFunctorImplST<ST>> p_;
-
 public:
-  EulerStepFunctorST();
-
   EulerStepFunctorST(const int num_elems);
 
   bool setup_needed() { return !is_setup; }
@@ -49,8 +42,13 @@ public:
     return limiter_option == 8 || limiter_option == 9;
   }
 
+  // Exposes the concrete impl object, but still wrapped inside a std::any
+  std::any& get_impl () { return m_impl; }
+
 private:
-  bool is_setup;
+  std::any m_impl;
+
+  bool is_setup = false;
 };
 
 using EulerStepFunctor = EulerStepFunctorST<ScalarValue>;
