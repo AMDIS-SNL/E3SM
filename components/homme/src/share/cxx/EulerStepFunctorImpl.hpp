@@ -1737,6 +1737,8 @@ public:
   // will later be passed to euler_step_adj; may be reset to false right
   // after (taping costs a handful of extra elementwise copies per call).
   void set_tape_for_adjoint (const bool tape) {
+    EKAT_REQUIRE_MSG((std::is_same_v<ST,Real>),
+      "[set_tape_for_adjoint] Error! Adjoint is only implemented for Real scalar type.\n");
     if (tape) alloc_adjoint_tape();
     m_tape_for_adjoint = tape;
   }
@@ -1756,6 +1758,8 @@ private:
   // the one case, run_tracer_phase, where the adjoint tape is needed from
   // code that may run on a GPU device, and how that's handled instead).
   EulerStepAdjointTape& get_adjoint_tape () const {
+    EKAT_REQUIRE_MSG((std::is_same_v<ST,Real>),
+      "[get_adjoint_tape] Error! Adjoint is only implemented for Real scalar type.\n");
     auto& any_map = Context::singleton().any_map();
     auto it = any_map.find(s_adjoint_tape_key);
     EKAT_REQUIRE_MSG(it != any_map.end(),
@@ -1772,6 +1776,8 @@ private:
   // whole EulerStepAdjointTape entry, which reallocates all 9 of its Views
   // together -- equivalent net behavior, just at struct granularity.
   void alloc_adjoint_tape () {
+    EKAT_REQUIRE_MSG((std::is_same_v<ST,Real>),
+      "[alloc_adjoint_tape] Error! Adjoint is only implemented for Real scalar type.\n");
     const int ne = m_geometry.num_elems();
     const int qs = m_data.qsize;
     assert(qs >= 0); // reset() must have been called already
@@ -1792,6 +1798,8 @@ private:
 
   void init_adjoint_boundary_exchanges (TracersST<Real>& adj_tracers,
                                         ElementsDerivedStateST<Real>& adj_derived) {
+    EKAT_REQUIRE_MSG((std::is_same_v<ST,Real>),
+      "[init_adjoint_boundary_exchanges] Error! Adjoint is only implemented for Real scalar type.\n");
     auto& adj_tape = get_adjoint_tape();
     if (adj_tape.bex_ready) return;
     auto bm_exchange = Context::singleton().get<MpiBuffersManagerMap>()[MPI_EXCHANGE];
