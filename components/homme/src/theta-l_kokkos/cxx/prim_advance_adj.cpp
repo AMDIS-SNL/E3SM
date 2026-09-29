@@ -277,6 +277,16 @@ void ttype10_imex_adjoint(const Real dt_dyn,
   // Stage 5 of the fwd also accumulated vn0 += eta_ave_w*v*dp, with (v,dp)
   // taken from its input state (y4). Add the corresponding adjoint
   // contribution to mu4 (the adjoint of y4).
+  // Notes:
+  //  - CaarFunctorImpl::compute_accumulated_quantities (run in the pre-exchange
+  //    kernel of *every* CAAR stage) is the only writer of vn0, but the
+  //    increment is eta_ave_w*v*dp of the stage's input state n0, and in
+  //    ttype10 only stage 5 has eta_ave_w!=0 (see ttype10_imex_timestep).
+  //    A scheme with eta_ave_w!=0 in several stages (ttype5/9) needs this
+  //    injection after each such stage's JtV, at that stage's input state.
+  //  - The increment is pointwise in the (already DSS'd, by the previous
+  //    stage's exchange) input state, so its transpose is pointwise too:
+  //    exact for any local seed, and no exchange is needed here.
   if (adj_vn0 != nullptr) {
     debug_print("       vn0 adjoint...\n");
     add_vn0_adjoint(*adj_vn0,y4,eta_ave_w,mu4);
