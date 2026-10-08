@@ -10,11 +10,11 @@ module eos_interface
 
   type(hvcoord_t) :: hvcoord
 
-  public :: init_f90
+  public :: init_eos_f90
   public :: pnh_and_exner_from_eos_f90
 contains
 
-  subroutine init_f90 (hyai, ps0) bind(c)
+  subroutine init_eos_f90 (hyai, ps0) bind(c)
     !
     ! Inputs
     !
@@ -24,7 +24,7 @@ contains
     hvcoord%hyai = hyai
     hvcoord%ps0 = ps0
 
-  end subroutine init_f90
+  end subroutine init_eos_f90
 
   subroutine pnh_and_exner_from_eos_f90(num_elems, hydrostatic, vtheta_dp_ptr, dp_ptr, phi_i_ptr, pnh_ptr, exner_ptr, dpnh_dp_i_ptr) bind(c)
     use control_mod, only: theta_hydrostatic_mode

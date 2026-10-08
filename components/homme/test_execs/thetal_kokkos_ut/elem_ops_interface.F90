@@ -9,11 +9,11 @@ module elem_ops_interface
   implicit none
 
   type(hvcoord_t) :: hvcoord
-  public :: init_f90
+  public :: init_elem_ops_f90
   public :: compute_r_star_f90
 contains
 
-  subroutine init_f90 (hyai, ps0) bind(c)
+  subroutine init_elem_ops_f90 (hyai, ps0) bind(c)
     !
     ! Inputs
     !
@@ -23,7 +23,7 @@ contains
     hvcoord%hyai = hyai
     hvcoord%ps0 = ps0
 
-  end subroutine init_f90
+  end subroutine init_elem_ops_f90
 
   subroutine compute_r_star_f90(num_elems, moist, Q_ptr, R_ptr) bind(c)
     use element_ops, only: get_R_star
