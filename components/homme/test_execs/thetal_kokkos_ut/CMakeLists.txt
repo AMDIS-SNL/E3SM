@@ -386,12 +386,20 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
     LABELS AMDIS
   )
 
+  # Remap sacado derivatives tests
+  EkatCreateUnitTest (remap_sacado_ut
+    "remap_sacado_ut.cpp;${SHARE_UT_DIR}/geometry_interface.F90;thetal_test_interface.F90;remap_theta_interface.F90"
+    LIBS thetal_kokkos_ut_lib
+    LABELS AMDIS
+  )
+
   # Eqn of state sacado derivatives tests
   EkatCreateUnitTest (eos_sacado_ut
     eos_sacado_ut.cpp
     LIBS thetal_kokkos_ut_lib
     LABELS AMDIS
   )
+
 
   # Dirk sacado derivatives tests
   EkatCreateUnitTest ("dirk_sacado_ut"
