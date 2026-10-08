@@ -15,6 +15,7 @@ template class TracersST<Real>;
 #ifdef HOMMEXX_ENABLE_FAD_TYPES
 template class TracersST<DpFadType>;
 template class TracersST<DxFadTypeCaar>;
+template class TracersST<DxFadTypeRemap>;
 #endif
 
 } // namespace Homme

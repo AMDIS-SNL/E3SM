@@ -23,6 +23,7 @@
 #include "utilities/SubviewUtils.hpp"
 #include "utilities/SyncUtils.hpp"
 #include "RemapStateProvider.hpp"
+#include "../../theta-l_kokkos/cxx/StateSnapshot.hpp"
 
 #include "profiling.hpp"
 
@@ -552,6 +553,377 @@ struct RemapFunctor : public RemapperST<ST> {
   void init_buffers(const FunctorsBuffersManager& fbm) override {
     m_fields_provider.init_buffers(fbm);
   }
+
+  #ifdef HOMMEXX_ENABLE_FAD_TYPES
+  // Offsets into the per-column FAD derivative vector for init_J / run_JV.
+  // The FAD type DxFadTypeDirk has size NUM_PHYSICAL_LEV*4 + NUM_INTERFACE_LEV*2.
+  // For each column (ip,jp) the state variables are encoded as:
+  //   [u(0..NUM_PHYSICAL_LEV-1), v(0..NUM_PHYSICAL_LEV-1),
+  //    vtheta_dp(0..NUM_PHYSICAL_LEV-1), dp3d(0..NUM_PHYSICAL_LEV-1),
+  //    w_i(0..NUM_INTERFACE_LEV-1), phinh_i(0..NUM_INTERFACE_LEV-1)]
+  static constexpr int fad_offset_u   = 0;
+  static constexpr int fad_offset_v   = NUM_PHYSICAL_LEV;
+  static constexpr int fad_offset_vth = 2*NUM_PHYSICAL_LEV;
+  static constexpr int fad_offset_dp  = 3*NUM_PHYSICAL_LEV;
+  static constexpr int fad_offset_w   = 4*NUM_PHYSICAL_LEV;
+  static constexpr int fad_offset_phi = 4*NUM_PHYSICAL_LEV + NUM_INTERFACE_LEV;
+
+  // Initialize the d/dx derivatives of the state so that each state variable
+  // gets a unique FAD index encoding its level. Since DIRK has no horizontal
+  // (GaussPoint) coupling, each column (ip,jp) is independent and uses the
+  // same per-level FAD indices. The input dx_tl specifies with respect of
+  // which state time level we are computing derivs.
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, DxFadTypeRemap>>
+  init_J (const int dx_tl, const ElementsStateST<ST>& state) {
+    using md_range_t = Kokkos::MDRangePolicy<ExecSpace, Kokkos::Rank<5>>;
+    const int nelem = state.num_elems();
+    auto p5_mid = md_range_t({0,0,0,0,0}, {nelem, NUM_TIME_LEVELS, NP, NP, NUM_PHYSICAL_LEV});
+    auto p5_int = md_range_t({0,0,0,0,0}, {nelem, NUM_TIME_LEVELS, NP, NP, NUM_INTERFACE_LEV});
+
+    auto dvdx_v   = ekat::scalarize(state.m_v);
+    auto dvthdx_v = ekat::scalarize(state.m_vtheta_dp);
+    auto ddpdx_v  = ekat::scalarize(state.m_dp3d);
+    auto dwdx_v   = ekat::scalarize(state.m_w_i);
+    auto dphidx_v = ekat::scalarize(state.m_phinh_i);
+
+    // Local copies of offsets for lambda capture (KOKKOS_LAMBDA uses [=])
+    const int offset_u   = fad_offset_u;
+    const int offset_v   = fad_offset_v;
+    const int offset_vth = fad_offset_vth;
+    const int offset_dp  = fad_offset_dp;
+    const int offset_w   = fad_offset_w;
+    const int offset_phi = fad_offset_phi;
+
+    auto init_dx_mid = KOKKOS_LAMBDA (int ie, int tl, int ip, int jp, int k) {
+      auto& dudx   = dvdx_v  (ie, tl, 0, ip, jp, k);
+      auto& dvdx   = dvdx_v  (ie, tl, 1, ip, jp, k);
+      auto& dvthdx = dvthdx_v(ie, tl,    ip, jp, k);
+      auto& ddpdx  = ddpdx_v (ie, tl,    ip, jp, k);
+
+      auto coeff = tl==dx_tl ? 1 : 0;
+      dudx.zero();   dudx.fastAccessDx  (offset_u   + k) = coeff;
+      dvdx.zero();   dvdx.fastAccessDx  (offset_v   + k) = coeff;
+      dvthdx.zero(); dvthdx.fastAccessDx(offset_vth + k) = coeff;
+      ddpdx.zero();  ddpdx.fastAccessDx (offset_dp  + k) = coeff;
+    };
+
+    auto init_dx_int = KOKKOS_LAMBDA (int ie, int tl, int ip, int jp, int k) {
+      auto& dwdx   = dwdx_v  (ie, tl, ip, jp, k);
+      auto& dphidx = dphidx_v(ie, tl, ip, jp, k);
+
+      auto coeff = tl==dx_tl ? 1 : 0;
+      dwdx.zero();   dwdx.fastAccessDx  (offset_w   + k) = coeff;
+      dphidx.zero(); dphidx.fastAccessDx(offset_phi + k) = coeff;
+    };
+
+    Kokkos::parallel_for(p5_mid, init_dx_mid);
+    Kokkos::parallel_for(p5_int, init_dx_int);
+  }
+
+  // Compute the product J*V where J = d(state(np1)) / d(state(itl)) (where itl
+  // was set in init_J).
+  // Preconditions: init_J(itl,e) and run(...) must have been called first.
+  // The arg state_dx should contain dU(np1)/dU(itl), where itl is the slice
+  // we specified during init_J
+  template<typename MyST = ST>
+  std::enable_if_t<not std::is_same_v<MyST, DxFadTypeRemap>>
+  run_JV (const int /*np1*/, const ElementsStateST<ST>& /*state_dx*/,
+          const StateSnapshot& /* x */, StateSnapshot& /* y */) = delete;
+
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, DxFadTypeRemap>>
+  run_JV (const int np1, const ElementsStateST<ST>& state_dx,
+          const StateSnapshot& x, StateSnapshot& y)
+  {
+    // Extract the Jacobian-vector product using the product rule.
+    // dw_v(ie,np1,ip,jp,k).dx(j) = d(w_np1(ie,ip,jp,k)) / d(input_j)
+    // dphi_v(ie,np1,ip,jp,k).dx(j) = d(phi_np1(ie,ip,jp,k)) / d(input_j)
+    const int nelem = state_dx.num_elems();
+
+    auto dV_v   = ekat::scalarize(state_dx.m_v);
+    auto dvth_v = ekat::scalarize(state_dx.m_vtheta_dp);
+    auto ddp_v  = ekat::scalarize(state_dx.m_dp3d);
+    auto dw_v   = ekat::scalarize(state_dx.m_w_i);
+    auto dphi_v = ekat::scalarize(state_dx.m_phinh_i);
+
+    // Input
+    auto x_V   = ekat::scalarize(x.v);
+    auto x_vth = ekat::scalarize(x.vtheta_dp);
+    auto x_dp  = ekat::scalarize(x.dp3d);
+    auto x_w   = ekat::scalarize(x.w_i);
+    auto x_phi = ekat::scalarize(x.phinh_i);
+
+    // Output
+    auto y_V   = ekat::scalarize(y.v);
+    auto y_vth = ekat::scalarize(y.vtheta_dp);
+    auto y_dp  = ekat::scalarize(y.dp3d);
+    auto y_w   = ekat::scalarize(y.w_i);
+    auto y_phi = ekat::scalarize(y.phinh_i);
+
+    // Local copies of offsets for lambda capture
+    const int offset_u   = fad_offset_u;
+    const int offset_v   = fad_offset_v;
+    const int offset_vth = fad_offset_vth;
+    const int offset_dp  = fad_offset_dp;
+    const int offset_w   = fad_offset_w;
+    const int offset_phi = fad_offset_phi;
+
+    using md_range_t = Kokkos::MDRangePolicy<ExecSpace, Kokkos::Rank<4>>;
+    auto p4_int = md_range_t({0,0,0,0}, {nelem, NP, NP, NUM_INTERFACE_LEV});
+    auto p4_mid = md_range_t({0,0,0,0}, {nelem, NP, NP, NUM_PHYSICAL_LEV});
+
+    // Compute J*V for u, v, vtheta_dp, or dp3d at np1
+    auto prod_rule_mid = KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k) {
+      const auto& Ju   = dV_v  (ie, np1, 0, ip, jp, k).dx();
+      const auto& Jv   = dV_v  (ie, np1, 1, ip, jp, k).dx();
+      const auto& Jvth = dvth_v(ie, np1,    ip, jp, k).dx();
+      const auto& Jdp  = ddp_v (ie, np1,    ip, jp, k).dx();
+
+      Real y_u_new   = 0;
+      Real y_v_new   = 0;
+      Real y_vth_new = 0;
+      Real y_dp_new  = 0;
+
+      // Contributions from midpoint variables (u, v, vtheta_dp, dp3d)
+      for (int k2 = 0; k2 < NUM_PHYSICAL_LEV; ++k2) {
+        y_u_new   += Ju  [offset_u   + k2] * x_V  (ie, 0, ip, jp, k2)
+                   + Ju  [offset_v   + k2] * x_V  (ie, 1, ip, jp, k2)
+                   + Ju  [offset_vth + k2] * x_vth(ie,    ip, jp, k2)
+                   + Ju  [offset_dp  + k2] * x_dp (ie,    ip, jp, k2);
+        y_v_new   += Jv  [offset_u   + k2] * x_V  (ie, 0, ip, jp, k2)
+                   + Jv  [offset_v   + k2] * x_V  (ie, 1, ip, jp, k2)
+                   + Jv  [offset_vth + k2] * x_vth(ie,    ip, jp, k2)
+                   + Jv  [offset_dp  + k2] * x_dp (ie,    ip, jp, k2);
+        y_vth_new += Jvth[offset_u   + k2] * x_V  (ie, 0, ip, jp, k2)
+                   + Jvth[offset_v   + k2] * x_V  (ie, 1, ip, jp, k2)
+                   + Jvth[offset_vth + k2] * x_vth(ie,    ip, jp, k2)
+                   + Jvth[offset_dp  + k2] * x_dp (ie,    ip, jp, k2);
+        y_dp_new  += Jdp [offset_u   + k2] * x_V  (ie, 0, ip, jp, k2)
+                   + Jdp [offset_v   + k2] * x_V  (ie, 1, ip, jp, k2)
+                   + Jdp [offset_vth + k2] * x_vth(ie,    ip, jp, k2)
+                   + Jdp [offset_dp  + k2] * x_dp (ie,    ip, jp, k2);
+      }
+      // Contributions from interface variables (w_i, phinh_i)
+      for (int k2 = 0; k2 < NUM_INTERFACE_LEV; ++k2) {
+        y_u_new   += Ju  [offset_w   + k2] * x_w  (ie, ip, jp, k2)
+                   + Ju  [offset_phi + k2] * x_phi(ie, ip, jp, k2);
+        y_v_new   += Jv  [offset_w   + k2] * x_w  (ie, ip, jp, k2)
+                   + Jv  [offset_phi + k2] * x_phi(ie, ip, jp, k2);
+        y_vth_new += Jvth[offset_w   + k2] * x_w  (ie, ip, jp, k2)
+                   + Jvth[offset_phi + k2] * x_phi(ie, ip, jp, k2);
+        y_dp_new  += Jdp [offset_w   + k2] * x_w  (ie, ip, jp, k2)
+                   + Jdp [offset_phi + k2] * x_phi(ie, ip, jp, k2);
+      }
+
+      y_V  (ie, 0, ip, jp, k) = y_u_new;
+      y_V  (ie, 1, ip, jp, k) = y_v_new;
+      y_vth(ie,    ip, jp, k) = y_vth_new;
+      y_dp (ie,    ip, jp, k) = y_dp_new;
+    };
+
+    // Compute J*V for w_i and phinh_i at np1
+    auto prod_rule_int = KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k) {
+      const auto& Jw   = dw_v  (ie, np1, ip, jp, k).dx();
+      const auto& Jphi = dphi_v(ie, np1, ip, jp, k).dx();
+
+      Real y_w_new   = 0;
+      Real y_phi_new = 0;
+
+      // Contributions from midpoint variables (u, v, vtheta_dp, dp3d)
+      for (int k2 = 0; k2 < NUM_PHYSICAL_LEV; ++k2) {
+        y_w_new   += Jw  [offset_u   + k2] * x_V  (ie, 0, ip, jp, k2)
+                   + Jw  [offset_v   + k2] * x_V  (ie, 1, ip, jp, k2)
+                   + Jw  [offset_vth + k2] * x_vth(ie,    ip, jp, k2)
+                   + Jw  [offset_dp  + k2] * x_dp (ie,    ip, jp, k2);
+        y_phi_new += Jphi[offset_u   + k2] * x_V  (ie, 0, ip, jp, k2)
+                   + Jphi[offset_v   + k2] * x_V  (ie, 1, ip, jp, k2)
+                   + Jphi[offset_vth + k2] * x_vth(ie,    ip, jp, k2)
+                   + Jphi[offset_dp  + k2] * x_dp (ie,    ip, jp, k2);
+      }
+      // Contributions from interface variables (w_i, phinh_i)
+      for (int k2 = 0; k2 < NUM_INTERFACE_LEV; ++k2) {
+        y_w_new   += Jw  [offset_w   + k2] * x_w  (ie, ip, jp, k2)
+                   + Jw  [offset_phi + k2] * x_phi(ie, ip, jp, k2);
+        y_phi_new += Jphi[offset_w   + k2] * x_w  (ie, ip, jp, k2)
+                   + Jphi[offset_phi + k2] * x_phi(ie, ip, jp, k2);
+      }
+
+      y_w  (ie, ip, jp, k) = y_w_new;
+      y_phi(ie, ip, jp, k) = y_phi_new;
+    };
+
+    Kokkos::parallel_for(p4_mid, prod_rule_mid);
+    Kokkos::parallel_for(p4_int, prod_rule_int);
+  }
+
+  // Compute the product J^T*V where J = d(state(np1)) / d(state(itl)) (where itl
+  // was set in init_J).
+  // Preconditions: init_J(itl,e) and run(...) must have been called first.
+  // The arg state_dx should contain dU(np1)/dU(itl), where itl is the slice
+  // we specified during init_J
+  template<typename MyST = ST>
+  std::enable_if_t<not std::is_same_v<MyST, DxFadTypeRemap>>
+  run_JtV (const int /*np1*/, const ElementsStateST<ST>& /*state_dx*/,
+           const StateSnapshot& /*x*/, StateSnapshot& /*y*/) = delete;
+
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, DxFadTypeRemap>>
+  run_JtV (const int np1, const ElementsStateST<ST>& state_dx,
+           const StateSnapshot& x, StateSnapshot& y)
+  {
+    // General transpose product: y = J^T * x
+    const int nelem = state_dx.num_elems();
+
+    // Extract derivative-containing views produced by init_J + run
+    auto dV_v   = ekat::scalarize(state_dx.m_v);
+    auto dvth_v = ekat::scalarize(state_dx.m_vtheta_dp);
+    auto ddp_v  = ekat::scalarize(state_dx.m_dp3d);
+    auto dw_v   = ekat::scalarize(state_dx.m_w_i);
+    auto dphi_v = ekat::scalarize(state_dx.m_phinh_i);
+
+    // Input (adjoint at np1)
+    auto x_V   = ekat::scalarize(x.v);
+    auto x_vth = ekat::scalarize(x.vtheta_dp);
+    auto x_dp  = ekat::scalarize(x.dp3d);
+    auto x_w   = ekat::scalarize(x.w_i);
+    auto x_phi = ekat::scalarize(x.phinh_i);
+
+    // Output (adjoint at itl)
+    auto y_V   = ekat::scalarize(y.v);
+    auto y_vth = ekat::scalarize(y.vtheta_dp);
+    auto y_dp  = ekat::scalarize(y.dp3d);
+    auto y_w   = ekat::scalarize(y.w_i);
+    auto y_phi = ekat::scalarize(y.phinh_i);
+
+    // Local copies of offsets for lambda capture
+    const int offset_u   = fad_offset_u;
+    const int offset_v   = fad_offset_v;
+    const int offset_vth = fad_offset_vth;
+    const int offset_dp  = fad_offset_dp;
+    const int offset_w   = fad_offset_w;
+    const int offset_phi = fad_offset_phi;
+
+    using md_range_t = Kokkos::MDRangePolicy<ExecSpace, Kokkos::Rank<4>>;
+    auto p4_int = md_range_t({0,0,0,0}, {nelem, NP, NP, NUM_INTERFACE_LEV});
+    auto p4_mid = md_range_t({0,0,0,0}, {nelem, NP, NP, NUM_PHYSICAL_LEV});
+
+    // Compute (J^T * x)_w(k2) and (J^T * x)_phi(k2) for interface inputs k2.
+    // Sum contributions from all midpoint outputs and interface outputs.
+    auto jtv_int = KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k2) {
+      Real y_w_new   = 0;
+      Real y_phi_new = 0;
+
+      // Contributions from midpoint outputs
+      for (int k = 0; k < NUM_PHYSICAL_LEV; ++k) {
+        const auto& Ju   = dV_v  (ie, np1, 0, ip, jp, k).dx();
+        const auto& Jv   = dV_v  (ie, np1, 1, ip, jp, k).dx();
+        const auto& Jvth = dvth_v(ie, np1,    ip, jp, k).dx();
+        const auto& Jdp  = ddp_v (ie, np1,    ip, jp, k).dx();
+
+        const Real x_V_u = x_V  (ie, 0, ip, jp, k);
+        const Real x_V_v = x_V  (ie, 1, ip, jp, k);
+        const Real x_vth_k = x_vth(ie,    ip, jp, k);
+        const Real x_dp_k  = x_dp (ie,    ip, jp, k);
+
+        y_w_new   += Ju  [offset_w   + k2] * x_V_u
+                   + Jv  [offset_w   + k2] * x_V_v
+                   + Jvth[offset_w   + k2] * x_vth_k
+                   + Jdp [offset_w   + k2] * x_dp_k;
+
+        y_phi_new += Ju  [offset_phi + k2] * x_V_u
+                   + Jv  [offset_phi + k2] * x_V_v
+                   + Jvth[offset_phi + k2] * x_vth_k
+                   + Jdp [offset_phi + k2] * x_dp_k;
+      }
+
+      // Contributions from interface outputs
+      for (int k = 0; k < NUM_INTERFACE_LEV; ++k) {
+        const auto& Jw   = dw_v  (ie, np1, ip, jp, k).dx();
+        const auto& Jphi = dphi_v(ie, np1, ip, jp, k).dx();
+
+        const Real x_w_k   = x_w  (ie, ip, jp, k);
+        const Real x_phi_k = x_phi(ie, ip, jp, k);
+
+        y_w_new   += Jw  [offset_w   + k2] * x_w_k
+                   + Jphi[offset_w   + k2] * x_phi_k;
+        y_phi_new += Jw  [offset_phi + k2] * x_w_k
+                   + Jphi[offset_phi + k2] * x_phi_k;
+      }
+
+      y_w  (ie, ip, jp, k2) = y_w_new;
+      y_phi(ie, ip, jp, k2) = y_phi_new;
+    };
+
+    // Compute (J^T * x)_u(k2), _v(k2), _vth(k2), _dp(k2) for midpoint inputs k2.
+    // Sum contributions from midpoint and interface outputs.
+    auto jtv_mid = KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k2) {
+      Real y_u_new   = 0;
+      Real y_v_new   = 0;
+      Real y_vth_new = 0;
+      Real y_dp_new  = 0;
+
+      // Contributions from midpoint outputs
+      for (int k = 0; k < NUM_PHYSICAL_LEV; ++k) {
+        const auto& Ju   = dV_v  (ie, np1, 0, ip, jp, k).dx();
+        const auto& Jv   = dV_v  (ie, np1, 1, ip, jp, k).dx();
+        const auto& Jvth = dvth_v(ie, np1,    ip, jp, k).dx();
+        const auto& Jdp  = ddp_v (ie, np1,    ip, jp, k).dx();
+
+        const Real x_V_u = x_V  (ie, 0, ip, jp, k);
+        const Real x_V_v = x_V  (ie, 1, ip, jp, k);
+        const Real x_vth_k = x_vth(ie,    ip, jp, k);
+        const Real x_dp_k  = x_dp (ie,    ip, jp, k);
+
+        y_u_new   += Ju  [offset_u   + k2] * x_V_u
+                   + Jv  [offset_u   + k2] * x_V_v
+                   + Jvth[offset_u   + k2] * x_vth_k
+                   + Jdp [offset_u   + k2] * x_dp_k;
+
+        y_v_new   += Ju  [offset_v   + k2] * x_V_u
+                   + Jv  [offset_v   + k2] * x_V_v
+                   + Jvth[offset_v   + k2] * x_vth_k
+                   + Jdp [offset_v   + k2] * x_dp_k;
+
+        y_vth_new += Ju  [offset_vth + k2] * x_V_u
+                   + Jv  [offset_vth + k2] * x_V_v
+                   + Jvth[offset_vth + k2] * x_vth_k
+                   + Jdp [offset_vth + k2] * x_dp_k;
+
+        y_dp_new  += Ju  [offset_dp  + k2] * x_V_u
+                   + Jv  [offset_dp  + k2] * x_V_v
+                   + Jvth[offset_dp  + k2] * x_vth_k
+                   + Jdp [offset_dp  + k2] * x_dp_k;
+      }
+
+      // Contributions from interface outputs
+      for (int k = 0; k < NUM_INTERFACE_LEV; ++k) {
+        const auto& Jw   = dw_v  (ie, np1, ip, jp, k).dx();
+        const auto& Jphi = dphi_v(ie, np1, ip, jp, k).dx();
+
+        const Real x_w_k   = x_w  (ie, ip, jp, k);
+        const Real x_phi_k = x_phi(ie, ip, jp, k);
+
+        y_u_new   += Jw  [offset_u   + k2] * x_w_k
+                   + Jphi[offset_u   + k2] * x_phi_k;
+        y_v_new   += Jw  [offset_v   + k2] * x_w_k
+                   + Jphi[offset_v   + k2] * x_phi_k;
+        y_vth_new += Jw  [offset_vth + k2] * x_w_k
+                   + Jphi[offset_vth + k2] * x_phi_k;
+        y_dp_new  += Jw  [offset_dp  + k2] * x_w_k
+                   + Jphi[offset_dp  + k2] * x_phi_k;
+      }
+
+      y_V  (ie, 0, ip, jp, k2) = y_u_new;
+      y_V  (ie, 1, ip, jp, k2) = y_v_new;
+      y_vth(ie,    ip, jp, k2) = y_vth_new;
+      y_dp (ie,    ip, jp, k2) = y_dp_new;
+    };
+
+    Kokkos::parallel_for(p4_int, jtv_int);
+    Kokkos::parallel_for(p4_mid, jtv_mid);
+  }
+#endif // HOMMEXX_ENABLE_FAD_TYPES
 
 private:
   template <typename FunctorTag>
