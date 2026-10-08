@@ -2,6 +2,7 @@
 
 #include "Types.hpp"
 #include "thetal_f90_interface.hpp"
+#include "thetal_ut_session.hpp"
 #include "Context.hpp"
 #include "CaarFunctorImpl.hpp"
 #include "SimulationParams.hpp"
@@ -42,36 +43,13 @@ TEST_CASE("caar_dp_check") {
   params.vtheta_thresh = 0; // don't let the limiter do anything, for now
   params.params_set = true;
 
-  // Create and init hvcoord and ref_elem, needed to init the fortran interface
-  auto& hvcoord = c.create<HybridVCoord>();
-  auto& ref_FE  = c.create<ReferenceElement>();
-  hvcoord.random_init(seed);
+  // Create the f90 mesh/connectivity, and init hvcoord and ref_FE.
+  // The session also takes care of cleaning up (f90 and Context) at the end of the scope.
+  CubeSphereTestSession session(ne,seed);
+  auto& hvcoord = session.hvcoord;
+  auto& ref_FE  = session.ref_FE;
 
-  auto hyai = Kokkos::create_mirror_view(hvcoord.hybrid_ai);
-  auto hybi = Kokkos::create_mirror_view(hvcoord.hybrid_bi);
-  auto hyam = Kokkos::create_mirror_view(hvcoord.hybrid_am);
-  auto hybm = Kokkos::create_mirror_view(hvcoord.hybrid_bm);
-  Kokkos::deep_copy(hyai,hvcoord.hybrid_ai);
-  Kokkos::deep_copy(hybi,hvcoord.hybrid_bi);
-  Kokkos::deep_copy(hyam,hvcoord.hybrid_am);
-  Kokkos::deep_copy(hybm,hvcoord.hybrid_bm);
-  HostViewManaged<Real[NUM_PHYSICAL_LEV]> hyam_r(""),hybm_r("");
-  for (int i=0;i<NUM_PHYSICAL_LEV;++i) {
-    int ilev = i / VECTOR_SIZE;
-    int ivec = i % VECTOR_SIZE;
-    hyam_r(i) = ADValue(hyam(ilev)[ivec]);
-    hybm_r(i) = ADValue(hybm(ilev)[ivec]);
-  }
-
-  std::vector<Real> dvv(NP*NP);
-  std::vector<Real> mp(NP*NP);
-
-  init_f90(ne,hyai.data(),hybi.data(),hyam_r.data(),hybm_r.data(),dvv.data(),mp.data(),hvcoord.ps0);
-
-  ref_FE.init_mass(mp.data());
-  ref_FE.init_deriv(dvv.data());
-
-  const int num_elems = c.get<Connectivity>().get_num_local_elements();
+  const int num_elems = session.num_elems();
   const auto max_pressure = 1000.0 + hvcoord.ps0; // This ensures max_p > ps0
 
   // Create elements with Real scalar type
@@ -245,8 +223,6 @@ TEST_CASE("caar_dp_check") {
     }
   }
 
-  cleanup_f90();
-  c.finalize_singleton();
 }
 
 // Compute Dx/Dp two ways, and compare:
@@ -277,36 +253,13 @@ TEST_CASE("caar_dx_check") {
   params.params_set = true;
   params.rsplit = 3;
 
-  // Create and init hvcoord and ref_elem
-  auto& hvcoord = c.create<HybridVCoord>();
-  auto& ref_FE  = c.create<ReferenceElement>();
-  hvcoord.random_init(seed);
+  // Create the f90 mesh/connectivity, and init hvcoord and ref_FE.
+  // The session also takes care of cleaning up (f90 and Context) at the end of the scope.
+  CubeSphereTestSession session(ne,seed);
+  auto& hvcoord = session.hvcoord;
+  auto& ref_FE  = session.ref_FE;
 
-  auto hyai = Kokkos::create_mirror_view(hvcoord.hybrid_ai);
-  auto hybi = Kokkos::create_mirror_view(hvcoord.hybrid_bi);
-  auto hyam = Kokkos::create_mirror_view(hvcoord.hybrid_am);
-  auto hybm = Kokkos::create_mirror_view(hvcoord.hybrid_bm);
-  Kokkos::deep_copy(hyai,hvcoord.hybrid_ai);
-  Kokkos::deep_copy(hybi,hvcoord.hybrid_bi);
-  Kokkos::deep_copy(hyam,hvcoord.hybrid_am);
-  Kokkos::deep_copy(hybm,hvcoord.hybrid_bm);
-  HostViewManaged<Real[NUM_PHYSICAL_LEV]> hyam_r(""),hybm_r("");
-  for (int i=0;i<NUM_PHYSICAL_LEV;++i) {
-    int ilev = i / VECTOR_SIZE;
-    int ivec = i % VECTOR_SIZE;
-    hyam_r(i) = ADValue(hyam(ilev)[ivec]);
-    hybm_r(i) = ADValue(hybm(ilev)[ivec]);
-  }
-
-  std::vector<Real> dvv(NP*NP);
-  std::vector<Real> mp(NP*NP);
-
-  init_f90(ne,hyai.data(),hybi.data(),hyam_r.data(),hybm_r.data(),dvv.data(),mp.data(),hvcoord.ps0);
-
-  ref_FE.init_mass(mp.data());
-  ref_FE.init_deriv(dvv.data());
-
-  const int num_elems = c.get<Connectivity>().get_num_local_elements();
+  const int num_elems = session.num_elems();
   const auto max_pressure = 1000.0 + hvcoord.ps0; // This ensures max_p > ps0
 
   // Create elements geometry
@@ -520,8 +473,6 @@ TEST_CASE("caar_dx_check") {
     }
   }
 
-  cleanup_f90();
-  c.finalize_singleton();
 }
 
 // Verify the JtV transpose identity: <a, J*b> == <J^T*a, b>.
@@ -546,34 +497,13 @@ TEST_CASE("caar_jtv_check") {
   params.params_set    = true;
   params.rsplit        = 3;
 
-  auto& hvcoord = c.create<HybridVCoord>();
-  auto& ref_FE  = c.create<ReferenceElement>();
-  hvcoord.random_init(seed);
+  // Create the f90 mesh/connectivity, and init hvcoord and ref_FE.
+  // The session also takes care of cleaning up (f90 and Context) at the end of the scope.
+  CubeSphereTestSession session(ne,seed);
+  auto& hvcoord = session.hvcoord;
+  auto& ref_FE  = session.ref_FE;
 
-  auto hyai = Kokkos::create_mirror_view(hvcoord.hybrid_ai);
-  auto hybi = Kokkos::create_mirror_view(hvcoord.hybrid_bi);
-  auto hyam = Kokkos::create_mirror_view(hvcoord.hybrid_am);
-  auto hybm = Kokkos::create_mirror_view(hvcoord.hybrid_bm);
-  Kokkos::deep_copy(hyai, hvcoord.hybrid_ai);
-  Kokkos::deep_copy(hybi, hvcoord.hybrid_bi);
-  Kokkos::deep_copy(hyam, hvcoord.hybrid_am);
-  Kokkos::deep_copy(hybm, hvcoord.hybrid_bm);
-
-  HostViewManaged<Real[NUM_PHYSICAL_LEV]> hyam_r(""), hybm_r("");
-  for (int i = 0; i < NUM_PHYSICAL_LEV; ++i) {
-    int ilev = i / VECTOR_SIZE;
-    int ivec = i % VECTOR_SIZE;
-    hyam_r(i) = ADValue(hyam(ilev)[ivec]);
-    hybm_r(i) = ADValue(hybm(ilev)[ivec]);
-  }
-
-  std::vector<Real> dvv(NP*NP), mp(NP*NP);
-  init_f90(ne, hyai.data(), hybi.data(), hyam_r.data(), hybm_r.data(),
-           dvv.data(), mp.data(), hvcoord.ps0);
-  ref_FE.init_mass(mp.data());
-  ref_FE.init_deriv(dvv.data());
-
-  const int  num_elems    = c.get<Connectivity>().get_num_local_elements();
+  const int  num_elems    = session.num_elems();
   const Real max_pressure = 1000.0 + hvcoord.ps0;
 
   auto& elems = c.create<ElementsST<Real>>();
@@ -765,8 +695,6 @@ TEST_CASE("caar_jtv_check") {
     }
   }
 
-  cleanup_f90();
-  c.finalize_singleton();
 }
 
 TEST_CASE("caar_adjoint") {
@@ -792,34 +720,13 @@ TEST_CASE("caar_adjoint") {
   params.params_set    = true;
   params.rsplit        = 3;
 
-  auto& hvcoord = c.create<HybridVCoord>();
-  auto& ref_FE  = c.create<ReferenceElement>();
-  hvcoord.random_init(seed);
+  // Create the f90 mesh/connectivity, and init hvcoord and ref_FE.
+  // The session also takes care of cleaning up (f90 and Context) at the end of the scope.
+  CubeSphereTestSession session(ne,seed);
+  auto& hvcoord = session.hvcoord;
+  auto& ref_FE  = session.ref_FE;
 
-  auto hyai = Kokkos::create_mirror_view(hvcoord.hybrid_ai);
-  auto hybi = Kokkos::create_mirror_view(hvcoord.hybrid_bi);
-  auto hyam = Kokkos::create_mirror_view(hvcoord.hybrid_am);
-  auto hybm = Kokkos::create_mirror_view(hvcoord.hybrid_bm);
-  Kokkos::deep_copy(hyai, hvcoord.hybrid_ai);
-  Kokkos::deep_copy(hybi, hvcoord.hybrid_bi);
-  Kokkos::deep_copy(hyam, hvcoord.hybrid_am);
-  Kokkos::deep_copy(hybm, hvcoord.hybrid_bm);
-
-  HostViewManaged<Real[NUM_PHYSICAL_LEV]> hyam_r(""), hybm_r("");
-  for (int i = 0; i < NUM_PHYSICAL_LEV; ++i) {
-    int ilev = i / VECTOR_SIZE;
-    int ivec = i % VECTOR_SIZE;
-    hyam_r(i) = ADValue(hyam(ilev)[ivec]);
-    hybm_r(i) = ADValue(hybm(ilev)[ivec]);
-  }
-
-  std::vector<Real> dvv(NP*NP), mp(NP*NP);
-  init_f90(ne, hyai.data(), hybi.data(), hyam_r.data(), hybm_r.data(),
-           dvv.data(), mp.data(), hvcoord.ps0);
-  ref_FE.init_mass(mp.data());
-  ref_FE.init_deriv(dvv.data());
-
-  const int  num_elems    = c.get<Connectivity>().get_num_local_elements();
+  const int  num_elems    = session.num_elems();
   const Real max_pressure = 1000.0 + hvcoord.ps0;
 
   auto& geo = c.create<ElementsGeometry>();
@@ -1021,6 +928,4 @@ TEST_CASE("caar_adjoint") {
     }
   }
 
-  cleanup_f90();
-  c.finalize_singleton();
 }

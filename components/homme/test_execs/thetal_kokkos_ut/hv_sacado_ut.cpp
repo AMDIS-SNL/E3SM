@@ -5,6 +5,7 @@
 
 #include "Types.hpp"
 #include "thetal_f90_interface.hpp"
+#include "thetal_ut_session.hpp"
 #include "Context.hpp"
 #include "Elements.hpp"
 #include "FunctorsBuffersManager.hpp"
@@ -37,55 +38,30 @@ void init_ref_and_derived (ElementsST<ST>& e) {
 }
 
 // Builds a real cube-sphere mesh/connectivity (ne x ne x 6 elements) via the
-// F90 side, and inits ref_FE's mass/deriv matrices from it. Geometry itself
+// F90 side, and inits hvcoord/ref_FE from it. Geometry itself
 // is still randomized by the caller: only the *topology* (each element having
 // 4 real edge neighbors) needs to be genuine for BoundaryExchange to work.
-void init_mesh_and_ref_elem (Context& c, const int ne, const SimulationParams& params,
-                              HybridVCoord& hvcoord, ReferenceElement& ref_FE,
-                              const unsigned int seed) {
-  hvcoord.random_init(seed);
+// The session takes care of the F90 and Context cleanup, even if a REQUIRE throws.
+CubeSphereTestSession make_hv_session (const int ne, const SimulationParams& params,
+                                       const unsigned int seed) {
+  return CubeSphereTestSession(ne, seed,
+    [&params] (CubeSphereTestSession& s) {
+      init_hv_f90(s.ne, s.hyai.data(), s.hybi.data(), s.hyam.data(), s.hybm.data(),
+                  s.dvv.data(), s.mp.data(), s.ps0,
+                  params.hypervis_subcycle, params.nu, params.nu_div,
+                  params.nu_top, params.nu_p, params.nu_s);
+    },
+    [] () { cleanup_f90(); });
+}
 
-  auto hyai = Kokkos::create_mirror_view(hvcoord.hybrid_ai);
-  auto hybi = Kokkos::create_mirror_view(hvcoord.hybrid_bi);
-  auto hyam = Kokkos::create_mirror_view(hvcoord.hybrid_am);
-  auto hybm = Kokkos::create_mirror_view(hvcoord.hybrid_bm);
-  Kokkos::deep_copy(hyai,hvcoord.hybrid_ai);
-  Kokkos::deep_copy(hybi,hvcoord.hybrid_bi);
-  Kokkos::deep_copy(hyam,hvcoord.hybrid_am);
-  Kokkos::deep_copy(hybm,hvcoord.hybrid_bm);
-  HostViewManaged<Real[NUM_PHYSICAL_LEV]> hyam_r(""), hybm_r("");
-  for (int i=0; i<NUM_PHYSICAL_LEV; ++i) {
-    int ilev = i / VECTOR_SIZE;
-    int ivec = i % VECTOR_SIZE;
-    hyam_r(i) = ADValue(hyam(ilev)[ivec]);
-    hybm_r(i) = ADValue(hybm(ilev)[ivec]);
-  }
-
-  std::vector<Real> dvv(NP*NP), mp(NP*NP);
-  init_hv_f90(ne, hyai.data(), hybi.data(), hyam_r.data(), hybm_r.data(),
-              dvv.data(), mp.data(), hvcoord.ps0,
-              params.hypervis_subcycle, params.nu, params.nu_div,
-              params.nu_top, params.nu_p, params.nu_s);
-
-  ref_FE.init_mass(mp.data());
-  ref_FE.init_deriv(dvv.data());
-
+// Create the buffers manager map, and set the connectivity
+// (which was created by the F90 init) in it
+void init_buffers_manager (Context& c) {
   auto& bmm = c.create<MpiBuffersManagerMap>();
   if (!bmm.is_connectivity_set()) {
     bmm.set_connectivity(c.get_ptr<Connectivity>());
   }
 }
-
-// A failed REQUIRE throws past the cleanup_f90()/Context::finalize_singleton()
-// calls at the end of a TEST_CASE, leaving the F90-side mesh state allocated;
-// the next TEST_CASE then aborts trying to re-allocate it. Run cleanup from a
-// destructor instead so it always runs, pass or fail.
-struct F90Cleanup {
-  ~F90Cleanup() {
-    cleanup_f90();
-    Context::finalize_singleton();
-  }
-};
 
 SimulationParams init_params () {
   SimulationParams params;
@@ -119,7 +95,6 @@ TEST_CASE ("hyperviscosity_dp_and_jv_testing")
   rngAlg engine(seed);
 
   Context::finalize_singleton();
-  F90Cleanup f90_cleanup_guard;
   auto& c = Context::singleton();
   c.create<ekat::Comm>(MPI_COMM_WORLD);
 
@@ -133,11 +108,12 @@ TEST_CASE ("hyperviscosity_dp_and_jv_testing")
   auto params = init_params();
   c.create<SimulationParams>() = params;
 
-  auto& hvcoord = c.create<HybridVCoord>();
-  auto& ref_FE  = c.create<ReferenceElement>();
-  init_mesh_and_ref_elem(c, ne, params, hvcoord, ref_FE, seed);
+  auto session = make_hv_session(ne, params, seed);
+  auto& hvcoord = session.hvcoord;
+  auto& ref_FE  = session.ref_FE;
+  init_buffers_manager(c);
 
-  const int num_elems = c.get<Connectivity>().get_num_local_elements();
+  const int num_elems = session.num_elems();
 
   ElementsST<Real> elems_ref, elems_0, elems_h;
   ElementsST<DpFadType> elems_dp;
@@ -389,7 +365,6 @@ TEST_CASE ("hyperviscosity_jtv_testing") {
   rngAlg engine(seed);
 
   Context::finalize_singleton();
-  F90Cleanup f90_cleanup_guard;
   auto& c = Context::singleton();
   c.create<ekat::Comm>(MPI_COMM_WORLD);
 
@@ -403,11 +378,12 @@ TEST_CASE ("hyperviscosity_jtv_testing") {
   auto params = init_params();
   c.create<SimulationParams>() = params;
 
-  auto& hvcoord = c.create<HybridVCoord>();
-  auto& ref_FE  = c.create<ReferenceElement>();
-  init_mesh_and_ref_elem(c, ne, params, hvcoord, ref_FE, seed);
+  auto session = make_hv_session(ne, params, seed);
+  auto& hvcoord = session.hvcoord;
+  auto& ref_FE  = session.ref_FE;
+  init_buffers_manager(c);
 
-  const int num_elems = c.get<Connectivity>().get_num_local_elements();
+  const int num_elems = session.num_elems();
 
   ElementsST<Real> elems;
   elems.init(num_elems,false,true,PhysicalConstants::rearth0,-1,true);
@@ -522,7 +498,6 @@ TEST_CASE ("hv_sphere_ops_discrete_self_adjoint") {
   rngAlg engine(seed);
 
   Context::finalize_singleton();
-  F90Cleanup f90_cleanup_guard;
   auto& c = Context::singleton();
   c.create<ekat::Comm>(MPI_COMM_WORLD);
 
@@ -530,11 +505,12 @@ TEST_CASE ("hv_sphere_ops_discrete_self_adjoint") {
   auto params = init_params();
   c.create<SimulationParams>() = params;
 
-  auto& hvcoord = c.create<HybridVCoord>();
-  auto& ref_FE  = c.create<ReferenceElement>();
-  init_mesh_and_ref_elem(c, ne, params, hvcoord, ref_FE, seed);
+  auto session = make_hv_session(ne, params, seed);
+  auto& hvcoord = session.hvcoord;
+  auto& ref_FE  = session.ref_FE;
+  init_buffers_manager(c);
 
-  const int num_elems = c.get<Connectivity>().get_num_local_elements();
+  const int num_elems = session.num_elems();
 
   auto& geo = c.create<ElementsGeometry>();
   geo.init(num_elems,false,true,PhysicalConstants::rearth0,-1,true);
