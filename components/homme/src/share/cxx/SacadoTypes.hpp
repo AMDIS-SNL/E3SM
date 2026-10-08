@@ -33,8 +33,10 @@ using DxFadTypeCaar = SFadN<double,19*NP*NP>; // for JV
 using DxFadTypeDirk = SFadN<double, NUM_PHYSICAL_LEV*4 + NUM_INTERFACE_LEV*2>;
 
 // The fad type for the deriv w.r.t. state vars for the remap functor.
-// There is no horizontal coupling but full level coupling and so uses
-// the same stencil as DIRK.
+// There is no horizontal coupling but full level coupling.
+// Most variables only depend on themselves and dp, but w and phi appear
+// to depend on all other variables, so we assume full variable coupling as well.
+// Hence this is the the same stencil as DIRK.
 using DxFadTypeRemap = DxFadTypeDirk;
 
 template<typename T, int N>
