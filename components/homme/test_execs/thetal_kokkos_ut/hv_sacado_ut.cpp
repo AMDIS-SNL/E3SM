@@ -521,7 +521,7 @@ TEST_CASE ("hv_sphere_ops_discrete_self_adjoint") {
   const auto policy = Homme::get_default_team_policy<ExecSpace>(num_elems);
   sphop.allocate_buffers(policy);
 
-  auto& bmm = c.get<MpiBuffersManagerMap>(); // already created+connected by init_mesh_and_ref_elem
+  auto& bmm = c.get<MpiBuffersManagerMap>(); // already created+connected by init_buffers_manager
 
   using PT = PackType<Real>;
   const Real tol = 1e-10;
