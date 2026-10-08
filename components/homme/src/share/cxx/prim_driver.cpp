@@ -6,6 +6,7 @@
 
 
 #include "Context.hpp"
+#include "prim_step.hpp"
 #include "Diagnostics.hpp"
 #include "Elements.hpp"
 #include "Tracers.hpp"
@@ -19,9 +20,6 @@
 namespace Homme
 {
 
-void prim_step (const Real, const bool);
-void prim_step_flexible (const Real, const bool);
-void vertical_remap (const Real);
 void update_q (const int np1_qdp, const int np1);
 
 extern "C" {

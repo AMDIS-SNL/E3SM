@@ -476,7 +476,7 @@ TEST_CASE("prim_step_adjoint")
 
   TimeLevel tl_dp = tl;
   printf(" -> Run forward problem (prim_step replica)...\n");
-  set_tracer_transport_derived_values_st<DpFadType>(params,elems_dp,tl_dp);
+  set_tracer_transport_derived_values<DpFadType>(params,elems_dp,tl_dp);
   for (int n=0; n<K; ++n) {
     if (n>0) {
       tl_dp.update_dynamics_levels(UpdateType::LEAPFROG);

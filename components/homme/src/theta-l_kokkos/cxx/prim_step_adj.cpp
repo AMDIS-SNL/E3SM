@@ -22,9 +22,6 @@
 namespace Homme
 {
 
-// Defined in prim_advance_exp.cpp (declared locally, as done in prim_step.cpp)
-void prim_advance_exp (TimeLevel& tl, const Real dt, const bool compute_diagnostics);
-
 namespace {
 
 // The adjoint state of the tracers/derived state seen by the Euler-step adjoint.
@@ -186,7 +183,7 @@ void prim_step_adj (const Real dt,
   ckpt.restore();
   params.store_fwd_state = false;
 
-  set_tracer_transport_derived_values_st<Real>(params,elements,tl);
+  set_tracer_transport_derived_values<Real>(params,elements,tl);
 
   std::vector<TimeLevel> tl_calls;
   std::vector<StateSnapshot> y_calls;
