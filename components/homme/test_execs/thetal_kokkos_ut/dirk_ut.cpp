@@ -5,6 +5,7 @@
 #include <random>
 
 #include "Types.hpp"
+#include "thetal_f90_interface.hpp"
 #include "Context.hpp"
 #include "mpi/Connectivity.hpp"
 #include "SimulationParams.hpp"
@@ -22,7 +23,6 @@ using namespace Homme;
 extern "C" {
   void init_dirk_f90(int ne, const Real* hyai, const Real* hybi, const Real* hyam,
                      const Real* hybm, Real ps0);
-  void cleanup_f90();
   void pnh_and_exner_from_eos_f90(const Real* vtheta_dp, const Real* dp3d, const Real* dphi,
                                   Real* pnh, Real* exner, Real* dpnh_dp_i);
   void compute_gwphis_f90(Real* gwh_i, const Real* dp3d, const Real* v, const Real* gradphis);

@@ -3,6 +3,7 @@
 #include <random>
 
 #include "Types.hpp"
+#include "thetal_f90_interface.hpp"
 #include "Context.hpp"
 #include "CaarFunctorImpl.hpp"
 #include "SimulationParams.hpp"
@@ -23,12 +24,6 @@ void init_caar_f90 (const int& ne,
                const Real* hyam_ptr, const Real* hybm_ptr,
                Real* dvv, Real* mp,
                const Real& ps0);
-void init_geo_views_f90 (Real*& d_ptr,Real*& dinv_ptr,
-               const Real*& phis_ptr, const Real*& gradphis_ptr,
-               Real*& fcor_ptr,
-               Real*& sphmp_ptr, Real*& rspmp_ptr,
-               Real*& tVisc_ptr, Real*& sph2c_ptr,
-               Real*& metdet_ptr, Real*& metinv_ptr);
 void run_caar_f90 (const int& nm1, const int& n0, const int& np1,
                    const Real& dt, const Real& eta_ave_w,
                    const Real& scale1, const Real& scale2, const Real& scale3,
@@ -39,7 +34,6 @@ void run_caar_f90 (const int& nm1, const int& n0, const int& np1,
                    Real*& vn0_ptr, Real*& etadot_dpdn_ptr, Real*& omega_p_ptr);
 
 void run_limiter_f90 (const int& np1, Real*& dp_ptr, Real*& vtheta_dp_ptr);
-void cleanup_f90();
 } // extern "C"
 
 TEST_CASE("caar", "caar_testing") {

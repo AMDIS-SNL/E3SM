@@ -4,6 +4,7 @@
 #include <iomanip>
 
 #include "Types.hpp"
+#include "thetal_f90_interface.hpp"
 #include "Context.hpp"
 #include "Elements.hpp"
 #include "FunctorsBuffersManager.hpp"
@@ -22,21 +23,6 @@
 #include <ekat_string_utils.hpp>
 
 using namespace Homme;
-
-extern "C" {
-// Builds a real (cube-sphere) mesh/connectivity via the F90 side, since
-// HV's boundary exchange assumes every element has 4 real edge connections;
-// a hand-rolled, connection-less Connectivity segfaults in unpack().
-void init_hv_f90 (const int& ne,
-                   const Real* hyai_ptr, const Real* hybi_ptr,
-                   const Real* hyam_ptr, const Real* hybm_ptr,
-                   Real* dvv, Real* mp,
-                   const Real& ps0,
-                   const int& hv_subcycle,
-                   const Real& hv_nu, const Real& hv_nu_div, const Real& hv_nu_top,
-                   const Real& hv_nu_p, const Real& hv_nu_s);
-void cleanup_f90();
-}
 
 namespace {
 constexpr int last_interface_lev_idx = NUM_INTERFACE_LEV - 1;

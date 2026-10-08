@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 
 #include "Types.hpp"
+#include "thetal_f90_interface.hpp"
 #include "Context.hpp"
 #include "CaarFunctorImpl.hpp"
 #include "SimulationParams.hpp"
@@ -16,17 +17,6 @@
 #include <iomanip>
 
 using namespace Homme;
-
-extern "C" {
-// Even if we don't run the f90 code in this unit test, it is easier to
-// init from f90, which takes care of creating the grid and decomposing it
-void init_f90 (const int& ne,
-               const Real* hyai_ptr, const Real* hybi_ptr,
-               const Real* hyam_ptr, const Real* hybm_ptr,
-               Real* dvv, Real* mp,
-               const Real& ps0);
-void cleanup_f90();
-}
 
 TEST_CASE("caar_dp_check") {
 

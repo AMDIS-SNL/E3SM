@@ -3,6 +3,7 @@
 #include <random>
 
 #include "Types.hpp"
+#include "thetal_f90_interface.hpp"
 #include "Context.hpp"
 #include "FunctorsBuffersManager.hpp"
 #include "VerticalRemapManager.hpp"
@@ -35,7 +36,6 @@ void run_remap_f90 (const int& np1, const int& np1_qdp, const Real& dt,
                     Real*& dp_ptr, Real*& vtheta_dp_ptr, Real*& w_i_ptr,
                     Real*& phi_i_ptr, Real*& v_ptr, Real*& ps_ptr,
                     Real*& eta_dot_dpdn_ptr, Real*& qdp_ptr);
-void cleanup_f90();
 } // extern "C"
 
 
