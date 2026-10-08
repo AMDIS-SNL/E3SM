@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 
 #include "Types.hpp"
+#include "thetal_f90_interface.hpp"
 #include "Tape.hpp"
 #include "Context.hpp"
 #include "CaarFunctor.hpp"
@@ -28,20 +29,6 @@ namespace Homme
 {
 
 extern "C" {
-// Even if we don't run the f90 code in this unit test, it is easier to
-// init from f90, which takes care of creating the grid and decomposing it
-void init_f90 (const int& ne,
-               const Real* hyai_ptr, const Real* hybi_ptr,
-               const Real* hyam_ptr, const Real* hybm_ptr,
-               Real* dvv, Real* mp,
-               const Real& ps0);
-void init_geo_views_f90 (Real*& d_ptr, Real*& dinv_ptr,
-               const Real*& phis_ptr, const Real*& gradphis_ptr,
-               Real*& fcor_ptr,
-               Real*& sphmp_ptr, Real*& rspmp_ptr,
-               Real*& tVisc_ptr, Real*& sph2c_ptr,
-               Real*& metdet_ptr, Real*& metinv_ptr);
-void cleanup_f90();
 void initialize_dp3d_from_ps_c ();
 }
 

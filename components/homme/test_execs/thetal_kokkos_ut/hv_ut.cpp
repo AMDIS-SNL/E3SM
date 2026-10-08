@@ -3,6 +3,7 @@
 #include <random>
 
 #include "Types.hpp"
+#include "thetal_f90_interface.hpp"
 #include "Context.hpp"
 #include "ElementsGeometry.hpp"
 #include "ElementsState.hpp"
@@ -25,19 +26,6 @@
 using namespace Homme;
 
 extern "C" {
-void init_hv_f90 (const int& ne,
-               const Real* hyai_ptr, const Real* hybi_ptr,
-               const Real* hyam_ptr, const Real* hybm_ptr,
-               Real* dvv, Real* mp,
-               const Real& ps0, const int& hypervis_subcycle,
-               const Real& nu, const Real& nu_div, const Real& nu_top,
-               const Real& nu_p, const Real& nu_s);
-void init_geo_views_f90 (Real*& d_ptr,Real*& dinv_ptr,
-               const Real*& phis_ptr, const Real*& gradphis_ptr,
-               Real*& fcor,
-               Real*& sphmp_ptr, Real*& rspmp_ptr,
-               Real*& tVisc_ptr, Real*& sph2c_ptr,
-               Real*& metdet_ptr, Real*& metinv_ptr);
 void initialize_reference_states_f90 (const Real*& phis,
                                       const Real*& dp_ref,
                                       const Real*& theta_ref,
@@ -52,7 +40,6 @@ void advance_hypervis_f90 (const int& np1, const Real& dt, const Real& eta_ave_w
                            const Real*& dp_ref_ptr, const Real*& theta_ref_ptr, const Real*& phi_ref_ptr,
                            Real*& v_state, Real*& w_state, Real*& vtheta_state,
                            Real*& dp_state, Real*& phinh_state);
-void cleanup_f90();
 } // extern "C"
 
 // This class is basically a HyperviscosityFunctorImpl, but

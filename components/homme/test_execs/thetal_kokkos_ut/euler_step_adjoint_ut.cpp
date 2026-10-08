@@ -80,6 +80,7 @@
 #include "SphereOperators.hpp"
 #include "Tracers.hpp"
 #include "Types.hpp"
+#include "thetal_f90_interface.hpp"
 #include "mpi/Connectivity.hpp"
 #include "mpi/MpiBuffersManager.hpp"
 
@@ -91,21 +92,6 @@
 using namespace Homme;
 
 namespace {
-
-extern "C" {
-void init_f90 (const int& ne,
-               const Real* hyai_ptr, const Real* hybi_ptr,
-               const Real* hyam_ptr, const Real* hybm_ptr,
-               Real* dvv, Real* mp,
-               const Real& ps0);
-void init_geo_views_f90 (Real*& d_ptr, Real*& dinv_ptr,
-               const Real*& phis_ptr, const Real*& gradphis_ptr,
-               Real*& fcor_ptr,
-               Real*& sphmp_ptr, Real*& rspmp_ptr,
-               Real*& tVisc_ptr, Real*& sph2c_ptr,
-               Real*& metdet_ptr, Real*& metinv_ptr);
-void cleanup_f90();
-}
 
 struct F90Cleanup {
   ~F90Cleanup() {
