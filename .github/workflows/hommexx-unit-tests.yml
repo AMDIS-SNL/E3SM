@@ -3,7 +3,6 @@ name: hommexx-unit-tests
 on:
   # Runs on PRs against master
   pull_request:
-    branches: [ master ]
     types: [opened, synchronize, ready_for_review, reopened]
     paths:
       - '.github/workflows/hommexx-unit-tests.yml'
