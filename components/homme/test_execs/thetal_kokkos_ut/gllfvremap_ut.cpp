@@ -1,6 +1,7 @@
 #include "GllFvRemapImpl.hpp"
 
 #include "Types.hpp"
+#include "thetal_ut_utils.hpp"
 #include "thetal_ut_session.hpp"
 #include "Context.hpp"
 #include "mpi/Connectivity.hpp"
@@ -29,6 +30,16 @@
 #include <random>
 
 using namespace Homme;
+using Homme::ut::CA1d;
+using Homme::ut::CA2d;
+using Homme::ut::CA3d;
+using Homme::ut::CA4d;
+using Homme::ut::CA5d;
+using Homme::ut::Random;
+using Homme::ut::cmvdc;
+using Homme::ut::fill;
+using Homme::ut::almost_equal;
+// Note: not using Homme::ut::equal, since the default tolerance here is different
 
 extern "C" {
   void limiter1_clip_and_sum_f90(int n, Real* spheremp, Real* qmin, Real* qmax, Real* dp, Real* q);
@@ -55,62 +66,10 @@ extern "C" {
   void cmp_dyn_data_f90(int nlev_align, int nq, Real* ft, Real* fm, Real* q, Real* fq, int* nerr);
 } // extern "C"
 
-using CA1d = Kokkos::View<Real*,     Kokkos::LayoutRight, Kokkos::HostSpace>;
-using CA2d = Kokkos::View<Real**,    Kokkos::LayoutRight, Kokkos::HostSpace>;
-using CA3d = Kokkos::View<Real***,   Kokkos::LayoutRight, Kokkos::HostSpace>;
-using CA4d = Kokkos::View<Real**** , Kokkos::LayoutRight, Kokkos::HostSpace>;
-using CA5d = Kokkos::View<Real*****, Kokkos::LayoutRight, Kokkos::HostSpace>;
 
 template <typename V>
 decltype(Kokkos::create_mirror_view(V())) cmv (const V& v) {
   return Kokkos::create_mirror_view(v);
-}
-
-template <typename V>
-decltype(Kokkos::create_mirror_view(V())) cmvdc (const V& v) {
-  const auto h = Kokkos::create_mirror_view(v);
-  deep_copy(h, v);
-  return h;
-}
-
-class Random {
-  using rngalg = std::mt19937_64;
-  using rpdf = std::uniform_real_distribution<Real>;
-  using ipdf = std::uniform_int_distribution<int>;
-  std::random_device rd;
-  unsigned int seed;
-  rngalg engine;
-public:
-  Random (unsigned int seed_ = Catch::rngSeed()) : seed(seed_ == 0 ? rd() : seed_), engine(seed) {}
-  //Random () : seed(346068100), engine(seed) {}
-  unsigned int gen_seed () { return seed; }
-  Real urrng (const Real lo = 0, const Real hi = 1) { return rpdf(lo, hi)(engine); }
-  int  uirng (const int lo, const int hi) { return ipdf(lo, hi)(engine); }
-};
-
-template <typename V>
-void fill (Random& r, const V& a, const Real scale = 1,
-           typename std::enable_if<V::rank == 3>::type* = 0) {
-  const auto am = cmvdc(a);
-  for (int i = 0; i < a.extent_int(0); ++i)
-    for (int j = 0; j < a.extent_int(1); ++j)
-      for (int k = 0; k < a.extent_int(2); ++k)
-        for (int s = 0; s < VECTOR_SIZE; ++s)
-          am(i,j,k)[s] = scale*r.urrng(-1,1); 
-  deep_copy(a, am);
-}
-
-template <typename V>
-void fill (Random& r, const V& a,
-           typename std::enable_if<V::rank == 4>::type* = 0) {
-  const auto am = cmvdc(a);
-  for (int i = 0; i < a.extent_int(0); ++i)
-    for (int j = 0; j < a.extent_int(1); ++j)
-      for (int k = 0; k < a.extent_int(2); ++k)
-        for (int l = 0; l < a.extent_int(3); ++l)
-          for (int s = 0; s < VECTOR_SIZE; ++s)
-            am(i,j,k,l)[s] = r.urrng(-1,1); 
-  deep_copy(a, am);
 }
 
 struct Session {
@@ -254,16 +213,6 @@ private:
 };
 
 std::shared_ptr<Session> Session::s_session;
-
-static bool almost_equal (const Real& a, const Real& b,
-                          const Real tol = 0) {
-  const auto re = std::abs(a-b)/(1 + std::abs(a));
-  const bool good = re <= tol;
-  if ( ! good)
-    printf("equal: a,b = %23.16e %23.16e re = %23.16e tol %9.2e\n",
-           a, b, re, tol);
-  return good;
-}
 
 static bool equal (const Real& a, const Real& b,
                    // Used only if not defined HOMMEXX_BFB_TESTING.

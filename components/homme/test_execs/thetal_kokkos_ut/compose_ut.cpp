@@ -2,6 +2,7 @@
 #include "compose_test.hpp"
 
 #include "Types.hpp"
+#include "thetal_ut_utils.hpp"
 #include "thetal_ut_session.hpp"
 #include "Context.hpp"
 #include "mpi/Connectivity.hpp"
@@ -34,6 +35,7 @@
 #include <random>
 
 using namespace Homme;
+using namespace Homme::ut;
 
 extern "C" {
   // Compose-specific f90 init. Must be called after init_f90
@@ -48,59 +50,11 @@ extern "C" {
   void run_sl_vertical_remap_bfb_f90(Real* diagnostic);
 } // extern "C"
 
-using CA4d = Kokkos::View<Real****, Kokkos::LayoutRight, Kokkos::HostSpace>;
-using CA5d = Kokkos::View<Real*****, Kokkos::LayoutRight, Kokkos::HostSpace>;
-
-template <typename V>
-decltype(Kokkos::create_mirror_view(V())) cmvdc (const V& v) {
-  const auto h = Kokkos::create_mirror_view(v);
-  deep_copy(h, v);
-  return h;
-}
 
 template <typename View> static
 Real* pack2real (const View& v) { return &(*v.data())[0]; }
 template <typename View> static
 ScalarValue* pack2scalar (const View& v) { return &(*v.data())[0]; }
-
-class Random {
-  using rngalg = std::mt19937_64;
-  using rpdf = std::uniform_real_distribution<Real>;
-  using ipdf = std::uniform_int_distribution<int>;
-  std::random_device rd;
-  unsigned int seed;
-  rngalg engine;
-public:
-  Random (unsigned int seed_ = Catch::rngSeed()) : seed(seed_ == 0 ? rd() : seed_), engine(seed) {}
-  unsigned int gen_seed () { return seed; }
-  Real urrng (const Real lo = 0, const Real hi = 1) { return rpdf(lo, hi)(engine); }
-  int  uirng (const int lo, const int hi) { return ipdf(lo, hi)(engine); }
-};
-
-template <typename V>
-void fill (Random& r, const V& a, const Real scale = 1,
-           typename std::enable_if<V::rank == 3>::type* = 0) {
-  const auto am = cmvdc(a);
-  for (int i = 0; i < a.extent_int(0); ++i)
-    for (int j = 0; j < a.extent_int(1); ++j)
-      for (int k = 0; k < a.extent_int(2); ++k)
-        for (int s = 0; s < VECTOR_SIZE; ++s)
-          am(i,j,k)[s] = scale*r.urrng(-1,1); 
-  deep_copy(a, am);
-}
-
-template <typename V>
-void fill (Random& r, const V& a,
-           typename std::enable_if<V::rank == 4>::type* = 0) {
-  const auto am = cmvdc(a);
-  for (int i = 0; i < a.extent_int(0); ++i)
-    for (int j = 0; j < a.extent_int(1); ++j)
-      for (int k = 0; k < a.extent_int(2); ++k)
-        for (int l = 0; l < a.extent_int(3); ++l)
-          for (int s = 0; s < VECTOR_SIZE; ++s)
-            am(i,j,k,l)[s] = r.urrng(-1,1); 
-  deep_copy(a, am);
-}
 
 struct Session {
   int ne, hv_q, nmax, halo, traj_nsubstep;
@@ -290,41 +244,6 @@ private:
 };
 
 std::shared_ptr<Session> Session::s_session;
-
-static bool almost_equal (const Real& a, const Real& b,
-                          const Real tol = 0) {
-  const auto re = std::abs(a-b)/(1 + std::abs(a));
-  const bool good = re <= tol;
-  if ( ! good)
-    printf("equal: a,b = %23.16e %23.16e re = %23.16e tol %9.2e\n",
-           a, b, re, tol);
-  return good;
-}
-static bool equal (const Real& a, const Real& b,
-                   // Used only if not defined HOMMEXX_BFB_TESTING.
-                   const Real tol = 0) {
-#ifdef HOMMEXX_BFB_TESTING
-  if (a != b)
-    printf("equal: a,b = %23.16e %23.16e re = %23.16e\n",
-           a, b, std::abs((a-b)/a));
-  return a == b;
-#else
-  return almost_equal(a, b, tol);
-#endif
-}
-#ifdef HOMMEXX_ENABLE_FWD_SENS
-static bool almost_equal (const ScalarValue& a, const ScalarValue& b,
-                   // Used only if not defined HOMMEXX_BFB_TESTING.
-                   const Real tol = 0) {
-  return almost_equal(ADValue(a),ADValue(b),tol);
-}
-
-static bool equal (const ScalarValue& a, const ScalarValue& b,
-                   // Used only if not defined HOMMEXX_BFB_TESTING.
-                   const Real tol = 0) {
-  return equal(ADValue(a),ADValue(b),tol);
-}
-#endif
 
 typedef ExecViewUnmanaged<ScalarValue*[NP][NP][NUM_LEV*VECTOR_SIZE]> RNlev;
 typedef ExecViewUnmanaged<ScalarValue**[NP][NP][NUM_LEV*VECTOR_SIZE]> RsNlev;
