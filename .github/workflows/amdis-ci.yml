@@ -1,0 +1,160 @@
+name: amdis-ci
+
+on:
+  # Runs on PRs
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+    paths:
+      - '.github/workflows/amdis-ci.yml'
+      - '.github/actions/build-trilinos/**'
+      - '.github/actions/homme-configure/**'
+      - '.github/actions/homme-submodules/**'
+      - 'components/homme/**'
+
+  # Manual run is used to bless
+  workflow_dispatch:
+
+  # Also run nightly
+  schedule:
+    - cron: '0 7 * * *'  # Runs at 7 AM UTC, which is midnight MT during Standard Time
+
+concurrency:
+  # Two runs are in the same group if they are testing the same git ref
+  #  - if trigger=pull_request, the ref is refs/pull/<PR_NUMBER>/merge
+  #  - for other triggers, the ref is the branch tested
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # OpenMPI refuses to run as root otherwise (see 'options: --user root' in the jobs)
+  OMPI_ALLOW_RUN_AS_ROOT: 1
+  OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
+
+defaults:
+  run:
+    # Login shell, so that the image's modules get loaded (and XYZ_ROOT vars set)
+    shell: bash -l {0}
+
+jobs:
+  # Plain hommexx: make sure the FAD-related features did not break the usual build
+  hommexx:
+    runs-on: [ubuntu-24.04]
+    name: hommexx
+    container:
+      image: ghcr.io/e3sm-project/e3sm-image:gnu13-openmpi4
+      # The image's default user cannot write to the runner's workspace/temp dirs
+      options: --user root
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+        with:
+          path: e3sm/source
+      - name: Show action trigger
+        uses: ./e3sm/source/.github/actions/show-workflow-trigger
+      - name: get submodules
+        uses: ./e3sm/source/.github/actions/homme-submodules
+      - name: hommexx-configure
+        uses: ./e3sm/source/.github/actions/homme-configure
+        with:
+          build-type: DEBUG
+          pio: false
+      - name: hommexx-build
+        run: |
+          cd ${GITHUB_WORKSPACE}/e3sm/build
+          make -j4 VERBOSE=ON
+      - name: hommexx-test
+        run: |
+          cd ${GITHUB_WORKSPACE}/e3sm/build
+          ctest --output-on-failure -L unit
+      - name: Upload log files
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-hommexx
+          path: |
+            e3sm/build/CMakeCache.txt
+            e3sm/build/Testing/Temporary/Last*
+            e3sm/build/**/flags.make
+          retention-days: 14
+
+  # Forward sensitivities and FAD types (needs Trilinos/Sacado) and the AMDIS tests
+  fad:
+    runs-on: [ubuntu-24.04]
+    name: fad
+    container:
+      image: ghcr.io/e3sm-project/e3sm-image:gnu13-openmpi4
+      options: --user root
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+        with:
+          path: e3sm/source
+      - name: Show action trigger
+        uses: ./e3sm/source/.github/actions/show-workflow-trigger
+      - name: Build Trilinos
+        uses: ./e3sm/source/.github/actions/build-trilinos
+      - name: get submodules
+        uses: ./e3sm/source/.github/actions/homme-submodules
+      - name: hommexx-configure
+        uses: ./e3sm/source/.github/actions/homme-configure
+        with:
+          fad: true
+      - name: hommexx-build
+        run: |
+          cd ${GITHUB_WORKSPACE}/e3sm/build
+          make -j4 VERBOSE=ON
+      - name: hommexx-test
+        run: |
+          cd ${GITHUB_WORKSPACE}/e3sm/build
+          ctest --output-on-failure -L 'AMDIS|unit'
+      - name: Upload log files
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-fad
+          path: |
+            e3sm/build/CMakeCache.txt
+            e3sm/build/Testing/Temporary/Last*
+            e3sm/build/**/flags.make
+          retention-days: 14
+
+  # Python bindings (so far, we only check that they build)
+  pyhommexx:
+    runs-on: [ubuntu-24.04]
+    name: pyhommexx
+    container:
+      image: ghcr.io/e3sm-project/e3sm-image:gnu13-openmpi4
+      options: --user root
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+        with:
+          path: e3sm/source
+      - name: Show action trigger
+        uses: ./e3sm/source/.github/actions/show-workflow-trigger
+      - name: Build Trilinos
+        uses: ./e3sm/source/.github/actions/build-trilinos
+      - name: get submodules
+        uses: ./e3sm/source/.github/actions/homme-submodules
+      - name: install python packages
+        run: |
+          # Installs into the image's venv; no-op for packages already there
+          python3 -m pip install numpy xarray netCDF4 mpi4py nanobind
+      - name: hommexx-configure
+        uses: ./e3sm/source/.github/actions/homme-configure
+        with:
+          fad: true
+          pyhommexx: true
+      - name: pyhommexx-build
+        run: |
+          cd ${GITHUB_WORKSPACE}/e3sm/build
+          make -j4 pyhommexx VERBOSE=ON
+      - name: Upload log files
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-pyhommexx
+          path: |
+            e3sm/build/CMakeCache.txt
+            e3sm/build/**/flags.make
+          retention-days: 14

@@ -1,0 +1,17 @@
+name: 'Homme submodules'
+description: 'Initializes the submodules needed to build homme (expects the repo in $GITHUB_WORKSPACE/e3sm/source)'
+
+runs:
+  using: "composite"
+  steps:
+    - name: get submodules
+      shell: bash -l {0}
+      run: |
+        git config --global url."https://github.com/".insteadOf git@github.com:
+        cd ${GITHUB_WORKSPACE}/e3sm/source
+        git submodule update --init --recursive cime
+        git submodule update --init externals/ekat
+        git submodule update --init externals/scorpio
+        cd externals/ekat
+        git submodule update --init extern/kokkos
+        git submodule update --init extern/Catch2

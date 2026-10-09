@@ -1,0 +1,82 @@
+name: 'Configure homme'
+description: 'Configures homme in $GITHUB_WORKSPACE/e3sm/build (expects the repo in $GITHUB_WORKSPACE/e3sm/source)'
+
+inputs:
+  build-type:
+    description: 'CMAKE_BUILD_TYPE'
+    required: false
+    default: 'RELEASE'
+  pio:
+    description: 'Build with the PIO library (needs netcdf, and the scorpio submodule). If false, homme is built without it'
+    required: false
+    default: 'true'
+  fad:
+    description: 'Enable FAD types and forward sensitivities, and the AMDIS project (needs Trilinos, see build-trilinos)'
+    required: false
+    default: 'false'
+  pyhommexx:
+    description: 'Build the python bindings (implies a theta-l_kokkos configuration with 128 levels and 10 tracers)'
+    required: false
+    default: 'false'
+
+runs:
+  using: "composite"
+  steps:
+    - name: hommexx-configure
+      shell: bash -l {0}
+      env:
+        BUILD_TYPE: ${{ inputs.build-type }}
+        WITH_PIO: ${{ inputs.pio }}
+        WITH_FAD: ${{ inputs.fad }}
+        WITH_PYHOMMEXX: ${{ inputs.pyhommexx }}
+      run: |
+        cd ${GITHUB_WORKSPACE}/e3sm
+        mkdir build && cd build
+
+        args=(
+          -D CMAKE_CXX_COMPILER:STRING=mpicxx
+          -D CMAKE_C_COMPILER:STRING=mpicc
+          -D CMAKE_Fortran_COMPILER:STRING=mpifort
+          -D CMAKE_BUILD_TYPE:STRING=${BUILD_TYPE}
+
+          -D HOMME_FIND_BLASLAPACK:BOOL=ON
+          -D HOMMEXX_BFB_TESTING:BOOL=ON
+        )
+
+        if [[ "${WITH_PIO}" == "true" ]]; then
+          args+=(
+            -D NetCDF_C_PATH:PATH=${NETCDF_C_ROOT}
+            -D NetCDF_Fortran_PATH:PATH=${NETCDF_FORTRAN_ROOT}
+            -D BLAS_LIBRARIES:FILEPATH=${BLAS_ROOT}/lib/libopenblas.a
+            -D LAPACK_LIBRARIES:FILEPATH=${BLAS_ROOT}/lib/libopenblas.a
+            -D PIO_ENABLE_IO_STATS:BOOL=OFF
+          )
+        else
+          args+=(
+            -D BUILD_HOMME_TOOL:BOOL=OFF
+            -D BUILD_HOMME_WITHOUT_PIOLIBRARY:BOOL=ON
+          )
+        fi
+
+        if [[ "${WITH_FAD}" == "true" ]]; then
+          export Trilinos_ROOT=${GITHUB_WORKSPACE}/trilinos/install
+          args+=(
+            -D HOMME_AMDIS_PROJECT:BOOL=ON
+            -D HOMMEXX_ENABLE_FWD_SENS:BOOL=ON
+            -D HOMMEXX_ENABLE_FAD_TYPES:BOOL=ON
+          )
+        fi
+
+        if [[ "${WITH_PYHOMMEXX}" == "true" ]]; then
+          args+=(
+            -D CMAKE_C_FLAGS:STRING=-fPIC
+            -D CMAKE_CXX_FLAGS:STRING=-fPIC
+            -D CMAKE_Fortran_FLAGS:STRING=-fPIC
+            -D OPT_FLAGS:STRING=-O3
+            -D HOMME_BUILD_PYHOMMEXX:BOOL=ON
+            -D PYHOMMEXX_NLEV:STRING=128
+            -D PYHOMMEXX_QSIZE:STRING=10
+          )
+        fi
+
+        cmake "${args[@]}" -S ${GITHUB_WORKSPACE}/e3sm/source/components/homme
