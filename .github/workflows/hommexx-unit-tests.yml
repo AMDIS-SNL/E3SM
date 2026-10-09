@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   cpu-gcc:
-    runs-on:  [ubuntu-latest]
+    runs-on:  [ubuntu-24.04]
     name: cpu-gcc
     container:
       image: ghcr.io/e3sm-project/e3sm-image:gnu13-openmpi4
