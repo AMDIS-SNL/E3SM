@@ -237,7 +237,7 @@ if (NOT HOMMEXX_ENABLE_FWD_SENS)
   # NOTE: we don't use it in hommexx standalone, so hold off conversion to Fad types
   thetal_cxx_unit_test (gllfvremap_ut
     CXX_SRCS ${THETA_UT_DIR}/gllfvremap_ut.cpp
-    F90_SRCS ${THETA_UT_DIR}/gllfvremap_interface.F90 ${THETA_UT_DIR}/compose_interface.F90)
+    F90_SRCS ${THETA_UT_DIR}/gllfvremap_interface.F90)
   cxx_unit_test_add_test(gllfvremap_planar_ut gllfvremap_ut ${NUM_CPUS} "hommexx -planar")
 endif()
 

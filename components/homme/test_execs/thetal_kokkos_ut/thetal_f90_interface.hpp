@@ -44,6 +44,11 @@ void init_geo_views_f90 (Homme::Real*& d_ptr, Homme::Real*& dinv_ptr,
                          Homme::Real*& tVisc_ptr, Homme::Real*& sph2c_ptr,
                          Homme::Real*& metdet_ptr, Homme::Real*& metinv_ptr);
 
+// Pass the f90 geometry (and geopotential) to the C++ Elements stored in the Context, with the
+// same routines the production code uses. The C++ Elements must already exist in the Context
+// (e.g., created by the test-specific f90 init). Unlike init_geo_views_f90, nothing is returned.
+void init_elements_geometry_f90 ();
+
 // Free the f90 data structures, so that the next TEST_CASE can call init_f90 again
 void cleanup_f90 ();
 
