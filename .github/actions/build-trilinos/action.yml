@@ -1,0 +1,37 @@
+name: 'Build Trilinos'
+description: 'Clones, builds and installs Trilinos (Sacado only) in $GITHUB_WORKSPACE/trilinos/install'
+
+runs:
+  using: "composite"
+  steps:
+    - name: trilinos-clone
+      shell: bash -l {0}
+      run: |
+        cd ${GITHUB_WORKSPACE}
+        mkdir trilinos && cd trilinos
+        git clone --filter=blob:none https://github.com/trilinos/Trilinos.git source
+        cd source
+        git checkout master
+    - name: trilinos-config
+      shell: bash -l {0}
+      run: |
+        cd ${GITHUB_WORKSPACE}/trilinos
+        mkdir build && cd build
+        cmake -Wno-dev \
+          -D CMAKE_CC_COMPILER:STRING=gcc                               \
+          -D CMAKE_CXX_COMPILER:STRING=g++                              \
+          -D CMAKE_INSTALL_PREFIX=${GITHUB_WORKSPACE}/trilinos/install  \
+          \
+          -D Trilinos_ENABLE_EXAMPLES:BOOL=OFF                          \
+          -D Trilinos_ENABLE_TESTS:BOOL=OFF                             \
+          -D Trilinos_ENABLE_OpenMP:BOOL=OFF                            \
+          -D Trilinos_ENABLE_ALL_PACKAGES:BOOL=OFF                      \
+          -D Trilinos_ENABLE_ALL_OPTIONAL_PACKAGES:BOOL=OFF             \
+          -D Trilinos_ENABLE_Sacado:BOOL=ON                             \
+          \
+          -S ${GITHUB_WORKSPACE}/trilinos/source
+    - name: trilinos-build-install
+      shell: bash -l {0}
+      run: |
+        cd ${GITHUB_WORKSPACE}/trilinos/build
+        make -j4 install
