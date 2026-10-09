@@ -62,7 +62,7 @@ TEST_CASE("forcing", "forcing") {
  
   // Create the f90 mesh/connectivity (and init the f90 elements), and init hvcoord and ref_FE.
   // The session also takes care of the f90 and Context cleanup at the end of the scope.
-  CubeSphereTestSession session(2,seed);
+  ThetalUnitTestSession session(2,seed);
   auto& hv = session.hvcoord;
   const int num_elems = session.num_elems();
 

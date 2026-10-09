@@ -61,7 +61,7 @@ TEST_CASE("remap", "remap_testing") {
 
   // Create the f90 mesh/connectivity, and init hvcoord and ref_FE (not used by this test,
   // but harmless). The session also takes care of the f90 and Context cleanup at the end of the scope.
-  CubeSphereTestSession session(ne,seed);
+  ThetalUnitTestSession session(ne,seed);
   init_remap_f90();
   auto& hvcoord = session.hvcoord;
   const int num_elems = session.num_elems();

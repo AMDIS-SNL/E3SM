@@ -42,7 +42,7 @@ TEST_CASE("elem_ops", "elem_ops") {
   // Create the f90 mesh (needed to init f90), and init hvcoord.
   // The session also takes care of the f90 and Context cleanup at the end of the scope.
   Context::singleton().create<ekat::Comm>(MPI_COMM_WORLD);
-  CubeSphereTestSession session(2,seed);
+  ThetalUnitTestSession session(2,seed);
   auto& hvcoord = session.hvcoord;
 
   // F90 and CXX views (and host mirrors of cxx views)

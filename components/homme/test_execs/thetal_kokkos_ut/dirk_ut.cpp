@@ -72,7 +72,7 @@ struct Session {
   int nelemd;
   Context& c;
   // Takes care of hvcoord, f90 mesh and cleanup (of f90 and Context)
-  std::unique_ptr<CubeSphereTestSession> f90_session;
+  std::unique_ptr<ThetalUnitTestSession> f90_session;
 
   //Session () : r(269041989) {}
 
@@ -80,7 +80,7 @@ struct Session {
     printf("seed %u\n", r.gen_seed());
     c.create<ekat::Comm>(MPI_COMM_WORLD);
 
-    f90_session = std::make_unique<CubeSphereTestSession>(ne, r.gen_seed());
+    f90_session = std::make_unique<ThetalUnitTestSession>(ne, r.gen_seed());
     init_dirk_f90();
 
     nelemd = f90_session->num_elems();

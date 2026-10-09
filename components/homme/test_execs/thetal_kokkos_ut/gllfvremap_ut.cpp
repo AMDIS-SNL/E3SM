@@ -122,7 +122,7 @@ struct Session {
   int nelemd, qsize, nlev, np;
   FunctorsBuffersManager fbm;
   // Takes care of hvcoord and f90 mesh, and of the Context cleanup
-  std::unique_ptr<CubeSphereTestSession> f90_session;
+  std::unique_ptr<ThetalUnitTestSession> f90_session;
 
   //Session () : r(269041989) {}
 
@@ -147,8 +147,8 @@ struct Session {
 
     // Create hvcoord and ref_FE, and init f90 (including its mesh/connectivity).
     // Use a smooth hvcoord, so that levels are not too thin.
-    f90_session = std::make_unique<CubeSphereTestSession>(
-        ne, seed, is_sphere, CubeSphereTestSession::VCoord::Smooth);
+    f90_session = std::make_unique<ThetalUnitTestSession>(
+        ne, seed, is_sphere, ThetalUnitTestSession::VCoord::Smooth);
     init_gllfvremap_f90(qsize);
     h = f90_session->hvcoord;
     auto& ref_FE = f90_session->ref_FE;

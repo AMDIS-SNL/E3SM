@@ -6,8 +6,8 @@
 
 namespace Homme {
 
-CubeSphereTestSession::
-CubeSphereTestSession (const int ne_in, const unsigned int seed_in,
+ThetalUnitTestSession::
+ThetalUnitTestSession (const int ne_in, const unsigned int seed_in,
                        const bool is_sphere, const VCoord vcoord_type)
  : ne (ne_in)
  , seed (seed_in)
@@ -36,18 +36,18 @@ CubeSphereTestSession (const int ne_in, const unsigned int seed_in,
   ref_FE.init_deriv(dvv.data());
 }
 
-CubeSphereTestSession::~CubeSphereTestSession ()
+ThetalUnitTestSession::~ThetalUnitTestSession ()
 {
   cleanup_f90();
   Context::finalize_singleton();
 }
 
-int CubeSphereTestSession::num_elems () const
+int ThetalUnitTestSession::num_elems () const
 {
   return Context::singleton().get<Connectivity>().get_num_local_elements();
 }
 
-void CubeSphereTestSession::update_host_hvcoord ()
+void ThetalUnitTestSession::update_host_hvcoord ()
 {
   ps0 = hvcoord.ps0;
 
@@ -77,7 +77,7 @@ void CubeSphereTestSession::update_host_hvcoord ()
   }
 }
 
-void CubeSphereTestSession::
+void ThetalUnitTestSession::
 init_geometry (ElementsGeometry& geo, const bool zero_phis) const
 {
   auto d        = Kokkos::create_mirror(geo.m_d);

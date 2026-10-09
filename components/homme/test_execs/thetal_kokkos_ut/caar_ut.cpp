@@ -62,7 +62,7 @@ TEST_CASE("caar", "caar_testing") {
 
   // Create the f90 mesh/connectivity, and init hvcoord and ref_FE. The session also takes
   // care of the f90 and Context cleanup at the end of the scope.
-  CubeSphereTestSession session(ne,seed);
+  ThetalUnitTestSession session(ne,seed);
   init_caar_f90();
   auto& hvcoord = session.hvcoord;
   auto& ref_FE  = session.ref_FE;

@@ -93,7 +93,7 @@ TEST_CASE ("hyperviscosity_dp_and_jv_testing")
 
   // Build a real cube-sphere mesh (needed by HV's boundary exchange); the session also
   // takes care of the F90 and Context cleanup. The geometry is randomized by the caller.
-  CubeSphereTestSession session(ne, seed);
+  ThetalUnitTestSession session(ne, seed);
   init_hv_f90(params.hypervis_subcycle, params.nu, params.nu_div,
               params.nu_top, params.nu_p, params.nu_s);
   auto& hvcoord = session.hvcoord;
@@ -367,7 +367,7 @@ TEST_CASE ("hyperviscosity_jtv_testing") {
 
   // Build a real cube-sphere mesh (needed by HV's boundary exchange); the session also
   // takes care of the F90 and Context cleanup. The geometry is randomized by the caller.
-  CubeSphereTestSession session(ne, seed);
+  ThetalUnitTestSession session(ne, seed);
   init_hv_f90(params.hypervis_subcycle, params.nu, params.nu_div,
               params.nu_top, params.nu_p, params.nu_s);
   auto& hvcoord = session.hvcoord;
@@ -498,7 +498,7 @@ TEST_CASE ("hv_sphere_ops_discrete_self_adjoint") {
 
   // Build a real cube-sphere mesh (needed by HV's boundary exchange); the session also
   // takes care of the F90 and Context cleanup. The geometry is randomized by the caller.
-  CubeSphereTestSession session(ne, seed);
+  ThetalUnitTestSession session(ne, seed);
   init_hv_f90(params.hypervis_subcycle, params.nu, params.nu_div,
               params.nu_top, params.nu_p, params.nu_s);
   auto& hvcoord = session.hvcoord;

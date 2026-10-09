@@ -111,7 +111,7 @@ struct Session {
   int nelemd, qsize, nlev, np;
   FunctorsBuffersManager fbm;
   // Takes care of hvcoord, f90 mesh and cleanup (of f90 and Context)
-  std::unique_ptr<CubeSphereTestSession> f90_session;
+  std::unique_ptr<ThetalUnitTestSession> f90_session;
 
   //Session () : r(269041989) {}
 
@@ -147,7 +147,7 @@ struct Session {
     p.laplacian_rigid_factor = is_sphere ? 1/p.scale_factor : 0;
 
     // Create hvcoord and ref_FE, and init f90 (including its mesh/connectivity)
-    f90_session = std::make_unique<CubeSphereTestSession>(ne, seed);
+    f90_session = std::make_unique<ThetalUnitTestSession>(ne, seed);
     init_compose_f90(ne, qsize, hv_q, p.limiter_option, cdr_check,
                      is_sphere, nearest_point, halo, traj_nsubstep);
     h = f90_session->hvcoord;

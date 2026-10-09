@@ -29,7 +29,7 @@ namespace Homme {
 // either; the caller is responsible for creating them in the Context, as needed.
 // Since the Context is finalized in the destructor, the session must outlive
 // all the objects obtained from the Context.
-class CubeSphereTestSession {
+class ThetalUnitTestSession {
 public:
   // How to init the hybrid vertical coordinate
   enum class VCoord {
@@ -38,14 +38,14 @@ public:
   };
 
   // If is_sphere=false, build a planar mesh with (ne+1)*ne elements, rather than a cubed sphere
-  CubeSphereTestSession (const int ne, const unsigned int seed,
+  ThetalUnitTestSession (const int ne, const unsigned int seed,
                          const bool is_sphere = true,
                          const VCoord vcoord_type = VCoord::Random);
 
-  ~CubeSphereTestSession ();
+  ~ThetalUnitTestSession ();
 
-  CubeSphereTestSession (const CubeSphereTestSession&) = delete;
-  CubeSphereTestSession& operator= (const CubeSphereTestSession&) = delete;
+  ThetalUnitTestSession (const ThetalUnitTestSession&) = delete;
+  ThetalUnitTestSession& operator= (const ThetalUnitTestSession&) = delete;
 
   // Number of elements on this rank
   int num_elems () const;
