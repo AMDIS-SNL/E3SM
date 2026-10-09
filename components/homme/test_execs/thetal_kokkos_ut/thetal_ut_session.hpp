@@ -6,50 +6,60 @@
 #include "HybridVCoord.hpp"
 #include "ReferenceElement.hpp"
 
-#include <functional>
 #include <vector>
 
 namespace Homme {
 
+// Size and offset (in meters) of a planar domain: [sx,sx+lx] x [sy,sy+ly]
+struct PlanarDomain {
+  Real lx = 10000;
+  Real ly = 5000;
+  Real sx = -5000;
+  Real sy = 2500;
+};
+
 // Common setup/cleanup of the unit tests that rely on the F90 side to create
-// a cubed-sphere mesh (grid, decomposition, connectivity, geometry).
+// a mesh (grid, decomposition, connectivity, geometry), either a cubed sphere or a planar one.
 //
 // The constructor
 //  - creates a HybridVCoord and a ReferenceElement in the Context singleton,
-//  - randomly inits the HybridVCoord (see random_init_hvcoord),
-//  - calls the F90 init routine (by default, init_f90), which also creates
+//  - inits the HybridVCoord (randomly, by default) and copies it to the host-side members,
+//  - calls the F90 init routine (init_f90 or init_planar_f90), which also creates
 //    the Connectivity in the Context,
 //  - inits the ReferenceElement mass and derivative matrices from the F90 ones.
-// The destructor frees the F90 data structures and finalizes the Context
-// singleton. Since it runs even if a CHECK/REQUIRE throws, the next TEST_CASE
-// can safely start from scratch.
+// The destructor frees the F90 data structures (cleanup_f90) and finalizes the
+// Context singleton. Since it runs even if a CHECK/REQUIRE throws, the next
+// TEST_CASE can safely start from scratch.
 //
-// Other objects (ekat::Comm, SimulationParams, ...) are NOT created by the session;
-// the caller is responsible for creating them in the Context, as needed.
+// Test-specific F90 initialization (e.g., edge buffers) is NOT done by the session:
+// tests should call their own F90 init routine right after creating the session.
+// Other objects (ekat::Comm, SimulationParams, ...) are NOT created by the session
+// either; the caller is responsible for creating them in the Context, as needed.
 // Since the Context is finalized in the destructor, the session must outlive
-// all the objects obtained from the Context. In particular, declare the session
-// right after getting the Context singleton.
-class CubeSphereTestSession {
+// all the objects obtained from the Context.
+class ThetalUnitTestSession {
 public:
-  // Signature of a custom F90 init routine. It is called with the session,
-  // so that it can use its (already initialized) data members as inputs
-  // (hyai, hybi, hyam, hybm, ps0) and outputs (dvv, mp).
-  using InitFn = std::function<void(CubeSphereTestSession&)>;
+  // How to init the hybrid vertical coordinate
+  enum class VCoord {
+    Random,  // HybridVCoord::random_init(seed): random, monotone, but layers may vary a lot in thickness
+    Smooth   // HybridVCoord::smooth_init(): deterministic, uniform in eta, realistic model top
+  };
 
-  // Default F90 init and cleanup: init_f90/cleanup_f90
-  CubeSphereTestSession (const int ne, const unsigned int seed);
+  // Cubed sphere mesh, with ne x ne elements per cube face
+  ThetalUnitTestSession (const int ne, const unsigned int seed,
+                         const VCoord vcoord_type = VCoord::Random);
 
-  // Custom F90 init and cleanup (e.g., init_dirk_f90/cleanup_f90)
-  CubeSphereTestSession (const int ne, const unsigned int seed,
-                         const InitFn& f90_init,
-                         const std::function<void()>& f90_cleanup);
+  // Planar mesh, with nex x ney elements
+  ThetalUnitTestSession (const int nex, const int ney, const unsigned int seed,
+                         const VCoord vcoord_type = VCoord::Random,
+                         const PlanarDomain& domain = PlanarDomain());
 
-  ~CubeSphereTestSession ();
+  ~ThetalUnitTestSession ();
 
-  CubeSphereTestSession (const CubeSphereTestSession&) = delete;
-  CubeSphereTestSession& operator= (const CubeSphereTestSession&) = delete;
+  ThetalUnitTestSession (const ThetalUnitTestSession&) = delete;
+  ThetalUnitTestSession& operator= (const ThetalUnitTestSession&) = delete;
 
-  // Number of elements on this rank (the Connectivity must have been created by the F90 init)
+  // Number of elements on this rank
   int num_elems () const;
 
   // Pull from F90 the geometry of the mesh (d, dinv, spheremp, rspheremp, metdet,
@@ -60,26 +70,31 @@ public:
   //       in geo are passed to F90.
   void init_geometry (ElementsGeometry& geo, const bool zero_phis = true) const;
 
-  // Mesh resolution (number of elements per cube edge)
-  const int ne;
+  // Mesh resolution: number of elements in each direction (for a cubed sphere,
+  // along the edge of each cube face; so nex=ney=ne)
+  const int nex;
+  const int ney;
+  const bool is_planar;
 
-  // Random seed used to init the hvcoord
+  // Random seed used to init the hvcoord (not used if vcoord_type=VCoord::Smooth)
   const unsigned int seed;
 
-  // Inputs/outputs of the F90 init routines. Note: hyam/hybm are the
-  // "unpacked" mid-point coefficients (NUM_PHYSICAL_LEV entries)
+  // Host-side copy of hvcoord. Note: hyam/hybm are the "unpacked"
+  // mid-point coefficients (NUM_PHYSICAL_LEV entries)
   Real ps0;
   std::vector<Real> hyai, hybi, hyam, hybm;
-  std::vector<Real> dvv, mp;
 
   HybridVCoord&     hvcoord;
   ReferenceElement& ref_FE;
 
 private:
-  // Randomly inits hvcoord, and copies hyai, hybi, hyam, hybm, ps0 in the host-side members
-  void random_init_hvcoord ();
+  enum class Mesh { CubedSphere, Planar };
 
-  std::function<void()> m_f90_cleanup;
+  // The actual constructor, which all the public ones forward to
+  ThetalUnitTestSession (const Mesh mesh, const int nex, const int ney, const unsigned int seed,
+                         const VCoord vcoord_type, const PlanarDomain& domain);
+
+  void update_host_hvcoord ();
 };
 
 } // namespace Homme

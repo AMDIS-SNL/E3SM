@@ -2,10 +2,13 @@
 
 #include "DirkFunctorImpl.hpp"
 
+#include <memory>
 #include <random>
 
 #include "Types.hpp"
+#include "thetal_ut_utils.hpp"
 #include "thetal_f90_interface.hpp"
+#include "thetal_ut_session.hpp"
 #include "Context.hpp"
 #include "mpi/Connectivity.hpp"
 #include "SimulationParams.hpp"
@@ -19,10 +22,11 @@
 #include <ekat_comm.hpp>
 
 using namespace Homme;
+using namespace Homme::ut;
 
 extern "C" {
-  void init_dirk_f90(int ne, const Real* hyai, const Real* hybi, const Real* hyam,
-                     const Real* hybm, Real ps0);
+  // Dirk-specific f90 init (edge buffer). Must be called after init_f90
+  void init_dirk_f90();
   void pnh_and_exner_from_eos_f90(const Real* vtheta_dp, const Real* dp3d, const Real* dphi,
                                   Real* pnh, Real* exner, Real* dpnh_dp_i);
   void compute_gwphis_f90(Real* gwh_i, const Real* dp3d, const Real* v, const Real* gradphis);
@@ -43,58 +47,24 @@ using FA3d = Kokkos::View<Real***, Kokkos::LayoutRight, Kokkos::HostSpace>;
 using FA4 = Kokkos::View<Real*[2][NP][NP], Kokkos::LayoutRight, Kokkos::HostSpace>;
 using dfi = DirkFunctorImpl;
 
-template <typename V>
-decltype(Kokkos::create_mirror_view(V())) cmvdc (const V& v) {
-  const auto h = Kokkos::create_mirror_view(v);
-  deep_copy(h, v);
-  return h;
-}
-
-class Random {
-  using rngalg = std::mt19937_64;
-  using rpdf = std::uniform_real_distribution<Real>;
-  using ipdf = std::uniform_int_distribution<int>;
-  std::random_device rd;
-  unsigned int seed;
-  rngalg engine;
-public:
-  Random (unsigned int seed_ = Catch::rngSeed()) : seed(seed_ == 0 ? rd() : seed_), engine(seed) {}
-  unsigned int gen_seed () { return seed; }
-  Real urrng (const Real lo = 0, const Real hi = 1) { return rpdf(lo, hi)(engine); }
-  int  uirng (const int lo, const int hi) { return ipdf(lo, hi)(engine); }
-};
-
 struct Session {
   Random r;
   const int ne = 2;
   int nelemd;
   Context& c;
+  // Takes care of hvcoord, f90 mesh and cleanup (of f90 and Context)
+  std::unique_ptr<ThetalUnitTestSession> f90_session;
 
   //Session () : r(269041989) {}
 
   void init () {
     printf("seed %u\n", r.gen_seed());
     c.create<ekat::Comm>(MPI_COMM_WORLD);
-    auto& h = c.create<HybridVCoord>();
-    h.random_init(r.gen_seed());
 
-    const auto hyai = cmvdc(h.hybrid_ai);
-    const auto hybi = cmvdc(h.hybrid_bi);
-    const auto hyam = cmvdc(h.hybrid_am);
-    const auto hybm = cmvdc(h.hybrid_bm);
+    f90_session = std::make_unique<ThetalUnitTestSession>(ne, r.gen_seed());
+    init_dirk_f90();
 
-    HostViewManaged<Real[NUM_PHYSICAL_LEV]> hyam_r("");
-    HostViewManaged<Real[NUM_PHYSICAL_LEV]> hybm_r("");
-    for (int k=0; k<NUM_PHYSICAL_LEV; ++k) {
-      int ilev = k / VECTOR_SIZE;
-      int ivec = k % VECTOR_SIZE;
-      hyam_r[k] = ADValue(hyam(ilev)[ivec]);
-      hybm_r[k] = ADValue(hybm(ilev)[ivec]);
-    }
-
-    init_dirk_f90(ne, hyai.data(), hybi.data(), hyam_r.data(), hybm_r.data(), h.ps0);
-
-    nelemd = c.get<Connectivity>().get_num_local_elements();
+    nelemd = f90_session->num_elems();
     auto& e = c.create<Elements>();
     e.m_state = c.create<ElementsState>();
     e.m_geometry = c.create<ElementsGeometry>();
@@ -106,9 +76,8 @@ struct Session {
   HybridVCoord h() { return c.get<HybridVCoord>(); };
 
   void cleanup () {
-    cleanup_f90();
-
-    c.finalize_singleton();
+    // This calls cleanup_f90 and finalizes the Context
+    f90_session = nullptr;
 
     inited = false;
   }
@@ -128,67 +97,6 @@ private:
 
   bool inited = false;
 };
-
-static bool almost_equal (const Real& a, const Real& b,
-                          const Real tol = 0) {
-  const auto re = std::abs(a-b)/(1 + std::abs(a));
-  const bool good = re <= tol;
-  if ( ! good)
-    printf("equal: a,b = %23.16e %23.16e re = %23.16e tol %9.2e\n",
-           a, b, re, tol);
-  return good;
-}
-
-static bool equal (const Real& a, const Real& b,
-                   // Used only if not defined HOMMEXX_BFB_TESTING.
-                   const Real tol = 0) {
-#ifdef HOMMEXX_BFB_TESTING
-  if (a != b)
-    printf("equal: a,b = %23.16e %23.16e re = %23.16e\n",
-           a, b, std::abs((a-b)/a));
-  return a == b;
-#else
-  return almost_equal(a, b, tol);
-#endif
-}
-#ifdef HOMMEXX_ENABLE_FWD_SENS
-static bool almost_equal (const ScalarValue& a, const ScalarValue& b,
-                   // Used only if not defined HOMMEXX_BFB_TESTING.
-                   const Real tol = 0) {
-  return almost_equal(ADValue(a),ADValue(b),tol);
-}
-
-static bool equal (const ScalarValue& a, const ScalarValue& b,
-                   // Used only if not defined HOMMEXX_BFB_TESTING.
-                   const Real tol = 0) {
-  return equal(ADValue(a),ADValue(b),tol);
-}
-#endif
-
-template <typename V>
-void fill (Random& r, const V& a, const Real scale = 1,
-           typename std::enable_if<V::rank == 3>::type* = 0) {
-  const auto am = cmvdc(a);
-  for (int i = 0; i < a.extent_int(0); ++i)
-    for (int j = 0; j < a.extent_int(1); ++j)
-      for (int k = 0; k < a.extent_int(2); ++k)
-        for (int s = 0; s < dfi::packn; ++s)
-          am(i,j,k)[s] = scale*r.urrng(-1,1); 
-  deep_copy(a, am);
-}
-
-template <typename V>
-void fill (Random& r, const V& a,
-           typename std::enable_if<V::rank == 4>::type* = 0) {
-  const auto am = cmvdc(a);
-  for (int i = 0; i < a.extent_int(0); ++i)
-    for (int j = 0; j < a.extent_int(1); ++j)
-      for (int k = 0; k < a.extent_int(2); ++k)
-        for (int l = 0; l < a.extent_int(3); ++l)
-          for (int s = 0; s < dfi::packn; ++s)
-            am(i,j,k,l)[s] = r.urrng(-1,1); 
-  deep_copy(a, am);
-}
 
 template <typename V>
 void fill_inc (Random& r, const int nlev, const Real top, const Real bottom,

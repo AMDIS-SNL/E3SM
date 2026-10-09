@@ -45,7 +45,7 @@ TEST_CASE("caar_dp_check") {
 
   // Create the f90 mesh/connectivity, and init hvcoord and ref_FE.
   // The session also takes care of cleaning up (f90 and Context) at the end of the scope.
-  CubeSphereTestSession session(ne,seed);
+  ThetalUnitTestSession session(ne,seed);
   auto& hvcoord = session.hvcoord;
   auto& ref_FE  = session.ref_FE;
 
@@ -255,7 +255,7 @@ TEST_CASE("caar_dx_check") {
 
   // Create the f90 mesh/connectivity, and init hvcoord and ref_FE.
   // The session also takes care of cleaning up (f90 and Context) at the end of the scope.
-  CubeSphereTestSession session(ne,seed);
+  ThetalUnitTestSession session(ne,seed);
   auto& hvcoord = session.hvcoord;
   auto& ref_FE  = session.ref_FE;
 
@@ -499,7 +499,7 @@ TEST_CASE("caar_jtv_check") {
 
   // Create the f90 mesh/connectivity, and init hvcoord and ref_FE.
   // The session also takes care of cleaning up (f90 and Context) at the end of the scope.
-  CubeSphereTestSession session(ne,seed);
+  ThetalUnitTestSession session(ne,seed);
   auto& hvcoord = session.hvcoord;
   auto& ref_FE  = session.ref_FE;
 
@@ -722,7 +722,7 @@ TEST_CASE("caar_adjoint") {
 
   // Create the f90 mesh/connectivity, and init hvcoord and ref_FE.
   // The session also takes care of cleaning up (f90 and Context) at the end of the scope.
-  CubeSphereTestSession session(ne,seed);
+  ThetalUnitTestSession session(ne,seed);
   auto& hvcoord = session.hvcoord;
   auto& ref_FE  = session.ref_FE;
 

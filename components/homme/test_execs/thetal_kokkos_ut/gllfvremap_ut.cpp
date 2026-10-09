@@ -1,6 +1,8 @@
 #include "GllFvRemapImpl.hpp"
 
 #include "Types.hpp"
+#include "thetal_ut_utils.hpp"
+#include "thetal_ut_session.hpp"
 #include "Context.hpp"
 #include "mpi/Connectivity.hpp"
 #include "mpi/MpiBuffersManager.hpp"
@@ -25,18 +27,31 @@
 #include <ekat_test_utils.hpp>
 
 #include <catch2/catch.hpp>
+#include <limits>
 #include <random>
 
 using namespace Homme;
+using Homme::ut::CA1d;
+using Homme::ut::CA2d;
+using Homme::ut::CA3d;
+using Homme::ut::CA4d;
+using Homme::ut::CA5d;
+using Homme::ut::Random;
+using Homme::ut::cmvdc;
+using Homme::ut::fill;
+using Homme::ut::almost_equal;
+using Homme::ut::equal;
+
+// Relative tolerance used to compare results (unless testing BFB, where results must be identical)
+static const Real equal_tol = 1e4*std::numeric_limits<Real>::epsilon();
 
 extern "C" {
   void limiter1_clip_and_sum_f90(int n, Real* spheremp, Real* qmin, Real* qmax, Real* dp, Real* q);
   void calc_dp_fv_f90(int nf, Real* ps, Real* dp_fv);
   void get_temperature_f90(int ie, int nf, bool theta_hydrostatic_mode, Real* T);
 
-  void init_gllfvremap_f90(int ne, const Real* hyai, const Real* hybi, const Real* hyam,
-                           const Real* hybm, Real ps0, Real* dvv, Real* mp, int qsize,
-                           bool is_sphere);
+  // GllFvRemap-specific f90 init. Must be called after init_f90 (or init_planar_f90)
+  void init_gllfvremap_f90(int qsize);
   void init_geometry_f90();
 
   void run_gfr_test(int* nerr);
@@ -55,104 +70,10 @@ extern "C" {
   void cmp_dyn_data_f90(int nlev_align, int nq, Real* ft, Real* fm, Real* q, Real* fq, int* nerr);
 } // extern "C"
 
-using CA1d = Kokkos::View<Real*,     Kokkos::LayoutRight, Kokkos::HostSpace>;
-using CA2d = Kokkos::View<Real**,    Kokkos::LayoutRight, Kokkos::HostSpace>;
-using CA3d = Kokkos::View<Real***,   Kokkos::LayoutRight, Kokkos::HostSpace>;
-using CA4d = Kokkos::View<Real**** , Kokkos::LayoutRight, Kokkos::HostSpace>;
-using CA5d = Kokkos::View<Real*****, Kokkos::LayoutRight, Kokkos::HostSpace>;
 
 template <typename V>
 decltype(Kokkos::create_mirror_view(V())) cmv (const V& v) {
   return Kokkos::create_mirror_view(v);
-}
-
-template <typename V>
-decltype(Kokkos::create_mirror_view(V())) cmvdc (const V& v) {
-  const auto h = Kokkos::create_mirror_view(v);
-  deep_copy(h, v);
-  return h;
-}
-
-// Make a,b a little better behaved so levels don't get too thin.
-static void clean (HybridVCoord& h) {
-  static const int n = NUM_INTERFACE_LEV, nh = (n+1)/2, nh0 = n-nh;
-  const auto ai = cmvdc(h.hybrid_ai);
-  const auto bi = cmvdc(h.hybrid_bi);
-  const auto amp = cmvdc(h.hybrid_am);
-  const auto bmp = cmvdc(h.hybrid_bm);
-  const CA1d am(reinterpret_cast<Real*>(amp.data()), n-1);
-  const CA1d bm(reinterpret_cast<Real*>(bmp.data()), n-1);
-
-  for (int i = 0; i < n; ++i) bi(i) = 0;
-  for (int i = 0; i < nh; ++i) {
-    assert(nh0+i < n);
-    const Real a = Real(i)/(nh-1);
-    bi(nh0+i) = (1-a)*0.02 + a*1;
-  }
-  assert(bi(n-1) == 1);
-
-  Real etai[n];
-  for (int i = 0; i < n; ++i) {
-    const Real a = Real(i)/(n-1);
-    etai[i] = (1-a)*0.0001 + a*1;
-  }
-
-  for (int i = 0; i < n; ++i) {
-    ai(i) = etai[i] - bi(i);
-    assert(ai(i) >= 0);
-  }
-
-  for (int i = 0; i < n-1; ++i) am(i) = (ai(i) + ai(i+1))/2;
-  for (int i = 0; i < n-1; ++i) bm(i) = (bi(i) + bi(i+1))/2;
-
-  deep_copy(h.hybrid_ai, ai);
-  deep_copy(h.hybrid_bi, bi);
-  deep_copy(h.hybrid_am, amp);
-  deep_copy(h.hybrid_bm, bmp);
-
-  h.hybrid_ai0 = ai(0);
-  h.compute_deltas();
-  h.compute_eta();
-}
-
-class Random {
-  using rngalg = std::mt19937_64;
-  using rpdf = std::uniform_real_distribution<Real>;
-  using ipdf = std::uniform_int_distribution<int>;
-  std::random_device rd;
-  unsigned int seed;
-  rngalg engine;
-public:
-  Random (unsigned int seed_ = Catch::rngSeed()) : seed(seed_ == 0 ? rd() : seed_), engine(seed) {}
-  //Random () : seed(346068100), engine(seed) {}
-  unsigned int gen_seed () { return seed; }
-  Real urrng (const Real lo = 0, const Real hi = 1) { return rpdf(lo, hi)(engine); }
-  int  uirng (const int lo, const int hi) { return ipdf(lo, hi)(engine); }
-};
-
-template <typename V>
-void fill (Random& r, const V& a, const Real scale = 1,
-           typename std::enable_if<V::rank == 3>::type* = 0) {
-  const auto am = cmvdc(a);
-  for (int i = 0; i < a.extent_int(0); ++i)
-    for (int j = 0; j < a.extent_int(1); ++j)
-      for (int k = 0; k < a.extent_int(2); ++k)
-        for (int s = 0; s < VECTOR_SIZE; ++s)
-          am(i,j,k)[s] = scale*r.urrng(-1,1); 
-  deep_copy(a, am);
-}
-
-template <typename V>
-void fill (Random& r, const V& a,
-           typename std::enable_if<V::rank == 4>::type* = 0) {
-  const auto am = cmvdc(a);
-  for (int i = 0; i < a.extent_int(0); ++i)
-    for (int j = 0; j < a.extent_int(1); ++j)
-      for (int k = 0; k < a.extent_int(2); ++k)
-        for (int l = 0; l < a.extent_int(3); ++l)
-          for (int s = 0; s < VECTOR_SIZE; ++s)
-            am(i,j,k,l)[s] = r.urrng(-1,1); 
-  deep_copy(a, am);
 }
 
 struct Session {
@@ -163,6 +84,8 @@ struct Session {
   std::shared_ptr<Elements> e;
   int nelemd, qsize, nlev, np;
   FunctorsBuffersManager fbm;
+  // Takes care of hvcoord and f90 mesh, and of the Context cleanup
+  std::unique_ptr<ThetalUnitTestSession> f90_session;
 
   //Session () : r(269041989) {}
 
@@ -175,11 +98,6 @@ struct Session {
 
     parse_test_options ();
 
-    c.create<HybridVCoord>().random_init(seed);
-    auto& h_ref = c.get<HybridVCoord>();
-    clean(h_ref);
-    h = h_ref;
-
     auto& p = c.create<SimulationParams>();
     p.qsize = qsize;
     p.hypervis_scaling = 0;
@@ -190,18 +108,20 @@ struct Session {
     p.laplacian_rigid_factor = is_sphere ? 1/p.scale_factor : 0;
     p.params_set = true;
 
-    const auto hyai = cmvdc(h.hybrid_ai);
-    const auto hybi = cmvdc(h.hybrid_bi);
-    const auto hyam = cmvdc(h.hybrid_am);
-    const auto hybm = cmvdc(h.hybrid_bm);
-    auto& ref_FE = c.create<ReferenceElement>();
-    std::vector<Real> dvv(NP*NP), mp(NP*NP);
-    init_gllfvremap_f90(ne, hyai.data(), hybi.data(), &hyam(0)[0], &hybm(0)[0], h.ps0,
-                        dvv.data(), mp.data(), qsize, is_sphere);
-    ref_FE.init_mass(mp.data());
-    ref_FE.init_deriv(dvv.data());
+    // Create hvcoord and ref_FE, and init f90 (including its mesh/connectivity).
+    // Use a smooth hvcoord, so that levels are not too thin.
+    const auto vcoord = ThetalUnitTestSession::VCoord::Smooth;
+    if (is_sphere) {
+      f90_session = std::make_unique<ThetalUnitTestSession>(ne, seed, vcoord);
+    } else {
+      // Planar mesh, with a different number of elements in each direction
+      f90_session = std::make_unique<ThetalUnitTestSession>(ne+1, ne, seed, vcoord);
+    }
+    init_gllfvremap_f90(qsize);
+    h = f90_session->hvcoord;
+    auto& ref_FE = f90_session->ref_FE;
 
-    nelemd = c.get<Connectivity>().get_num_local_elements();
+    nelemd = f90_session->num_elems();
     auto& bmm = c.create<MpiBuffersManagerMap>();
     bmm.set_connectivity(c.get_ptr<Connectivity>());
     e = c.get_ptr<Elements>();
@@ -227,8 +147,8 @@ struct Session {
   }
 
   void cleanup () {
-    const auto& c = Context::singleton();
-    c.finalize_singleton();
+    // This calls cleanup_f90 and finalizes the Context
+    f90_session = nullptr;
   }
 
   static Session& singleton () {
@@ -298,29 +218,6 @@ private:
 
 std::shared_ptr<Session> Session::s_session;
 
-static bool almost_equal (const Real& a, const Real& b,
-                          const Real tol = 0) {
-  const auto re = std::abs(a-b)/(1 + std::abs(a));
-  const bool good = re <= tol;
-  if ( ! good)
-    printf("equal: a,b = %23.16e %23.16e re = %23.16e tol %9.2e\n",
-           a, b, re, tol);
-  return good;
-}
-
-static bool equal (const Real& a, const Real& b,
-                   // Used only if not defined HOMMEXX_BFB_TESTING.
-                   const Real tol = 1e4*std::numeric_limits<Real>::epsilon()) {
-#ifdef HOMMEXX_BFB_TESTING
-  if (a != b)
-    printf("equal: a,b = %23.16e %23.16e re = %23.16e\n",
-           a, b, std::abs((a-b)/a));
-  return a == b;
-#else
-  return almost_equal(a, b, tol);
-#endif
-}
-
 static void test_calc_dp_fv (Random& r, const HybridVCoord& hvcoord) {
   using Kokkos::deep_copy;
   using g = GllFvRemapImpl;
@@ -347,7 +244,7 @@ static void test_calc_dp_fv (Random& r, const HybridVCoord& hvcoord) {
   
   for (int i = 0; i < ncol; ++i)
     for (int k = 0; k < g::num_phys_lev; ++k)
-      REQUIRE(equal(dp_fv_f90(k,i), dp_fv_h(i,k)));
+      REQUIRE(equal(dp_fv_f90(k,i), dp_fv_h(i,k), equal_tol));
 }
 
 static void sfwd_remapd (const int m, const int n, const Real* A,
@@ -435,7 +332,7 @@ static void test_remapds (Random& r, const int m, const int n, const int nlev) {
   deep_copy(x_h, x_d); deep_copy(y_h, y_d);
   for (int k = 0; k < nlev; ++k)
     for (int i = 0; i < m; ++i)
-      REQUIRE(equal(y_h(i,k), y[i]));
+      REQUIRE(equal(y_h(i,k), y[i], equal_tol));
 
   // Vector remapd.
   std::vector<Real> wx(2*n), wy(2*m);
@@ -458,7 +355,7 @@ static void test_remapds (Random& r, const int m, const int n, const int nlev) {
     for (int k = 0; k < nlev; ++k)
       for (int i = 0; i < m; ++i)
         for (int d = 0; d < 2; ++d)
-          REQUIRE(equal(y2_h(d,i,k), y[d*m+i]));
+          REQUIRE(equal(y2_h(d,i,k), y[d*m+i], equal_tol));
   }
   { // x(d,i), y(i,d)
     const ExecView<Scalar***> x2_p("x2", 2, n+1, nlevpk), y2_p("y", m+2, 2, nlevpk);
@@ -478,7 +375,7 @@ static void test_remapds (Random& r, const int m, const int n, const int nlev) {
     for (int k = 0; k < nlev; ++k)
       for (int i = 0; i < m; ++i)
         for (int d = 0; d < 2; ++d)
-          REQUIRE(equal(y2_h(i,d,k), y[d*m+i]));
+          REQUIRE(equal(y2_h(i,d,k), y[d*m+i], equal_tol));
   }
 }
 
@@ -506,8 +403,8 @@ assert_limiter_properties (const int n, const int nlev, const V1s& spheremp,
       for (int i = 1; i < n2; ++i)
         REQUIRE(almost_equal(q(i,k), q(0,k), 1e2*eps));
     } else {
-      REQUIRE(equal(qmin(k), qmin_orig(k)));
-      REQUIRE(equal(qmax(k), qmax_orig(k)));
+      REQUIRE(equal(qmin(k), qmin_orig(k), equal_tol));
+      REQUIRE(equal(qmax(k), qmax_orig(k), equal_tol));
     }
   }
   REQUIRE(noteq > 0);
@@ -592,7 +489,7 @@ static void test_limiter (const int nlev, const int n, Random& r, const bool too
   // BFB C++ vs F90.
   for (int k = 0; k < nlev; ++k)
     for (int i = 0; i < n2; ++i)
-      REQUIRE(equal(qf90(i,k), q(i,k)));
+      REQUIRE(equal(qf90(i,k), q(i,k), equal_tol));
 
   { // BFB C++ real1 vs pack
 
@@ -622,9 +519,9 @@ static void test_limiter (const int nlev, const int n, Random& r, const bool too
           g::limiter_clip_and_sum_real1(team, n2, 1, spheremp_d, qmin1(k), qmax1(k),
                                         wrk, q1); });
       deep_copy(q1h, q1); deep_copy(qmin1h, qmin1); deep_copy(qmax1h, qmax1);
-      for (int i = 0; i < n2; ++i) REQUIRE(equal(q1h(i), q(i,k)));
-      REQUIRE(equal(qmin1h(k), qmin(k)));
-      REQUIRE(equal(qmax1h(k), qmax(k)));
+      for (int i = 0; i < n2; ++i) REQUIRE(equal(q1h(i), q(i,k), equal_tol));
+      REQUIRE(equal(qmin1h(k), qmin(k), equal_tol));
+      REQUIRE(equal(qmax1h(k), qmax(k), equal_tol));
     }
   }
 }
@@ -783,7 +680,7 @@ static void test_get_temperature (Session& s) {
         for (int i = 0; i < s.np; ++i)
           for (int j = 0; j < s.np; ++j)
             for (int k = 0; k < s.nlev; ++k)
-              REQUIRE(equal(T(ie,t,i,j,k), Tf90(ie,t,k,i,j)));
+              REQUIRE(equal(T(ie,t,i,j,k), Tf90(ie,t,k,i,j), equal_tol));
   }
 }
 
@@ -838,17 +735,17 @@ test_dyn_to_fv_phys (Session& s, const int nf, const bool theta_hydrostatic_mode
 
     for (int ie = 0; ie < s.nelemd; ++ie)
       for (int i = 0; i < nf2; ++i) {
-        REQUIRE(equal(ps(ie,i), fps(ie,i)));
-        REQUIRE(equal(phis(ie,i), fphis(ie,i)));
+        REQUIRE(equal(ps(ie,i), fps(ie,i), equal_tol));
+        REQUIRE(equal(phis(ie,i), fphis(ie,i), equal_tol));
         for (int k = 0; k < s.nlev; ++k) {
-          REQUIRE(equal(omega(ie,i,k), fomega(ie,k,i)));
-          REQUIRE(equal(T(ie,i,k), fT(ie,k,i)));
+          REQUIRE(equal(omega(ie,i,k), fomega(ie,k,i), equal_tol));
+          REQUIRE(equal(T(ie,i,k), fT(ie,k,i), equal_tol));
           for (int iq = 0; iq < s.qsize; ++iq)
-            REQUIRE(equal(q (ie,i,iq,k), fq(ie,iq,k,i)));
+            REQUIRE(equal(q (ie,i,iq,k), fq(ie,iq,k,i), equal_tol));
           for (int iq = 0; iq < nq; ++iq)
-            REQUIRE(equal(q1(ie,i,iq,k), fq(ie,iq,k,i)));
+            REQUIRE(equal(q1(ie,i,iq,k), fq(ie,iq,k,i), equal_tol));
           for (int d = 0; d < 2; ++d)
-            REQUIRE(equal(uv(ie,i,d,k), fuv(ie,k,d,i)));
+            REQUIRE(equal(uv(ie,i,d,k), fuv(ie,k,d,i), equal_tol));
         }
       }
   }

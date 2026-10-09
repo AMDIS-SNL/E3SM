@@ -3,27 +3,12 @@ module elem_ops_interface
   use iso_c_binding,  only: c_int, c_bool, c_ptr, c_f_pointer
   use dimensions_mod, only: nlev, nlevp, np
   use kinds,          only: real_kind
-  use hybvcoord_mod,  only: hvcoord_t
   use parallel_mod,   only: abortmp
 
   implicit none
 
-  type(hvcoord_t) :: hvcoord
-  public :: init_elem_ops_f90
   public :: compute_r_star_f90
 contains
-
-  subroutine init_elem_ops_f90 (hyai, ps0) bind(c)
-    !
-    ! Inputs
-    !
-    real (kind=real_kind), intent(in) :: hyai(nlevp)
-    real (kind=real_kind), intent(in) :: ps0
-
-    hvcoord%hyai = hyai
-    hvcoord%ps0 = ps0
-
-  end subroutine init_elem_ops_f90
 
   subroutine compute_r_star_f90(num_elems, moist, Q_ptr, R_ptr) bind(c)
     use element_ops, only: get_R_star

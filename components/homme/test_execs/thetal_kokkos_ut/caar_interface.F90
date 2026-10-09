@@ -6,24 +6,11 @@ module caar_interface
 
 contains
 
-  subroutine init_caar_f90 (ne, hyai, hybi, hyam, hybm, dvv, mp, ps0) bind(c)
-    use iso_c_binding,          only: c_int
-    use thetal_test_interface,  only: init_f90
-    use dimensions_mod,         only: nlev, nlevp, np
-    use edge_mod,          only: initEdgeBuffer, edge_g
+  subroutine init_caar_f90 () bind(c)
+    ! Caar-specific init. Must be called AFTER init_f90
+    use dimensions_mod,         only: nlev
+    use edge_mod,               only: initEdgeBuffer, edge_g
     use geometry_interface_mod, only: par, elem
-    !
-    ! Inputs
-    !
-    integer (kind=c_int), intent(in) :: ne
-    real (kind=real_kind), intent(in) :: hyai(nlevp), hybi(nlevp), hyam(nlev), hybm(nlev)
-    real (kind=real_kind), intent(in) :: ps0
-    real (kind=real_kind), intent(out) :: dvv(np,np), mp(np,np)
-    !
-    ! Locals
-    !
-
-    call init_f90(ne, hyai, hybi, hyam, hybm, dvv, mp, ps0)
 
     ! single global edge buffer for all models:
     ! hydrostatic 4*nlev      NH:  6*nlev+1  

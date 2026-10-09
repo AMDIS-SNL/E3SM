@@ -256,7 +256,7 @@ TEST_CASE("euler_step_adjoint")
 
   // Create the f90 mesh/connectivity, and init hvcoord and ref_FE.
   // The session also takes care of cleaning up (f90 and Context) at the end of the scope.
-  CubeSphereTestSession session(ne_mesh,seed);
+  ThetalUnitTestSession session(ne_mesh,seed);
   auto& hvcoord = session.hvcoord;
   auto& ref_FE  = session.ref_FE;
 
@@ -668,7 +668,7 @@ TEST_CASE("euler_step_adjoint_dot_product")
 
   // Create the f90 mesh/connectivity, and init hvcoord and ref_FE.
   // The session also takes care of cleaning up (f90 and Context) at the end of the scope.
-  CubeSphereTestSession session(ne_mesh,seed);
+  ThetalUnitTestSession session(ne_mesh,seed);
   auto& hvcoord = session.hvcoord;
   auto& ref_FE  = session.ref_FE;
 

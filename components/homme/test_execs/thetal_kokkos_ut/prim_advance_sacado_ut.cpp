@@ -95,7 +95,7 @@ TEST_CASE("prim_advance_adj")
 
   // Create the f90 mesh/connectivity, and init hvcoord and ref_FE.
   // The session also takes care of cleaning up (f90 and Context) at the end of the scope.
-  CubeSphereTestSession session(ne,seed);
+  ThetalUnitTestSession session(ne,seed);
   auto& hvcoord = session.hvcoord;
   auto& ref_FE  = session.ref_FE;
 

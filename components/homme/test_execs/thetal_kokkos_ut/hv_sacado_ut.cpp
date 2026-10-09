@@ -37,23 +37,6 @@ void init_ref_and_derived (ElementsST<ST>& e) {
   Kokkos::deep_copy(e.m_derived.m_dpdiss_biharmonic, ST(0));
 }
 
-// Builds a real cube-sphere mesh/connectivity (ne x ne x 6 elements) via the
-// F90 side, and inits hvcoord/ref_FE from it. Geometry itself
-// is still randomized by the caller: only the *topology* (each element having
-// 4 real edge neighbors) needs to be genuine for BoundaryExchange to work.
-// The session takes care of the F90 and Context cleanup, even if a REQUIRE throws.
-CubeSphereTestSession make_hv_session (const int ne, const SimulationParams& params,
-                                       const unsigned int seed) {
-  return CubeSphereTestSession(ne, seed,
-    [&params] (CubeSphereTestSession& s) {
-      init_hv_f90(s.ne, s.hyai.data(), s.hybi.data(), s.hyam.data(), s.hybm.data(),
-                  s.dvv.data(), s.mp.data(), s.ps0,
-                  params.hypervis_subcycle, params.nu, params.nu_div,
-                  params.nu_top, params.nu_p, params.nu_s);
-    },
-    [] () { cleanup_f90(); });
-}
-
 // Create the buffers manager map, and set the connectivity
 // (which was created by the F90 init) in it
 void init_buffers_manager (Context& c) {
@@ -108,7 +91,11 @@ TEST_CASE ("hyperviscosity_dp_and_jv_testing")
   auto params = init_params();
   c.create<SimulationParams>() = params;
 
-  auto session = make_hv_session(ne, params, seed);
+  // Build a real cube-sphere mesh (needed by HV's boundary exchange); the session also
+  // takes care of the F90 and Context cleanup. The geometry is randomized by the caller.
+  ThetalUnitTestSession session(ne, seed);
+  init_hv_f90(params.hypervis_subcycle, params.nu, params.nu_div,
+              params.nu_top, params.nu_p, params.nu_s);
   auto& hvcoord = session.hvcoord;
   auto& ref_FE  = session.ref_FE;
   init_buffers_manager(c);
@@ -378,7 +365,11 @@ TEST_CASE ("hyperviscosity_jtv_testing") {
   auto params = init_params();
   c.create<SimulationParams>() = params;
 
-  auto session = make_hv_session(ne, params, seed);
+  // Build a real cube-sphere mesh (needed by HV's boundary exchange); the session also
+  // takes care of the F90 and Context cleanup. The geometry is randomized by the caller.
+  ThetalUnitTestSession session(ne, seed);
+  init_hv_f90(params.hypervis_subcycle, params.nu, params.nu_div,
+              params.nu_top, params.nu_p, params.nu_s);
   auto& hvcoord = session.hvcoord;
   auto& ref_FE  = session.ref_FE;
   init_buffers_manager(c);
@@ -505,7 +496,11 @@ TEST_CASE ("hv_sphere_ops_discrete_self_adjoint") {
   auto params = init_params();
   c.create<SimulationParams>() = params;
 
-  auto session = make_hv_session(ne, params, seed);
+  // Build a real cube-sphere mesh (needed by HV's boundary exchange); the session also
+  // takes care of the F90 and Context cleanup. The geometry is randomized by the caller.
+  ThetalUnitTestSession session(ne, seed);
+  init_hv_f90(params.hypervis_subcycle, params.nu, params.nu_div,
+              params.nu_top, params.nu_p, params.nu_s);
   auto& hvcoord = session.hvcoord;
   auto& ref_FE  = session.ref_FE;
   init_buffers_manager(c);

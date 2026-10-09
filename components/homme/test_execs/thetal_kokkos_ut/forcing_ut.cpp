@@ -13,6 +13,7 @@
 #include "SimulationParams.hpp"
 #include "Tracers.hpp"
 #include "Types.hpp"
+#include "thetal_ut_session.hpp"
 
 #include "utilities/MathUtils.hpp"
 #include "utilities/TestUtils.hpp"
@@ -30,11 +31,9 @@ using HVM = HostViewManaged<T>;
 // ============= THETA MODEL FORCING ================ //
 
 extern "C" {
-void init_forcing_f90 (const int& num_elems,
-               const Real* hyai_ptr, const Real* hybi_ptr,
-               const Real* hyam_ptr, const Real* hybm_ptr,
-               const Real* gradphis,
-               const Real& ps0, const int& qsize);
+// Init the f90 side, after the mesh and hvcoord have been inited (by init_f90, in the session).
+// gradphis has size np*np*2*num_elems
+void init_forcing_f90 (const Real* gradphis, const int& qsize);
 void set_forcing_pointers_f90 (Real*& q_ptr, Real*& fq_ptr, Real*& qdp_ptr,
                                Real*& v_ptr, Real*& w_ptr, Real*& vtheta_ptr, 
                                Real*& dp_ptr, Real*& phinh_ptr, Real*& ps_ptr,
@@ -42,7 +41,6 @@ void set_forcing_pointers_f90 (Real*& q_ptr, Real*& fq_ptr, Real*& qdp_ptr,
                                Real*& fvtheta_ptr, Real*& fphi_ptr);
 void tracers_forcing_f90 (const Real& dt, const int& np1, const int& np1_qdp, const bool& hydrostatic, const bool& moist, const bool& adjustment);
 void dynamics_forcing_f90 (const Real& dt, const int& np1);
-void cleanup_forcing_f90();
 } // extern "C"
 
 TEST_CASE("forcing", "forcing") {
@@ -51,7 +49,6 @@ TEST_CASE("forcing", "forcing") {
   using dpdf = std::uniform_real_distribution<double>;
 
   std::random_device rd;
-  constexpr int num_elems = 10;
   const unsigned int catchRngSeed = Catch::rngSeed();
   const unsigned int seed = catchRngSeed==0 ? rd() : catchRngSeed;
   std::cout << "seed: " << seed << (catchRngSeed==0 ? " (catch rng seed was 0)\n" : "\n");
@@ -63,8 +60,11 @@ TEST_CASE("forcing", "forcing") {
   auto& p = c.create<SimulationParams>();
   p.dt_remap_factor = 1;
  
-  auto& hv = c.create<HybridVCoord>();
-  hv.random_init(seed);
+  // Create the f90 mesh/connectivity (and init the f90 elements), and init hvcoord and ref_FE.
+  // The session also takes care of the f90 and Context cleanup at the end of the scope.
+  ThetalUnitTestSession session(2,seed);
+  auto& hv = session.hvcoord;
+  const int num_elems = session.num_elems();
 
   auto& geo     = c.create<ElementsGeometry>();
   geo.init(num_elems,true, /* alloc_gradphis = */ true,
@@ -86,29 +86,10 @@ TEST_CASE("forcing", "forcing") {
   const int np1 = ipdf(0,2)(engine);
   const int np1_qdp = ipdf(0,1)(engine);
 
-  // Init the f90 side
-  auto h_hyai = Kokkos::create_mirror_view(hv.hybrid_ai);
-  auto h_hybi = Kokkos::create_mirror_view(hv.hybrid_bi);
-  auto h_hyam = Kokkos::create_mirror_view(hv.hybrid_am);
-  auto h_hybm = Kokkos::create_mirror_view(hv.hybrid_bm);
+  // Init the f90 side (the mesh and hvcoord were already inited by the session)
   auto h_gradphis = Kokkos::create_mirror_view(geo.m_gradphis);
-  Kokkos::deep_copy(h_hyai,hv.hybrid_ai);
-  Kokkos::deep_copy(h_hybi,hv.hybrid_bi);
-  Kokkos::deep_copy(h_hyam,hv.hybrid_am);
-  Kokkos::deep_copy(h_hybm,hv.hybrid_bm);
   Kokkos::deep_copy(h_gradphis,geo.m_gradphis);
-  HostViewManaged<Real[NUM_PHYSICAL_LEV]> h_hyam_r(""),h_hybm_r("");
-  for (int i=0;i<NUM_PHYSICAL_LEV;++i) {
-    int ilev = i / VECTOR_SIZE;
-    int ivec = i % VECTOR_SIZE;
-    h_hyam_r(i) = ADValue(h_hyam(ilev)[ivec]);
-    h_hybm_r(i) = ADValue(h_hybm(ilev)[ivec]);
-  }
-  init_forcing_f90(num_elems,
-           h_hyai.data(), h_hybi.data(),
-           h_hyam_r.data(),
-           h_hybm_r.data(),
-           h_gradphis.data(), hv.ps0, p.qsize);
+  init_forcing_f90(h_gradphis.data(), p.qsize);
 
   // Create f90-layout views
   HVM<Real**[NUM_PHYSICAL_LEV][NP][NP]> q_f90 ("",num_elems,QSIZE_D);
@@ -386,7 +367,4 @@ TEST_CASE("forcing", "forcing") {
     }
   }
 
-  cleanup_forcing_f90();
-
-  c.finalize_singleton();
 }
