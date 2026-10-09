@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/amdis-ci.yml'
       - '.github/actions/build-trilinos/**'
+      - '.github/actions/homme-configure/**'
       - '.github/actions/homme-submodules/**'
       - 'components/homme/**'
 
@@ -53,21 +54,10 @@ jobs:
       - name: get submodules
         uses: ./e3sm/source/.github/actions/homme-submodules
       - name: hommexx-configure
-        run: |
-          cd ${GITHUB_WORKSPACE}/e3sm
-          mkdir build && cd build
-          cmake \
-           -D CMAKE_CXX_COMPILER:STRING=mpicxx        \
-           -D CMAKE_C_COMPILER:STIRNG=mpicc           \
-           -D CMAKE_Fortran_COMPILER:STRING=mpifort   \
-           -D CMAKE_BUILD_TYPE:STRING=DEBUG           \
-           \
-           -D BUILD_HOMME_TOOL:BOOL=OFF               \
-           -D BUILD_HOMME_WITHOUT_PIOLIBRARY:BOOL=ON  \
-           -D HOMME_FIND_BLASLAPACK:BOOL=ON           \
-           -D HOMMEXX_BFB_TESTING:BOOL=ON             \
-           \
-           -S ${GITHUB_WORKSPACE}/e3sm/source/components/homme
+        uses: ./e3sm/source/.github/actions/homme-configure
+        with:
+          build-type: DEBUG
+          pio: false
       - name: hommexx-build
         run: |
           cd ${GITHUB_WORKSPACE}/e3sm/build
@@ -108,29 +98,9 @@ jobs:
         with:
           scorpio: true
       - name: hommexx-configure
-        run: |
-          cd ${GITHUB_WORKSPACE}/e3sm
-          export Trilinos_ROOT=${GITHUB_WORKSPACE}/trilinos/install
-          mkdir build && cd build
-          cmake \
-           -D CMAKE_CXX_COMPILER:STRING=mpicxx        \
-           -D CMAKE_C_COMPILER:STIRNG=mpicc           \
-           -D CMAKE_Fortran_COMPILER:STRING=mpifort   \
-           -D CMAKE_BUILD_TYPE:STRING=RELEASE         \
-           \
-           -D NetCDF_C_PATH:PATH=${NETCDF_C_ROOT}                      \
-           -D NetCDF_Fortran_PATH:PATH=${NETCDF_FORTRAN_ROOT}          \
-           -D BLAS_LIBRARIES:FILEPATH=${BLAS_ROOT}/lib/libopenblas.a   \
-           -D LAPACK_LIBRARIES:FILEPATH=${BLAS_ROOT}/lib/libopenblas.a \
-           -D PIO_ENABLE_IO_STATS:BOOL=OFF                             \
-           \
-           -D HOMME_FIND_BLASLAPACK:BOOL=ON           \
-           -D HOMME_AMDIS_PROJECT:BOOL=ON             \
-           -D HOMMEXX_ENABLE_FWD_SENS:BOOL=ON         \
-           -D HOMMEXX_ENABLE_FAD_TYPES:BOOL=ON        \
-           -D HOMMEXX_BFB_TESTING:BOOL=ON             \
-           \
-           -S ${GITHUB_WORKSPACE}/e3sm/source/components/homme
+        uses: ./e3sm/source/.github/actions/homme-configure
+        with:
+          fad: true
       - name: hommexx-build
         run: |
           cd ${GITHUB_WORKSPACE}/e3sm/build
@@ -175,37 +145,10 @@ jobs:
           # Installs into the image's venv; no-op for packages already there
           python3 -m pip install numpy xarray netCDF4 mpi4py nanobind
       - name: hommexx-configure
-        run: |
-          cd ${GITHUB_WORKSPACE}/e3sm
-          export Trilinos_ROOT=${GITHUB_WORKSPACE}/trilinos/install
-          mkdir build && cd build
-          cmake \
-           -D CMAKE_BUILD_TYPE:STRING=RELEASE         \
-           -D CMAKE_CXX_COMPILER:STRING=mpicxx        \
-           -D CMAKE_C_COMPILER:STIRNG=mpicc           \
-           -D CMAKE_Fortran_COMPILER:STRING=mpifort   \
-           -D CMAKE_C_FLAGS:STRING="-fPIC"            \
-           -D CMAKE_CXX_FLAGS:STRING="-fPIC"          \
-           -D CMAKE_Fortran_FLAGS:STRING="-fPIC"      \
-           \
-           -D OPT_FLAGS:STRING="-O3"                  \
-           \
-           -D NetCDF_C_PATH:PATH=${NETCDF_C_ROOT}                      \
-           -D NetCDF_Fortran_PATH:PATH=${NETCDF_FORTRAN_ROOT}          \
-           -D BLAS_LIBRARIES:FILEPATH=${BLAS_ROOT}/lib/libopenblas.a   \
-           -D LAPACK_LIBRARIES:FILEPATH=${BLAS_ROOT}/lib/libopenblas.a \
-           -D PIO_ENABLE_IO_STATS:BOOL=OFF                             \
-           \
-           -D HOMME_FIND_BLASLAPACK:BOOL=ON           \
-           -D HOMME_AMDIS_PROJECT:BOOL=ON             \
-           -D HOMMEXX_ENABLE_FWD_SENS:BOOL=ON         \
-           -D HOMMEXX_ENABLE_FAD_TYPES:BOOL=ON        \
-           -D HOMMEXX_BFB_TESTING:BOOL=ON             \
-           -D HOMME_BUILD_PYHOMMEXX:BOOL=ON           \
-           -D PYHOMMEXX_NLEV:STRING=128               \
-           -D PYHOMMEXX_QSIZE:STRING=10               \
-           \
-           -S ${GITHUB_WORKSPACE}/e3sm/source/components/homme
+        uses: ./e3sm/source/.github/actions/homme-configure
+        with:
+          fad: true
+          pyhommexx: true
       - name: pyhommexx-build
         run: |
           cd ${GITHUB_WORKSPACE}/e3sm/build
