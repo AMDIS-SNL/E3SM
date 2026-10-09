@@ -4,12 +4,6 @@ on:
   # Runs on PRs
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
-    paths:
-      - '.github/workflows/amdis-ci.yml'
-      - '.github/actions/build-trilinos/**'
-      - '.github/actions/homme-configure/**'
-      - '.github/actions/homme-submodules/**'
-      - 'components/homme/**'
 
   # Manual run is used to bless
   workflow_dispatch:
@@ -36,8 +30,46 @@ defaults:
     shell: bash -l {0}
 
 jobs:
+  changes:
+    # PRs only run the tests if relevant files changed. The filtering is done
+    # here (rather than with 'paths:' in the trigger) so that the amdis-ci-check
+    # job always reports a status and can be used as a required check.
+    runs-on: [ubuntu-24.04]
+    name: changes
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - name: Detect relevant changes
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            relevant:
+              - '.github/workflows/amdis-ci.yml'
+              - '.github/actions/build-trilinos/**'
+              - '.github/actions/homme-configure/**'
+              - '.github/actions/homme-submodules/**'
+              - 'components/homme/**'
+      - name: Decide whether to run the tests
+        id: decide
+        run: |
+          # Nightly and manual runs always test
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            run=true
+          else
+            run=${{ steps.filter.outputs.relevant }}
+          fi
+          echo "run=${run}" >> "${GITHUB_OUTPUT}"
+          echo "Run tests: ${run}"
+
   # Plain hommexx: make sure the FAD-related features did not break the usual build
   hommexx:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: [ubuntu-24.04]
     name: hommexx
     container:
@@ -79,6 +111,8 @@ jobs:
 
   # Forward sensitivities and FAD types (needs Trilinos/Sacado) and the AMDIS tests
   fad:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: [ubuntu-24.04]
     name: fad
     container:
@@ -120,6 +154,8 @@ jobs:
 
   # Python bindings (so far, we only check that they build)
   pyhommexx:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: [ubuntu-24.04]
     name: pyhommexx
     container:
@@ -158,3 +194,31 @@ jobs:
             e3sm/build/CMakeCache.txt
             e3sm/build/**/flags.make
           retention-days: 14
+
+  amdis-ci-check:
+    # Single status to use as a required check. It always runs, and it is
+    # green if all the tests passed or if they were not needed.
+    needs: [changes, hommexx, fad, pyhommexx]
+    if: always()
+    runs-on: [ubuntu-24.04]
+    name: amdis-ci-check
+    steps:
+      - name: Report the result
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUN_TESTS: ${{ needs.changes.outputs.run }}
+          TESTS_RESULTS: ${{ needs.hommexx.result }} ${{ needs.fad.result }} ${{ needs.pyhommexx.result }}
+        run: |
+          echo "changes: ${CHANGES_RESULT}, run tests: ${RUN_TESTS}"
+          echo "tests (hommexx fad pyhommexx): ${TESTS_RESULTS}"
+          if [[ "${CHANGES_RESULT}" != "success" ]]; then
+            echo "Could not determine whether tests are needed"; exit 1
+          elif [[ "${RUN_TESTS}" != "true" ]]; then
+            echo "No relevant changes, tests skipped"
+          else
+            for r in ${TESTS_RESULTS}; do
+              if [[ "${r}" != "success" ]]; then
+                echo "Some tests did not pass"; exit 1
+              fi
+            done
+          fi
