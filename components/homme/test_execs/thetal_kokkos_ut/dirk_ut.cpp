@@ -2,10 +2,12 @@
 
 #include "DirkFunctorImpl.hpp"
 
+#include <memory>
 #include <random>
 
 #include "Types.hpp"
 #include "thetal_f90_interface.hpp"
+#include "thetal_ut_session.hpp"
 #include "Context.hpp"
 #include "mpi/Connectivity.hpp"
 #include "SimulationParams.hpp"
@@ -21,8 +23,8 @@
 using namespace Homme;
 
 extern "C" {
-  void init_dirk_f90(int ne, const Real* hyai, const Real* hybi, const Real* hyam,
-                     const Real* hybm, Real ps0);
+  // Dirk-specific f90 init (edge buffer). Must be called after init_f90
+  void init_dirk_f90();
   void pnh_and_exner_from_eos_f90(const Real* vtheta_dp, const Real* dp3d, const Real* dphi,
                                   Real* pnh, Real* exner, Real* dpnh_dp_i);
   void compute_gwphis_f90(Real* gwh_i, const Real* dp3d, const Real* v, const Real* gradphis);
@@ -69,32 +71,19 @@ struct Session {
   const int ne = 2;
   int nelemd;
   Context& c;
+  // Takes care of hvcoord, f90 mesh and cleanup (of f90 and Context)
+  std::unique_ptr<CubeSphereTestSession> f90_session;
 
   //Session () : r(269041989) {}
 
   void init () {
     printf("seed %u\n", r.gen_seed());
     c.create<ekat::Comm>(MPI_COMM_WORLD);
-    auto& h = c.create<HybridVCoord>();
-    h.random_init(r.gen_seed());
 
-    const auto hyai = cmvdc(h.hybrid_ai);
-    const auto hybi = cmvdc(h.hybrid_bi);
-    const auto hyam = cmvdc(h.hybrid_am);
-    const auto hybm = cmvdc(h.hybrid_bm);
+    f90_session = std::make_unique<CubeSphereTestSession>(ne, r.gen_seed());
+    init_dirk_f90();
 
-    HostViewManaged<Real[NUM_PHYSICAL_LEV]> hyam_r("");
-    HostViewManaged<Real[NUM_PHYSICAL_LEV]> hybm_r("");
-    for (int k=0; k<NUM_PHYSICAL_LEV; ++k) {
-      int ilev = k / VECTOR_SIZE;
-      int ivec = k % VECTOR_SIZE;
-      hyam_r[k] = ADValue(hyam(ilev)[ivec]);
-      hybm_r[k] = ADValue(hybm(ilev)[ivec]);
-    }
-
-    init_dirk_f90(ne, hyai.data(), hybi.data(), hyam_r.data(), hybm_r.data(), h.ps0);
-
-    nelemd = c.get<Connectivity>().get_num_local_elements();
+    nelemd = f90_session->num_elems();
     auto& e = c.create<Elements>();
     e.m_state = c.create<ElementsState>();
     e.m_geometry = c.create<ElementsGeometry>();
@@ -106,9 +95,8 @@ struct Session {
   HybridVCoord h() { return c.get<HybridVCoord>(); };
 
   void cleanup () {
-    cleanup_f90();
-
-    c.finalize_singleton();
+    // This calls cleanup_f90 and finalizes the Context
+    f90_session = nullptr;
 
     inited = false;
   }

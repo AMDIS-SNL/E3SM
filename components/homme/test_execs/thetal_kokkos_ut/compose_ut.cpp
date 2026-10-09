@@ -2,6 +2,7 @@
 #include "compose_test.hpp"
 
 #include "Types.hpp"
+#include "thetal_ut_session.hpp"
 #include "Context.hpp"
 #include "mpi/Connectivity.hpp"
 #include "mpi/MpiBuffersManager.hpp"
@@ -35,12 +36,12 @@
 using namespace Homme;
 
 extern "C" {
-  void init_compose_f90(int ne, const Real* hyai, const Real* hybi, const Real* hyam,
-                        const Real* hybm, Real ps0, Real* dvv, Real* mp, int qsize,
-                        int hv_q, int limiter_option, bool cdr_check, bool is_sphere,
-                        bool nearest_point, int halo, int traj_nsubstep);
+  // Compose-specific f90 init. Must be called after init_f90
+  void init_compose_f90(int ne, int qsize, int hv_q, int limiter_option, bool cdr_check,
+                        bool is_sphere, bool nearest_point, int halo, int traj_nsubstep);
   void init_geometry_f90();
-  void cleanup_compose_f90();
+  // Must be called before the f90 cleanup
+  void finalize_compose_f90();
   void run_compose_standalone_test_f90(int* nmax, Real* eval, int* nerr);
   void run_trajectory_f90(Real t0, Real t1, bool independent_time_steps, Real* dep,
                           Real* dprecon);
@@ -109,6 +110,8 @@ struct Session {
   std::shared_ptr<Elements> e;
   int nelemd, qsize, nlev, np;
   FunctorsBuffersManager fbm;
+  // Takes care of hvcoord, f90 mesh and cleanup (of f90 and Context)
+  std::unique_ptr<CubeSphereTestSession> f90_session;
 
   //Session () : r(269041989) {}
 
@@ -128,9 +131,6 @@ struct Session {
     parse_test_options ();
     assert(is_sphere); // planar isn't available in Hxx yet
 
-    c.create<HybridVCoord>().random_init(seed);
-    h = c.get<HybridVCoord>();
-
     auto& p = c.create<SimulationParams>();
     p.transport_alg = 12;
     p.qsize = qsize;
@@ -146,28 +146,14 @@ struct Session {
     p.scale_factor = is_sphere ? PhysicalConstants::rearth0 : 1;
     p.laplacian_rigid_factor = is_sphere ? 1/p.scale_factor : 0;
 
-    const auto hyai = cmvdc(h.hybrid_ai);
-    const auto hybi = cmvdc(h.hybrid_bi);
-    const auto hyam = cmvdc(h.hybrid_am);
-    const auto hybm = cmvdc(h.hybrid_bm);
-    HostViewManaged<Real[NUM_PHYSICAL_LEV]> hyam_r("");
-    HostViewManaged<Real[NUM_PHYSICAL_LEV]> hybm_r("");
-    for (int k=0; k<NUM_PHYSICAL_LEV; ++k) {
-      int ilev = k / VECTOR_SIZE;
-      int ivec = k % VECTOR_SIZE;
-      hyam_r[k] = ADValue(hyam(ilev)[ivec]);
-      hybm_r[k] = ADValue(hybm(ilev)[ivec]);
-    }
-    
-    auto& ref_FE = c.create<ReferenceElement>();
-    std::vector<Real> dvv(NP*NP), mp(NP*NP);
-    init_compose_f90(ne, hyai.data(), hybi.data(), hyam_r.data(), hybm_r.data(), h.ps0,
-                     dvv.data(), mp.data(), qsize, hv_q, p.limiter_option, cdr_check,
+    // Create hvcoord and ref_FE, and init f90 (including its mesh/connectivity)
+    f90_session = std::make_unique<CubeSphereTestSession>(ne, seed);
+    init_compose_f90(ne, qsize, hv_q, p.limiter_option, cdr_check,
                      is_sphere, nearest_point, halo, traj_nsubstep);
-    ref_FE.init_mass(mp.data());
-    ref_FE.init_deriv(dvv.data());
+    h = f90_session->hvcoord;
+    auto& ref_FE = f90_session->ref_FE;
 
-    nelemd = c.get<Connectivity>().get_num_local_elements();
+    nelemd = f90_session->num_elems();
     auto& bmm = c.create<MpiBuffersManagerMap>();
     bmm.set_connectivity(c.get_ptr<Connectivity>());
     e = c.get_ptr<Elements>();
@@ -190,9 +176,9 @@ struct Session {
   }
 
   void cleanup () {
-    cleanup_compose_f90();
-    auto& c = Context::singleton();
-    c.finalize_singleton();
+    finalize_compose_f90();
+    // This calls cleanup_f90 and finalizes the Context
+    f90_session = nullptr;
   }
 
   static Session& singleton () {

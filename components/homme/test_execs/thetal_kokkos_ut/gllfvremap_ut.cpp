@@ -1,6 +1,7 @@
 #include "GllFvRemapImpl.hpp"
 
 #include "Types.hpp"
+#include "thetal_ut_session.hpp"
 #include "Context.hpp"
 #include "mpi/Connectivity.hpp"
 #include "mpi/MpiBuffersManager.hpp"
@@ -34,9 +35,8 @@ extern "C" {
   void calc_dp_fv_f90(int nf, Real* ps, Real* dp_fv);
   void get_temperature_f90(int ie, int nf, bool theta_hydrostatic_mode, Real* T);
 
-  void init_gllfvremap_f90(int ne, const Real* hyai, const Real* hybi, const Real* hyam,
-                           const Real* hybm, Real ps0, Real* dvv, Real* mp, int qsize,
-                           bool is_sphere);
+  // GllFvRemap-specific f90 init. Must be called after init_f90 (or init_planar_f90)
+  void init_gllfvremap_f90(int qsize);
   void init_geometry_f90();
 
   void run_gfr_test(int* nerr);
@@ -71,48 +71,6 @@ decltype(Kokkos::create_mirror_view(V())) cmvdc (const V& v) {
   const auto h = Kokkos::create_mirror_view(v);
   deep_copy(h, v);
   return h;
-}
-
-// Make a,b a little better behaved so levels don't get too thin.
-static void clean (HybridVCoord& h) {
-  static const int n = NUM_INTERFACE_LEV, nh = (n+1)/2, nh0 = n-nh;
-  const auto ai = cmvdc(h.hybrid_ai);
-  const auto bi = cmvdc(h.hybrid_bi);
-  const auto amp = cmvdc(h.hybrid_am);
-  const auto bmp = cmvdc(h.hybrid_bm);
-  const CA1d am(reinterpret_cast<Real*>(amp.data()), n-1);
-  const CA1d bm(reinterpret_cast<Real*>(bmp.data()), n-1);
-
-  for (int i = 0; i < n; ++i) bi(i) = 0;
-  for (int i = 0; i < nh; ++i) {
-    assert(nh0+i < n);
-    const Real a = Real(i)/(nh-1);
-    bi(nh0+i) = (1-a)*0.02 + a*1;
-  }
-  assert(bi(n-1) == 1);
-
-  Real etai[n];
-  for (int i = 0; i < n; ++i) {
-    const Real a = Real(i)/(n-1);
-    etai[i] = (1-a)*0.0001 + a*1;
-  }
-
-  for (int i = 0; i < n; ++i) {
-    ai(i) = etai[i] - bi(i);
-    assert(ai(i) >= 0);
-  }
-
-  for (int i = 0; i < n-1; ++i) am(i) = (ai(i) + ai(i+1))/2;
-  for (int i = 0; i < n-1; ++i) bm(i) = (bi(i) + bi(i+1))/2;
-
-  deep_copy(h.hybrid_ai, ai);
-  deep_copy(h.hybrid_bi, bi);
-  deep_copy(h.hybrid_am, amp);
-  deep_copy(h.hybrid_bm, bmp);
-
-  h.hybrid_ai0 = ai(0);
-  h.compute_deltas();
-  h.compute_eta();
 }
 
 class Random {
@@ -163,6 +121,8 @@ struct Session {
   std::shared_ptr<Elements> e;
   int nelemd, qsize, nlev, np;
   FunctorsBuffersManager fbm;
+  // Takes care of hvcoord and f90 mesh, and of the Context cleanup
+  std::unique_ptr<CubeSphereTestSession> f90_session;
 
   //Session () : r(269041989) {}
 
@@ -175,11 +135,6 @@ struct Session {
 
     parse_test_options ();
 
-    c.create<HybridVCoord>().random_init(seed);
-    auto& h_ref = c.get<HybridVCoord>();
-    clean(h_ref);
-    h = h_ref;
-
     auto& p = c.create<SimulationParams>();
     p.qsize = qsize;
     p.hypervis_scaling = 0;
@@ -190,18 +145,15 @@ struct Session {
     p.laplacian_rigid_factor = is_sphere ? 1/p.scale_factor : 0;
     p.params_set = true;
 
-    const auto hyai = cmvdc(h.hybrid_ai);
-    const auto hybi = cmvdc(h.hybrid_bi);
-    const auto hyam = cmvdc(h.hybrid_am);
-    const auto hybm = cmvdc(h.hybrid_bm);
-    auto& ref_FE = c.create<ReferenceElement>();
-    std::vector<Real> dvv(NP*NP), mp(NP*NP);
-    init_gllfvremap_f90(ne, hyai.data(), hybi.data(), &hyam(0)[0], &hybm(0)[0], h.ps0,
-                        dvv.data(), mp.data(), qsize, is_sphere);
-    ref_FE.init_mass(mp.data());
-    ref_FE.init_deriv(dvv.data());
+    // Create hvcoord and ref_FE, and init f90 (including its mesh/connectivity).
+    // Use a smooth hvcoord, so that levels are not too thin.
+    f90_session = std::make_unique<CubeSphereTestSession>(
+        ne, seed, is_sphere, CubeSphereTestSession::VCoord::Smooth);
+    init_gllfvremap_f90(qsize);
+    h = f90_session->hvcoord;
+    auto& ref_FE = f90_session->ref_FE;
 
-    nelemd = c.get<Connectivity>().get_num_local_elements();
+    nelemd = f90_session->num_elems();
     auto& bmm = c.create<MpiBuffersManagerMap>();
     bmm.set_connectivity(c.get_ptr<Connectivity>());
     e = c.get_ptr<Elements>();
@@ -227,8 +179,8 @@ struct Session {
   }
 
   void cleanup () {
-    const auto& c = Context::singleton();
-    c.finalize_singleton();
+    // This calls cleanup_f90 and finalizes the Context
+    f90_session = nullptr;
   }
 
   static Session& singleton () {

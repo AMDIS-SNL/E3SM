@@ -6,21 +6,12 @@ module dirk_interface
 
 contains
   
-  subroutine init_dirk_f90(ne, hyai, hybi, hyam, hybm, ps0) bind(c)
-    use iso_c_binding,          only: c_int
-    use hybvcoord_mod,          only: set_layer_locations
-    use dimensions_mod,         only: nlev, nlevp, np
-    use thetal_test_interface,  only: init_f90
-    use edge_mod,          only: initEdgeBuffer, edge_g
+  subroutine init_dirk_f90() bind(c)
+    ! Dirk-specific init. Must be called AFTER init_f90
+    use dimensions_mod,         only: nlev
+    use edge_mod,               only: initEdgeBuffer, edge_g
     use geometry_interface_mod, only: par, elem
 
-    real (kind=real_kind), intent(in) :: hyai(nlevp), hybi(nlevp), hyam(nlev), hybm(nlev)
-    integer (kind=c_int), value, intent(in) :: ne
-    real (kind=real_kind), value, intent(in) :: ps0
-
-    real (kind=real_kind) :: mp(np,np), dvv(np,np)
-
-    call init_f90(ne, hyai, hybi, hyam, hybm, dvv, mp, ps0)
     call initEdgeBuffer(par, edge_g, elem, 6*nlev+1)
   end subroutine init_dirk_f90
 

@@ -7,6 +7,10 @@
 #include "utilities/SyncUtils.hpp"
 #include "utilities/ViewUtils.hpp"
 #include "Types.hpp"
+#include "Context.hpp"
+#include "thetal_ut_session.hpp"
+
+#include <ekat_comm.hpp>
 
 #include <iostream>
 #include <random>
@@ -14,7 +18,6 @@
 using namespace Homme;
 
 extern "C" {
-void init_elem_ops_f90 (const Real* hyai_ptr, const Real& ps0);
 void compute_r_star_f90(const int& num_elems,
                         const bool& moist,
                         const Real*& Q,
@@ -36,13 +39,11 @@ TEST_CASE("elem_ops", "elem_ops") {
   rngAlg engine(seed);
   std::uniform_real_distribution<Real> pdf(0.01, 1.0);
 
-  HybridVCoord hvcoord;
-  hvcoord.random_init(seed);
-
-  decltype(hvcoord.hybrid_ai)::HostMirror hyai = Kokkos::create_mirror_view(hvcoord.hybrid_ai);
-  Kokkos::deep_copy(hyai,hvcoord.hybrid_ai);
-  const Real* hyai_ptr = hyai.data();
-  init_elem_ops_f90(hyai_ptr,hvcoord.ps0);
+  // Create the f90 mesh (needed to init f90), and init hvcoord.
+  // The session also takes care of the f90 and Context cleanup at the end of the scope.
+  Context::singleton().create<ekat::Comm>(MPI_COMM_WORLD);
+  CubeSphereTestSession session(2,seed);
+  auto& hvcoord = session.hvcoord;
 
   // F90 and CXX views (and host mirrors of cxx views)
   HostViewManaged<Real*[NUM_PHYSICAL_LEV][NP][NP]>  dp_f90("",num_elems);

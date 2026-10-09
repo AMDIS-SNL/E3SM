@@ -7,11 +7,8 @@ module physgrid_interface
   
 contains
 
-  subroutine init_gllfvremap_f90(ne, hyai, hybi, hyam, hybm, ps0, dvv, mp, qsize_in, &
-       is_sphere) bind(c)
-    use iso_c_binding, only: c_double
-    use hybvcoord_mod, only: set_layer_locations
-    use thetal_test_interface, only: init_f90, init_planar_f90
+  subroutine init_gllfvremap_f90(qsize_in) bind(c)
+    ! GllFvRemap-specific init. Must be called AFTER init_f90 (or init_planar_f90)
     use theta_f2c_mod, only: init_elements_c
     use edge_mod, only: initEdgeBuffer, edge_g, initEdgeSBuffer
     use prim_advection_base, only: edgeAdvQminmax
@@ -20,11 +17,7 @@ contains
     use parallel_mod, only: global_shared_buf, nrepro_vars
     use control_mod, only: use_moisture, theta_hydrostatic_mode
 
-    real (c_double), intent(in) :: hyai(nlevp), hybi(nlevp), hyam(nlev), hybm(nlev)
-    integer (c_int), value, intent(in) :: ne, qsize_in
-    real (c_double), value, intent(in) :: ps0
-    real (c_double), intent(out) :: dvv(np,np), mp(np,np)
-    logical (c_bool), value, intent(in) :: is_sphere
+    integer (c_int), value, intent(in) :: qsize_in
 
     integer :: edgesz
 
@@ -32,11 +25,6 @@ contains
     use_moisture = .true.
     theta_hydrostatic_mode = .false.
 
-    if (is_sphere) then
-       call init_f90(ne, hyai, hybi, hyam, hybm, dvv, mp, ps0)
-    else
-       call init_planar_f90(ne+1, ne, hyai, hybi, hyam, hybm, dvv, mp, ps0)
-    end if
     call init_elements_c(nelemd)
 
     edgesz = max((qsize+3)*nlev+2,6*nlev+1)

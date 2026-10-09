@@ -2,16 +2,13 @@ module forcing_interface
 
   use iso_c_binding,  only: c_int, c_bool, c_double, c_ptr, c_f_pointer
   use dimensions_mod, only: nlev, nlevp, np
-  use element_mod,    only: element_t
   use kinds,          only: real_kind 
-  use hybvcoord_mod,  only: hvcoord_t 
+  use thetal_test_interface,  only: hvcoord
+  use geometry_interface_mod, only: elem
   use parallel_mod,   only: abortmp
 
   implicit none
 
-  type(hvcoord_t) :: hvcoord
-
-  type(element_t), allocatable :: elem(:)
   real (kind=real_kind), pointer, dimension(:,:,:,:)     :: ps, ft, fvtheta, fphi
   real (kind=real_kind), pointer, dimension(:,:,:,:,:)   :: q, fq, w, vtheta, dp, phinh, fm
   real (kind=real_kind), pointer, dimension(:,:,:,:,:,:) :: qdp, v
@@ -19,40 +16,25 @@ module forcing_interface
   public :: init_forcing_f90
   public :: set_forcing_pointers_f90
   public :: tracers_forcing_f90
-  public :: cleanup_forcing_f90
 
 contains
 
-  subroutine init_forcing_f90 (num_elems, hyai, hybi, hyam, hybm, gradphis, ps0, qsz) bind(c)
+  subroutine init_forcing_f90 (gradphis, qsz) bind(c)
     use dimensions_mod, only: nelemd, qsize
-    use element_state,  only: allocate_element_arrays, setup_element_pointers_ie
     !
     ! Inputs
     !
-    real (kind=real_kind), intent(in) :: hyai(nlevp), hybi(nlevp)
-    real (kind=real_kind), intent(in) :: hyam(nlev), hybm(nlev)
-    real (kind=real_kind), intent(in) :: gradphis(np,np,2,num_elems)
-    real (kind=real_kind), intent(in) :: ps0
-    integer (kind=c_int),  intent(in) :: num_elems, qsz
+    real (kind=real_kind), intent(in) :: gradphis(np,np,2,nelemd)
+    integer (kind=c_int),  intent(in) :: qsz
     !
     ! Locals
     !
     integer :: ie
 
-    hvcoord%hyai = hyai
-    hvcoord%hybi = hybi
-    hvcoord%hyam = hyam
-    hvcoord%hybm = hybm
-    hvcoord%ps0 = ps0
+    ! Note: the mesh, elements, and hvcoord were already inited in thetal_test_interface::init_f90
     qsize = qsz
 
-    nelemd = num_elems
-
-    call allocate_element_arrays(num_elems)
-
-    allocate (elem(num_elems))
-    do ie=1,num_elems
-      call setup_element_pointers_ie(ie, elem(ie)%state, elem(ie)%derived, elem(ie)%accum)
+    do ie=1,nelemd
       elem(ie)%derived%gradphis = gradphis(:,:,:,ie)
     enddo
 
@@ -184,12 +166,5 @@ contains
       fphi(:,:,:,ie)     = elem(ie)%derived%FPHI   
     enddo
   end subroutine tracers_forcing_f90
-
-  subroutine cleanup_forcing_f90 () bind(c)
-    use element_state, only: deallocate_element_arrays
-
-    call deallocate_element_arrays()
-    deallocate(elem)
-  end subroutine cleanup_forcing_f90
 
 end module forcing_interface

@@ -7,10 +7,9 @@ module compose_interface
 
 contains
 
-  subroutine init_compose_f90(ne, hyai, hybi, hyam, hybm, ps0, dvv, mp, qsize_in, hv_q, &
-       lim, cdr_check, is_sphere, nearest_point, halo, traj_nsubstep) bind(c)
-    use hybvcoord_mod, only: set_layer_locations
-    use thetal_test_interface, only: init_f90
+  subroutine init_compose_f90(ne, qsize_in, hv_q, lim, cdr_check, is_sphere, nearest_point, &
+       halo, traj_nsubstep) bind(c)
+    ! Compose-specific init. Must be called AFTER init_f90
     use theta_f2c_mod, only: init_elements_c
     use edge_mod, only: initEdgeBuffer, edge_g
     use control_mod, only: transport_alg, semi_lagrange_cdr_alg, semi_lagrange_cdr_check, &
@@ -25,10 +24,7 @@ contains
     use compose_mod, only: compose_init, cedr_set_ie2gci, compose_set_null_bufs
     use sl_advection, only: sl_init1
 
-    real (real_kind), intent(in) :: hyai(nlevp), hybi(nlevp), hyam(nlev), hybm(nlev)
     integer (c_int), value, intent(in) :: ne, qsize_in, hv_q, lim, halo, traj_nsubstep
-    real (real_kind), value, intent(in) :: ps0
-    real (real_kind), intent(out) :: dvv(np,np), mp(np,np)
     logical (c_bool), value, intent(in) :: cdr_check, is_sphere, nearest_point
 
     integer :: ie, edgesz
@@ -56,7 +52,6 @@ contains
     nu_q = min(1.0e13_real_kind, 1.0e15_real_kind*(30.0_real_kind/ne)**3.2_real_kind)
     hypervis_subcycle_q = 6
 
-    call init_f90(ne, hyai, hybi, hyam, hybm, dvv, mp, ps0)
     call init_elements_c(nelemd)
 
     edgesz = max((qsize+3)*nlev+2,6*nlev+1)
@@ -136,13 +131,12 @@ contains
     enddo
   end subroutine init_geometry_f90
 
-  subroutine cleanup_compose_f90() bind(c)
+  subroutine finalize_compose_f90() bind(c)
+    ! Must be called BEFORE cleanup_f90
     use compose_mod, only: compose_finalize
-    use thetal_test_interface, only: cleanup_f90
 
     call compose_finalize(finalize_kokkos=.false.)
-    call cleanup_f90()
-  end subroutine cleanup_compose_f90
+  end subroutine finalize_compose_f90
 
   subroutine run_compose_standalone_test_f90(nmax_out, eval, nerr) bind(c)
     use thetal_test_interface, only: deriv, hvcoord
