@@ -16,6 +16,7 @@ module thetal_test_interface
   public :: init_f90
   public :: cleanup_f90
   public :: init_geo_views_f90
+  public :: init_elements_geometry_f90
   public :: set_hvcoord_f90
   public :: initialize_reference_states_f90
 
@@ -201,6 +202,18 @@ contains
 
     call set_layer_locations (hvcoord,.false.,.false.)
   end subroutine set_hvcoord_f90
+
+  subroutine init_elements_geometry_f90 () bind(c)
+    ! Pass the f90 geometry (and geopotential) of the mesh to the C++ Elements in the Context,
+    ! using the same routines as the production code. Unlike init_geo_views_f90, this does not
+    ! return the geometry to the caller: it requires the C++ Elements to be already
+    ! created in the Context (e.g., by init_elements_c).
+    use geometry_interface_mod, only: elem
+    use prim_driver_mod,        only: prim_init_grid_views, prim_init_geopotential_views
+
+    call prim_init_grid_views(elem)
+    call prim_init_geopotential_views(elem)
+  end subroutine init_elements_geometry_f90
 
   subroutine init_geo_views_f90 (d_ptr, dinv_ptr,        &
                        phis_ptr, gradphis_ptr, fcor_ptr, &

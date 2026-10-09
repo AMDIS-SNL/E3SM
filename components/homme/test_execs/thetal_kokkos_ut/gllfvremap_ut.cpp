@@ -2,6 +2,7 @@
 
 #include "Types.hpp"
 #include "thetal_ut_utils.hpp"
+#include "thetal_f90_interface.hpp"
 #include "thetal_ut_session.hpp"
 #include "Context.hpp"
 #include "mpi/Connectivity.hpp"
@@ -52,7 +53,6 @@ extern "C" {
 
   // GllFvRemap-specific f90 init. Must be called after init_f90 (or init_planar_f90)
   void init_gllfvremap_f90(int qsize);
-  void init_geometry_f90();
 
   void run_gfr_test(int* nerr);
   void run_gfr_check_api(bool theta_hydrostatic_mode, int* nerr);
@@ -127,7 +127,7 @@ struct Session {
     e = c.get_ptr<Elements>();
     c.create<TimeLevel>();
 
-    init_geometry_f90();    
+    init_elements_geometry_f90();
     auto& geo = c.get<ElementsGeometry>();
 
     auto& sphop = c.create<SphereOperators>();
