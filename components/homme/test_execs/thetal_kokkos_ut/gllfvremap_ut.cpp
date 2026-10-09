@@ -27,6 +27,7 @@
 #include <ekat_test_utils.hpp>
 
 #include <catch2/catch.hpp>
+#include <limits>
 #include <random>
 
 using namespace Homme;
@@ -39,7 +40,10 @@ using Homme::ut::Random;
 using Homme::ut::cmvdc;
 using Homme::ut::fill;
 using Homme::ut::almost_equal;
-// Note: not using Homme::ut::equal, since the default tolerance here is different
+using Homme::ut::equal;
+
+// Relative tolerance used to compare results (unless testing BFB, where results must be identical)
+static const Real equal_tol = 1e4*std::numeric_limits<Real>::epsilon();
 
 extern "C" {
   void limiter1_clip_and_sum_f90(int n, Real* spheremp, Real* qmin, Real* qmax, Real* dp, Real* q);
@@ -214,19 +218,6 @@ private:
 
 std::shared_ptr<Session> Session::s_session;
 
-static bool equal (const Real& a, const Real& b,
-                   // Used only if not defined HOMMEXX_BFB_TESTING.
-                   const Real tol = 1e4*std::numeric_limits<Real>::epsilon()) {
-#ifdef HOMMEXX_BFB_TESTING
-  if (a != b)
-    printf("equal: a,b = %23.16e %23.16e re = %23.16e\n",
-           a, b, std::abs((a-b)/a));
-  return a == b;
-#else
-  return almost_equal(a, b, tol);
-#endif
-}
-
 static void test_calc_dp_fv (Random& r, const HybridVCoord& hvcoord) {
   using Kokkos::deep_copy;
   using g = GllFvRemapImpl;
@@ -253,7 +244,7 @@ static void test_calc_dp_fv (Random& r, const HybridVCoord& hvcoord) {
   
   for (int i = 0; i < ncol; ++i)
     for (int k = 0; k < g::num_phys_lev; ++k)
-      REQUIRE(equal(dp_fv_f90(k,i), dp_fv_h(i,k)));
+      REQUIRE(equal(dp_fv_f90(k,i), dp_fv_h(i,k), equal_tol));
 }
 
 static void sfwd_remapd (const int m, const int n, const Real* A,
@@ -341,7 +332,7 @@ static void test_remapds (Random& r, const int m, const int n, const int nlev) {
   deep_copy(x_h, x_d); deep_copy(y_h, y_d);
   for (int k = 0; k < nlev; ++k)
     for (int i = 0; i < m; ++i)
-      REQUIRE(equal(y_h(i,k), y[i]));
+      REQUIRE(equal(y_h(i,k), y[i], equal_tol));
 
   // Vector remapd.
   std::vector<Real> wx(2*n), wy(2*m);
@@ -364,7 +355,7 @@ static void test_remapds (Random& r, const int m, const int n, const int nlev) {
     for (int k = 0; k < nlev; ++k)
       for (int i = 0; i < m; ++i)
         for (int d = 0; d < 2; ++d)
-          REQUIRE(equal(y2_h(d,i,k), y[d*m+i]));
+          REQUIRE(equal(y2_h(d,i,k), y[d*m+i], equal_tol));
   }
   { // x(d,i), y(i,d)
     const ExecView<Scalar***> x2_p("x2", 2, n+1, nlevpk), y2_p("y", m+2, 2, nlevpk);
@@ -384,7 +375,7 @@ static void test_remapds (Random& r, const int m, const int n, const int nlev) {
     for (int k = 0; k < nlev; ++k)
       for (int i = 0; i < m; ++i)
         for (int d = 0; d < 2; ++d)
-          REQUIRE(equal(y2_h(i,d,k), y[d*m+i]));
+          REQUIRE(equal(y2_h(i,d,k), y[d*m+i], equal_tol));
   }
 }
 
@@ -412,8 +403,8 @@ assert_limiter_properties (const int n, const int nlev, const V1s& spheremp,
       for (int i = 1; i < n2; ++i)
         REQUIRE(almost_equal(q(i,k), q(0,k), 1e2*eps));
     } else {
-      REQUIRE(equal(qmin(k), qmin_orig(k)));
-      REQUIRE(equal(qmax(k), qmax_orig(k)));
+      REQUIRE(equal(qmin(k), qmin_orig(k), equal_tol));
+      REQUIRE(equal(qmax(k), qmax_orig(k), equal_tol));
     }
   }
   REQUIRE(noteq > 0);
@@ -498,7 +489,7 @@ static void test_limiter (const int nlev, const int n, Random& r, const bool too
   // BFB C++ vs F90.
   for (int k = 0; k < nlev; ++k)
     for (int i = 0; i < n2; ++i)
-      REQUIRE(equal(qf90(i,k), q(i,k)));
+      REQUIRE(equal(qf90(i,k), q(i,k), equal_tol));
 
   { // BFB C++ real1 vs pack
 
@@ -528,9 +519,9 @@ static void test_limiter (const int nlev, const int n, Random& r, const bool too
           g::limiter_clip_and_sum_real1(team, n2, 1, spheremp_d, qmin1(k), qmax1(k),
                                         wrk, q1); });
       deep_copy(q1h, q1); deep_copy(qmin1h, qmin1); deep_copy(qmax1h, qmax1);
-      for (int i = 0; i < n2; ++i) REQUIRE(equal(q1h(i), q(i,k)));
-      REQUIRE(equal(qmin1h(k), qmin(k)));
-      REQUIRE(equal(qmax1h(k), qmax(k)));
+      for (int i = 0; i < n2; ++i) REQUIRE(equal(q1h(i), q(i,k), equal_tol));
+      REQUIRE(equal(qmin1h(k), qmin(k), equal_tol));
+      REQUIRE(equal(qmax1h(k), qmax(k), equal_tol));
     }
   }
 }
@@ -689,7 +680,7 @@ static void test_get_temperature (Session& s) {
         for (int i = 0; i < s.np; ++i)
           for (int j = 0; j < s.np; ++j)
             for (int k = 0; k < s.nlev; ++k)
-              REQUIRE(equal(T(ie,t,i,j,k), Tf90(ie,t,k,i,j)));
+              REQUIRE(equal(T(ie,t,i,j,k), Tf90(ie,t,k,i,j), equal_tol));
   }
 }
 
@@ -744,17 +735,17 @@ test_dyn_to_fv_phys (Session& s, const int nf, const bool theta_hydrostatic_mode
 
     for (int ie = 0; ie < s.nelemd; ++ie)
       for (int i = 0; i < nf2; ++i) {
-        REQUIRE(equal(ps(ie,i), fps(ie,i)));
-        REQUIRE(equal(phis(ie,i), fphis(ie,i)));
+        REQUIRE(equal(ps(ie,i), fps(ie,i), equal_tol));
+        REQUIRE(equal(phis(ie,i), fphis(ie,i), equal_tol));
         for (int k = 0; k < s.nlev; ++k) {
-          REQUIRE(equal(omega(ie,i,k), fomega(ie,k,i)));
-          REQUIRE(equal(T(ie,i,k), fT(ie,k,i)));
+          REQUIRE(equal(omega(ie,i,k), fomega(ie,k,i), equal_tol));
+          REQUIRE(equal(T(ie,i,k), fT(ie,k,i), equal_tol));
           for (int iq = 0; iq < s.qsize; ++iq)
-            REQUIRE(equal(q (ie,i,iq,k), fq(ie,iq,k,i)));
+            REQUIRE(equal(q (ie,i,iq,k), fq(ie,iq,k,i), equal_tol));
           for (int iq = 0; iq < nq; ++iq)
-            REQUIRE(equal(q1(ie,i,iq,k), fq(ie,iq,k,i)));
+            REQUIRE(equal(q1(ie,i,iq,k), fq(ie,iq,k,i), equal_tol));
           for (int d = 0; d < 2; ++d)
-            REQUIRE(equal(uv(ie,i,d,k), fuv(ie,k,d,i)));
+            REQUIRE(equal(uv(ie,i,d,k), fuv(ie,k,d,i), equal_tol));
         }
       }
   }
