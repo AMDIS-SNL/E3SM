@@ -35,6 +35,11 @@ struct RefStates {
 
   int num_elems () const { return m_num_elems; }
 private:
+  // Set phinh_i so that the equation of state yields (nearly) the hydrostatic pressure,
+  // given dp3d, vtheta_dp, and the geopotential at the surface
+  void init_balanced_phi (const int seed, const Real ps0, const Real hyai0,
+                          const HostViewManaged<Real*[NP][NP]>& phis);
+
   int m_num_elems;
   Kokkos::TeamPolicy<ExecSpace> m_policy;
   TeamUtils<ExecSpace> m_tu;
@@ -66,6 +71,15 @@ public:
 
   void randomize(const int seed);
   void randomize(const int seed, const Real max_pressure);
+
+  // The following two overloads generate a "tame" state: a hydrostatically balanced,
+  // slowly moving reference atmosphere, plus random perturbations. In particular:
+  //  - dp3d is a (perturbed) uniform partition between ps0*hyai0 and max_pressure
+  //  - vtheta_dp = theta*dp3d, with theta a random perturbation of 300K
+  //  - phinh_i is computed so that the nonhydrostatic pressure from the equation of state
+  //    is (nearly) the hydrostatic pressure; the bottom value is phis (0 if not given)
+  //  - v is O(10) m/s, w is O(0.1) m/s
+  // This makes the state suitable for tests that need an implicit solve to converge.
   void randomize(const int seed, const Real max_pressure, const Real ps0, const Real hyai0);
   void randomize(const int seed, const Real max_pressure, const Real ps0, const Real hyai0,
                  const ExecViewUnmanaged<const Real*[NP][NP]>& phis);
