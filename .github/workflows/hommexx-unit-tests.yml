@@ -26,20 +26,19 @@ jobs:
   cpu-gcc:
     runs-on:  [ubuntu-latest]
     name: cpu-gcc
+    container:
+      image: ghcr.io/e3sm-project/e3sm-image:gnu13-openmpi4
+      # The image's default user cannot write to the runner's workspace/temp dirs
+      options: --user root
+    env:
+      # OpenMPI refuses to run as root otherwise
+      OMPI_ALLOW_RUN_AS_ROOT: 1
+      OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
+    defaults:
+      run:
+        # Login shell, so that the image's modules get loaded (and XYZ_ROOT vars set)
+        shell: bash -l {0}
     steps:
-      - name: Setup Miniconda
-        uses: conda-incubator/setup-miniconda@v3
-        with:
-          python-version: 3.9  # Specify your desired Python version
-          channels: conda-forge,defaults  # Specify your desired channels
-          auto-activate-base: false
-          activate-environment: homme-env
-      - name: Install conda packages
-        shell: bash -l {0}  # Use bash -l to ensure conda commands are available
-        run: |
-          conda install -c conda-forge                  \
-            gcc=13.2.0 gxx=13.2.0 gfortran=13.2.0 cmake \
-            openmpi openblas
       - name: Check out the repository
         uses: actions/checkout@v5
         with:
@@ -56,7 +55,6 @@ jobs:
           git submodule update --init extern/kokkos
           git submodule update --init extern/Catch2
       - name: hommexx-configure
-        shell: bash -l {0}  # Use bash -l to ensure conda commands are available
         run: |
           cd ${GITHUB_WORKSPACE}/e3sm
           mkdir build && cd build
@@ -73,12 +71,10 @@ jobs:
            \
            -S ${GITHUB_WORKSPACE}/e3sm/source/components/homme
       - name: hommexx-build
-        shell: bash -l {0}  # Use bash -l to ensure conda commands are available
         run: |
           cd ${GITHUB_WORKSPACE}/e3sm/build
           make -j4 VERBOSE=ON
       - name: hommexx-test
-        shell: bash -l {0}  # Use bash -l to ensure conda commands are available
         run: |
           cd ${GITHUB_WORKSPACE}/e3sm/build
           ctest --output-on-failure -L unit
