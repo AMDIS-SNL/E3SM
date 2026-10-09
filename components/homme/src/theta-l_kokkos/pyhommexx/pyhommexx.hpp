@@ -61,6 +61,20 @@ void run_functor(const nb::str& name,const nb::dict& params,const nb::str& dtype
 void model_init ();
 void forward(const double dt);
 
+// Dynamics advance (fwd/adj). Only ttype10_imex (time_step_type=10) has an adjoint.
+// Neither routine rotates time levels: prim_advance_exp reads n0 (and nm1 as scratch)
+// and writes np1. Call update_dynamics_levels() to move to the next step.
+nb::dict get_time_levels ();
+void update_dynamics_levels ();
+void enable_adjoint ();
+void prim_advance_exp (const double dt, const bool compute_diagnostics = false);
+void prim_advance_adj (const double dt);
+
+// Adjoint state utils. Recognized names: u, v, uv, vtheta_dp, dp, w, phi
+void zero_adj_state ();
+void get_adj_state_var (nb::ndarray<double>& arr, const nb::str& name);
+void set_adj_state_var (nb::ndarray<double>& arr, const nb::str& name);
+
 } // namespace pyhommexx
 
 #endif // PYHOMMEXX_HPP
