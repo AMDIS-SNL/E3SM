@@ -30,6 +30,12 @@ public:
             CRCPtr hybrid_bi_ptr);
 
   void random_init(int seed);
+
+  // Init with a deterministic, smooth profile: layers uniformly spaced in eta (so no
+  // layer is thinner than the others), with a very high model top (eta_top=1e-4),
+  // pure pressure levels (b=0) in the upper half and a sigma-like blending below.
+  // This is a more realistic (and better behaved) alternative to random_init.
+  void smooth_init(const Real ps0_in = 1.0);
   void compute_deltas ();
   void compute_eta ();
 
