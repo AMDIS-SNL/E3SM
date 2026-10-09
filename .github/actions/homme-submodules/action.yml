@@ -1,27 +1,17 @@
 name: 'Homme submodules'
 description: 'Initializes the submodules needed to build homme (expects the repo in $GITHUB_WORKSPACE/e3sm/source)'
 
-inputs:
-  scorpio:
-    description: 'Also init scorpio (needed when building homme with the PIO library)'
-    required: false
-    default: 'false'
-
 runs:
   using: "composite"
   steps:
     - name: get submodules
       shell: bash -l {0}
-      env:
-        WITH_SCORPIO: ${{ inputs.scorpio }}
       run: |
         git config --global url."https://github.com/".insteadOf git@github.com:
         cd ${GITHUB_WORKSPACE}/e3sm/source
         git submodule update --init --recursive cime
         git submodule update --init externals/ekat
-        if [[ "${WITH_SCORPIO}" == "true" ]]; then
-          git submodule update --init externals/scorpio
-        fi
+        git submodule update --init externals/scorpio
         cd externals/ekat
         git submodule update --init extern/kokkos
         git submodule update --init extern/Catch2

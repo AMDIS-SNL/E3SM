@@ -95,8 +95,6 @@ jobs:
         uses: ./e3sm/source/.github/actions/build-trilinos
       - name: get submodules
         uses: ./e3sm/source/.github/actions/homme-submodules
-        with:
-          scorpio: true
       - name: hommexx-configure
         uses: ./e3sm/source/.github/actions/homme-configure
         with:
@@ -138,8 +136,6 @@ jobs:
         uses: ./e3sm/source/.github/actions/build-trilinos
       - name: get submodules
         uses: ./e3sm/source/.github/actions/homme-submodules
-        with:
-          scorpio: true
       - name: install python packages
         run: |
           # Installs into the image's venv; no-op for packages already there
