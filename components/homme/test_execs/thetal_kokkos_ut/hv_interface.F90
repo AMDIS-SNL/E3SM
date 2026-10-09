@@ -15,32 +15,18 @@ module hv_interface
 
 contains
 
-  subroutine init_hv_f90 (ne, hyai, hybi, hyam, hybm, dvv, mp, ps0, hv_subcycle, &
-                          hv_nu, hv_nu_div, hv_nu_top, hv_nu_p, hv_nu_s) bind(c)
+  subroutine init_hv_f90 (hv_subcycle, hv_nu, hv_nu_div, hv_nu_top, hv_nu_p, hv_nu_s) bind(c)
+    ! Hyperviscosity-specific init. Must be called AFTER init_f90
     use control_mod,    only: hypervis_subcycle, nu, nu_div, nu_top, nu_p, nu_s
-    use thetal_test_interface, only: init_f90
     use edge_mod, only: initEdgeBuffer, edge_g
     use element_state, only: nlev_tom, nu_scale_top
     use geometry_interface_mod, only: par, elem
-    use physical_constants,     only: scale_factor, scale_factor_inv, laplacian_rigid_factor, rearth, rrearth
 
     !
     ! Inputs
     !
-    integer (kind=c_int), intent(in) :: ne, hv_subcycle
-    real (kind=real_kind), intent(in) :: hyai(nlevp), hybi(nlevp), hyam(nlev), hybm(nlev)
-    real (kind=real_kind), intent(in) :: ps0, hv_nu, hv_nu_div, hv_nu_top, hv_nu_p, hv_nu_s
-    real (kind=real_kind), intent(out) :: dvv(np,np), mp(np,np)
-    !
-    ! Locals
-    !
-    integer :: ie
-
-    scale_factor = rearth
-    scale_factor_inv = rrearth
-    laplacian_rigid_factor = rrearth
-    
-    call init_f90(ne, hyai, hybi, hyam, hybm, dvv, mp, ps0)
+    integer (kind=c_int), intent(in) :: hv_subcycle
+    real (kind=real_kind), intent(in) :: hv_nu, hv_nu_div, hv_nu_top, hv_nu_p, hv_nu_s
 
     ! There are 4 scalar fields (dp,theta,phi,w) and 1 vector field (v)
     ! Recall that the interface quantities are NOT exchanged at the surface

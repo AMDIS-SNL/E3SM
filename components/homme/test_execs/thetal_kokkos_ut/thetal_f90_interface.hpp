@@ -18,15 +18,18 @@ void init_f90 (const int& ne,
                Homme::Real* dvv, Homme::Real* mp,
                const Homme::Real& ps0);
 
-// Same as init_f90, but also inits the hyperviscosity-related f90 data.
+// Same as init_f90, but for a planar mesh (ne_x_in x ne_y_in elements)
+void init_planar_f90 (const int& ne_x_in, const int& ne_y_in,
+                      const Homme::Real* hyai_ptr, const Homme::Real* hybi_ptr,
+                      const Homme::Real* hyam_ptr, const Homme::Real* hybm_ptr,
+                      Homme::Real* dvv, Homme::Real* mp,
+                      const Homme::Real& ps0);
+
+// Init the hyperviscosity-related f90 data. Must be called AFTER init_f90.
 // HV's boundary exchange assumes every element has 4 real edge connections,
 // so a real (cube-sphere) mesh/connectivity must be built on the F90 side
 // (a hand-rolled, connection-less Connectivity segfaults in unpack()).
-void init_hv_f90 (const int& ne,
-                  const Homme::Real* hyai_ptr, const Homme::Real* hybi_ptr,
-                  const Homme::Real* hyam_ptr, const Homme::Real* hybm_ptr,
-                  Homme::Real* dvv, Homme::Real* mp,
-                  const Homme::Real& ps0, const int& hypervis_subcycle,
+void init_hv_f90 (const int& hypervis_subcycle,
                   const Homme::Real& nu, const Homme::Real& nu_div, const Homme::Real& nu_top,
                   const Homme::Real& nu_p, const Homme::Real& nu_s);
 

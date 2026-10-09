@@ -16,6 +16,7 @@ module thetal_test_interface
   public :: init_f90
   public :: cleanup_f90
   public :: init_geo_views_f90
+  public :: set_hvcoord_f90
   public :: initialize_reference_states_f90
 
 contains
@@ -128,7 +129,6 @@ contains
   subroutine init_common(hyai, hybi, hyam, hybm, dvv, mp, ps0)
     use element_state,          only: allocate_element_arrays, setup_element_pointers_ie
     use mass_matrix_mod,        only: mass_matrix
-    use hybvcoord_mod,          only: set_layer_locations
     use dimensions_mod,         only: nelemd, nlev, nlevp, np
     use geometry_interface_mod, only: par, elem
     !
@@ -140,7 +140,7 @@ contains
     !
     ! Locals
     !
-    integer :: ie, k
+    integer :: ie
     
     call allocate_element_arrays(nelemd)
 
@@ -154,6 +154,24 @@ contains
       call setup_element_pointers_ie(ie,elem(ie)%state, elem(ie)%derived, elem(ie)%accum)
     enddo
 
+    call set_hvcoord_f90(hyai, hybi, hyam, hybm, ps0)
+
+    deriv%dvv = dvv
+  end subroutine init_common
+
+  subroutine set_hvcoord_f90 (hyai, hybi, hyam, hybm, ps0) bind(c)
+    use hybvcoord_mod,  only: set_layer_locations
+    use dimensions_mod, only: nlev, nlevp
+    !
+    ! Inputs
+    !
+    real (kind=real_kind), intent(in) :: hyai(nlevp), hybi(nlevp), hyam(nlev), hybm(nlev)
+    real (kind=real_kind), intent(in) :: ps0
+    !
+    ! Locals
+    !
+    integer :: k
+
     hvcoord%hyai = hyai
     hvcoord%hybi = hybi
     hvcoord%hyam = hyam
@@ -165,9 +183,7 @@ contains
     enddo
 
     call set_layer_locations (hvcoord,.false.,.false.)
-
-    deriv%dvv = dvv
-  end subroutine init_common
+  end subroutine set_hvcoord_f90
 
   subroutine init_geo_views_f90 (d_ptr, dinv_ptr,        &
                        phis_ptr, gradphis_ptr, fcor_ptr, &

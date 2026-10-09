@@ -7,32 +7,30 @@
 namespace Homme {
 
 CubeSphereTestSession::
-CubeSphereTestSession (const int ne_in, const unsigned int seed_in)
- : CubeSphereTestSession(ne_in, seed_in,
-     [] (CubeSphereTestSession& s) {
-       init_f90(s.ne, s.hyai.data(), s.hybi.data(), s.hyam.data(), s.hybm.data(),
-                s.dvv.data(), s.mp.data(), s.ps0);
-     },
-     [] () { cleanup_f90(); })
-{
-  // Nothing to do
-}
-
-CubeSphereTestSession::
 CubeSphereTestSession (const int ne_in, const unsigned int seed_in,
-                       const InitFn& f90_init,
-                       const std::function<void()>& f90_cleanup)
+                       const bool is_sphere, const VCoord vcoord_type)
  : ne (ne_in)
  , seed (seed_in)
- , dvv (NP*NP)
- , mp  (NP*NP)
  , hvcoord (Context::singleton().create<HybridVCoord>())
  , ref_FE  (Context::singleton().create<ReferenceElement>())
- , m_f90_cleanup (f90_cleanup)
 {
-  random_init_hvcoord();
+  // Init hvcoord, and copy it to the host-side members
+  if (vcoord_type==VCoord::Smooth) {
+    hvcoord.smooth_init();
+  } else {
+    hvcoord.random_init(seed);
+  }
+  update_host_hvcoord();
 
-  f90_init(*this);
+  // This also creates the Connectivity in the Context
+  std::vector<Real> dvv(NP*NP), mp(NP*NP);
+  if (is_sphere) {
+    init_f90(ne, hyai.data(), hybi.data(), hyam.data(), hybm.data(),
+             dvv.data(), mp.data(), ps0);
+  } else {
+    init_planar_f90(ne+1, ne, hyai.data(), hybi.data(), hyam.data(), hybm.data(),
+                    dvv.data(), mp.data(), ps0);
+  }
 
   ref_FE.init_mass(mp.data());
   ref_FE.init_deriv(dvv.data());
@@ -40,7 +38,7 @@ CubeSphereTestSession (const int ne_in, const unsigned int seed_in,
 
 CubeSphereTestSession::~CubeSphereTestSession ()
 {
-  m_f90_cleanup();
+  cleanup_f90();
   Context::finalize_singleton();
 }
 
@@ -49,9 +47,8 @@ int CubeSphereTestSession::num_elems () const
   return Context::singleton().get<Connectivity>().get_num_local_elements();
 }
 
-void CubeSphereTestSession::random_init_hvcoord ()
+void CubeSphereTestSession::update_host_hvcoord ()
 {
-  hvcoord.random_init(seed);
   ps0 = hvcoord.ps0;
 
   auto h_ai = Kokkos::create_mirror(hvcoord.hybrid_ai);
