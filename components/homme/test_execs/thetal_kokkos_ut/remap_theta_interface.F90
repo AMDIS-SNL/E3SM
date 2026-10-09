@@ -9,26 +9,12 @@ module remap_interface
   public :: run_remap_f90
 contains
 
-  subroutine init_remap_f90 (ne, hyai, hybi, hyam, hybm, dvv, mp, ps0) bind(c)
-    use iso_c_binding,          only: c_int
-    use thetal_test_interface,  only: init_f90
-    use dimensions_mod,         only: nlev, nlevp, np
-    use edge_mod,          only: initEdgeBuffer, edge_g
-    use geometry_interface_mod, only: par, elem
-    !
-    ! Inputs
-    !
-    integer (kind=c_int), intent(in) :: ne
-    real (kind=real_kind), intent(in) :: hyai(nlevp), hybi(nlevp), hyam(nlev), hybm(nlev)
-    real (kind=real_kind), intent(in) :: ps0
-    real (kind=real_kind), intent(out) :: dvv(np,np), mp(np,np)
-    !
-    ! Locals
-    !
+  subroutine init_remap_f90 () bind(c)
+    ! Remap-specific init. Must be called AFTER init_f90
+    use edge_mod,               only: initEdgeBuffer, edge_g
+    use geometry_interface_mod, only: par
 
-    call init_f90(ne, hyai, hybi, hyam, hybm, dvv, mp, ps0)
-
-    ! I don't reall need it for this test, but cleanup_f90 deallocates the edge buffer,
+    ! I don't really need it for this test, but cleanup_f90 deallocates the edge buffer,
     ! so not init-ing it would give a runtime error.
     call initEdgeBuffer(par,edge_g,elem,1)
   end subroutine init_remap_f90

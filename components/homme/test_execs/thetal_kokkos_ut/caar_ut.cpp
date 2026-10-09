@@ -4,6 +4,7 @@
 
 #include "Types.hpp"
 #include "thetal_f90_interface.hpp"
+#include "thetal_ut_session.hpp"
 #include "Context.hpp"
 #include "CaarFunctorImpl.hpp"
 #include "SimulationParams.hpp"
@@ -19,11 +20,8 @@
 using namespace Homme;
 
 extern "C" {
-void init_caar_f90 (const int& ne,
-               const Real* hyai_ptr, const Real* hybi_ptr,
-               const Real* hyam_ptr, const Real* hybm_ptr,
-               Real* dvv, Real* mp,
-               const Real& ps0);
+// Caar-specific f90 init (edge buffer). Must be called after init_f90
+void init_caar_f90 ();
 void run_caar_f90 (const int& nm1, const int& n0, const int& np1,
                    const Real& dt, const Real& eta_ave_w,
                    const Real& scale1, const Real& scale2, const Real& scale3,
@@ -62,37 +60,15 @@ TEST_CASE("caar", "caar_testing") {
   params.dp3d_thresh = 0.125;
   params.vtheta_thresh = 100.0;
 
-  // Create and init hvcoord and ref_elem, needed to init the fortran interface
-  auto& hvcoord = c.create<HybridVCoord>();
-  auto& ref_FE  = c.create<ReferenceElement>();
-  hvcoord.random_init(seed);
-
-  auto hyai = Kokkos::create_mirror_view(hvcoord.hybrid_ai);
-  auto hybi = Kokkos::create_mirror_view(hvcoord.hybrid_bi);
-  auto hyam = Kokkos::create_mirror_view(hvcoord.hybrid_am);
-  auto hybm = Kokkos::create_mirror_view(hvcoord.hybrid_bm);
-  Kokkos::deep_copy(hyai,hvcoord.hybrid_ai);
-  Kokkos::deep_copy(hybi,hvcoord.hybrid_bi);
-  Kokkos::deep_copy(hyam,hvcoord.hybrid_am);
-  Kokkos::deep_copy(hybm,hvcoord.hybrid_bm);
-  HostViewManaged<Real[NUM_PHYSICAL_LEV]> hyam_r(""),hybm_r("");
-  for (int i=0;i<NUM_PHYSICAL_LEV;++i) {
-    int ilev = i / VECTOR_SIZE;
-    int ivec = i % VECTOR_SIZE;
-    hyam_r(i) = ADValue(hyam(ilev)[ivec]);
-    hybm_r(i) = ADValue(hybm(ilev)[ivec]);
-  }
-
-  std::vector<Real> dvv(NP*NP);
-  std::vector<Real> mp(NP*NP);
-
-  // This will also init the c connectivity.
-  init_caar_f90(ne,hyai.data(),hybi.data(),hyam_r.data(),hybm_r.data(),dvv.data(),mp.data(),hvcoord.ps0);
-  ref_FE.init_mass(mp.data());
-  ref_FE.init_deriv(dvv.data());
+  // Create the f90 mesh/connectivity, and init hvcoord and ref_FE. The session also takes
+  // care of the f90 and Context cleanup at the end of the scope.
+  CubeSphereTestSession session(ne,seed);
+  init_caar_f90();
+  auto& hvcoord = session.hvcoord;
+  auto& ref_FE  = session.ref_FE;
 
   // Create and init elements
-  const int num_elems = c.get<Connectivity>().get_num_local_elements();
+  const int num_elems = session.num_elems();
 
   auto& elems = c.create<Elements>();
   elems.init(num_elems,false,true,PhysicalConstants::rearth0);
@@ -100,47 +76,8 @@ TEST_CASE("caar", "caar_testing") {
   auto& geo = elems.m_geometry;
   elems.m_geometry.randomize(seed); // Only needed for phis and gradphis
 
-  // Init f90
-  auto d        = Kokkos::create_mirror_view(geo.m_d);
-  auto dinv     = Kokkos::create_mirror_view(geo.m_dinv);
-  auto phis     = Kokkos::create_mirror_view(geo.m_phis);
-  auto gradphis = Kokkos::create_mirror_view(geo.m_gradphis);
-  auto fcor     = Kokkos::create_mirror_view(geo.m_fcor);
-  auto spmp     = Kokkos::create_mirror_view(geo.m_spheremp);
-  auto rspmp    = Kokkos::create_mirror_view(geo.m_rspheremp);
-  auto tVisc    = Kokkos::create_mirror_view(geo.m_tensorvisc);
-  auto sph2c    = Kokkos::create_mirror_view(geo.m_vec_sph2cart);
-  auto mdet     = Kokkos::create_mirror_view(geo.m_metdet);
-  auto minv     = Kokkos::create_mirror_view(geo.m_metinv);
-  Kokkos::deep_copy(phis,geo.m_phis);
-  Kokkos::deep_copy(gradphis,geo.m_gradphis);
-
-  Real* d_ptr        = d.data();
-  Real* dinv_ptr     = dinv.data();
-  Real* spmp_ptr     = spmp.data();
-  Real* rspmp_ptr    = rspmp.data();
-  Real* tVisc_ptr    = tVisc.data();
-  Real* sph2c_ptr    = sph2c.data();
-  Real* mdet_ptr     = mdet.data();
-  Real* minv_ptr     = minv.data();
-  const Real* phis_ptr     = phis.data();
-  const Real* gradphis_ptr = gradphis.data();
-  Real* fcor_ptr     = fcor.data();
-
-  // Get the f90 values for geometric views.
-  init_geo_views_f90(d_ptr,dinv_ptr,phis_ptr,gradphis_ptr,fcor_ptr,
-                     spmp_ptr,rspmp_ptr,tVisc_ptr,
-                     sph2c_ptr,mdet_ptr,minv_ptr);
-
-  Kokkos::deep_copy(geo.m_d,d);
-  Kokkos::deep_copy(geo.m_dinv,dinv);
-  Kokkos::deep_copy(geo.m_spheremp,spmp);
-  Kokkos::deep_copy(geo.m_rspheremp,rspmp);
-  Kokkos::deep_copy(geo.m_tensorvisc,tVisc);
-  Kokkos::deep_copy(geo.m_vec_sph2cart,sph2c);
-  Kokkos::deep_copy(geo.m_metdet,mdet);
-  Kokkos::deep_copy(geo.m_metinv,minv);
-  Kokkos::deep_copy(geo.m_fcor,fcor);
+  // Get the f90 values for geometric views. Pass the randomized phis and gradphis to f90.
+  session.init_geometry(geo,false);
 
   // Get or create and init other structures needed by HVF
   auto& bm = c.create<MpiBuffersManager>();
@@ -494,6 +431,4 @@ TEST_CASE("caar", "caar_testing") {
     }
   }
 
-  cleanup_f90();
-  c.finalize_singleton();
 }
