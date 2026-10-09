@@ -18,8 +18,11 @@ void init_f90 (const int& ne,
                Homme::Real* dvv, Homme::Real* mp,
                const Homme::Real& ps0);
 
-// Same as init_f90, but for a planar mesh (ne_x_in x ne_y_in elements)
-void init_planar_f90 (const int& ne_x_in, const int& ne_y_in,
+// Same as init_f90, but for a planar mesh with ne_x x ne_y elements, covering the domain
+// [sx,sx+lx] x [sy,sy+ly] (in meters)
+void init_planar_f90 (const int& ne_x, const int& ne_y,
+                      const Homme::Real& lx, const Homme::Real& ly,
+                      const Homme::Real& sx, const Homme::Real& sy,
                       const Homme::Real* hyai_ptr, const Homme::Real* hybi_ptr,
                       const Homme::Real* hyam_ptr, const Homme::Real* hybm_ptr,
                       Homme::Real* dvv, Homme::Real* mp,

@@ -10,8 +10,16 @@
 
 namespace Homme {
 
+// Size and offset (in meters) of a planar domain: [sx,sx+lx] x [sy,sy+ly]
+struct PlanarDomain {
+  Real lx = 10000;
+  Real ly = 5000;
+  Real sx = -5000;
+  Real sy = 2500;
+};
+
 // Common setup/cleanup of the unit tests that rely on the F90 side to create
-// a mesh (grid, decomposition, connectivity, geometry), by default a cubed sphere.
+// a mesh (grid, decomposition, connectivity, geometry), either a cubed sphere or a planar one.
 //
 // The constructor
 //  - creates a HybridVCoord and a ReferenceElement in the Context singleton,
@@ -37,10 +45,14 @@ public:
     Smooth   // HybridVCoord::smooth_init(): deterministic, uniform in eta, realistic model top
   };
 
-  // If is_sphere=false, build a planar mesh with (ne+1)*ne elements, rather than a cubed sphere
+  // Cubed sphere mesh, with ne x ne elements per cube face
   ThetalUnitTestSession (const int ne, const unsigned int seed,
-                         const bool is_sphere = true,
                          const VCoord vcoord_type = VCoord::Random);
+
+  // Planar mesh, with nex x ney elements
+  ThetalUnitTestSession (const int nex, const int ney, const unsigned int seed,
+                         const VCoord vcoord_type = VCoord::Random,
+                         const PlanarDomain& domain = PlanarDomain());
 
   ~ThetalUnitTestSession ();
 
@@ -58,8 +70,11 @@ public:
   //       in geo are passed to F90.
   void init_geometry (ElementsGeometry& geo, const bool zero_phis = true) const;
 
-  // Mesh resolution (number of elements per cube edge)
-  const int ne;
+  // Mesh resolution: number of elements in each direction (for a cubed sphere,
+  // along the edge of each cube face; so nex=ney=ne)
+  const int nex;
+  const int ney;
+  const bool is_planar;
 
   // Random seed used to init the hvcoord (not used if vcoord_type=VCoord::Smooth)
   const unsigned int seed;
@@ -73,6 +88,12 @@ public:
   ReferenceElement& ref_FE;
 
 private:
+  enum class Mesh { CubedSphere, Planar };
+
+  // The actual constructor, which all the public ones forward to
+  ThetalUnitTestSession (const Mesh mesh, const int nex, const int ney, const unsigned int seed,
+                         const VCoord vcoord_type, const PlanarDomain& domain);
+
   void update_host_hvcoord ();
 };
 

@@ -8,8 +8,27 @@ namespace Homme {
 
 ThetalUnitTestSession::
 ThetalUnitTestSession (const int ne_in, const unsigned int seed_in,
-                       const bool is_sphere, const VCoord vcoord_type)
- : ne (ne_in)
+                       const VCoord vcoord_type)
+ : ThetalUnitTestSession(Mesh::CubedSphere, ne_in, ne_in, seed_in, vcoord_type, PlanarDomain())
+{
+  // Nothing to do
+}
+
+ThetalUnitTestSession::
+ThetalUnitTestSession (const int nex_in, const int ney_in, const unsigned int seed_in,
+                       const VCoord vcoord_type, const PlanarDomain& domain)
+ : ThetalUnitTestSession(Mesh::Planar, nex_in, ney_in, seed_in, vcoord_type, domain)
+{
+  // Nothing to do
+}
+
+ThetalUnitTestSession::
+ThetalUnitTestSession (const Mesh mesh, const int nex_in, const int ney_in,
+                       const unsigned int seed_in, const VCoord vcoord_type,
+                       const PlanarDomain& domain)
+ : nex (nex_in)
+ , ney (ney_in)
+ , is_planar (mesh==Mesh::Planar)
  , seed (seed_in)
  , hvcoord (Context::singleton().create<HybridVCoord>())
  , ref_FE  (Context::singleton().create<ReferenceElement>())
@@ -24,12 +43,13 @@ ThetalUnitTestSession (const int ne_in, const unsigned int seed_in,
 
   // This also creates the Connectivity in the Context
   std::vector<Real> dvv(NP*NP), mp(NP*NP);
-  if (is_sphere) {
-    init_f90(ne, hyai.data(), hybi.data(), hyam.data(), hybm.data(),
-             dvv.data(), mp.data(), ps0);
-  } else {
-    init_planar_f90(ne+1, ne, hyai.data(), hybi.data(), hyam.data(), hybm.data(),
+  if (is_planar) {
+    init_planar_f90(nex, ney, domain.lx, domain.ly, domain.sx, domain.sy,
+                    hyai.data(), hybi.data(), hyam.data(), hybm.data(),
                     dvv.data(), mp.data(), ps0);
+  } else {
+    init_f90(nex, hyai.data(), hybi.data(), hyam.data(), hybm.data(),
+             dvv.data(), mp.data(), ps0);
   }
 
   ref_FE.init_mass(mp.data());

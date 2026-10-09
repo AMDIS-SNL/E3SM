@@ -147,8 +147,13 @@ struct Session {
 
     // Create hvcoord and ref_FE, and init f90 (including its mesh/connectivity).
     // Use a smooth hvcoord, so that levels are not too thin.
-    f90_session = std::make_unique<ThetalUnitTestSession>(
-        ne, seed, is_sphere, ThetalUnitTestSession::VCoord::Smooth);
+    const auto vcoord = ThetalUnitTestSession::VCoord::Smooth;
+    if (is_sphere) {
+      f90_session = std::make_unique<ThetalUnitTestSession>(ne, seed, vcoord);
+    } else {
+      // Planar mesh, with a different number of elements in each direction
+      f90_session = std::make_unique<ThetalUnitTestSession>(ne+1, ne, seed, vcoord);
+    }
     init_gllfvremap_f90(qsize);
     h = f90_session->hvcoord;
     auto& ref_FE = f90_session->ref_FE;

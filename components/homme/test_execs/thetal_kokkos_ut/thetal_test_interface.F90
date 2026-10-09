@@ -22,14 +22,8 @@ module thetal_test_interface
 contains
 
   subroutine init_f90 (ne, hyai, hybi, hyam, hybm, dvv, mp, ps0) bind(c)
-    use control_mod,            only: cubed_sphere_map
-    use cube_mod,               only: cube_init_atomic, set_corner_coordinates
-    use derivative_mod,         only: derivinit
-    use dimensions_mod,         only: nelemd, nlev, nlevp, np
-    use geometry_interface_mod, only: initmp_f90, init_cube_geometry_f90, init_connectivity_f90
-    use geometry_interface_mod, only: par, elem
-    use quadrature_mod,         only: gausslobatto, quadrature_t
-    use physical_constants,     only: scale_factor, scale_factor_inv, laplacian_rigid_factor, rearth, rrearth
+    ! Create a cubed sphere mesh, with ne x ne elements per cube face
+    use dimensions_mod, only: nlev, nlevp, np
     !
     ! Inputs
     !
@@ -37,94 +31,117 @@ contains
     real (kind=real_kind), intent(in) :: hyai(nlevp), hybi(nlevp), hyam(nlev), hybm(nlev)
     real (kind=real_kind), intent(in) :: ps0
     real (kind=real_kind), intent(out) :: dvv(np,np), mp(np,np)
-    !
-    ! Locals
-    !
-    integer :: ie
-    type (quadrature_t) :: gp
 
-    scale_factor = rearth
-    scale_factor_inv = rrearth
-    laplacian_rigid_factor = rrearth
-
-    call derivinit(deriv)
-
-    call initmp_f90()
-    call init_cube_geometry_f90(ne)
-    call init_connectivity_f90()
-
-    cubed_sphere_map = 0
-    gp=gausslobatto(np)  ! GLL points
-    do ie=1,nelemd
-      call set_corner_coordinates(elem(ie))
-    end do
-    do ie=1,nelemd
-      call cube_init_atomic(elem(ie),gp%points)
-    enddo
-
-    call init_common(hyai, hybi, hyam, hybm, dvv, mp, ps0)   
+    call init_mesh(.false., ne, ne, hyai, hybi, hyam, hybm, dvv, mp, ps0)
   end subroutine init_f90
 
-  subroutine init_planar_f90 (ne_x_in, ne_y_in, hyai, hybi, hyam, hybm, dvv, mp, ps0) bind(c)
-    ! Alternative to init_f90 to create a planar model.
-    use control_mod,            only: cubed_sphere_map, geometry, topology
-    use planar_mod,             only: plane_init_atomic, plane_set_corner_coordinates
-    use derivative_mod,         only: derivinit
-    use dimensions_mod,         only: nelemd, nlev, nlevp, np, ne_x, ne_y
-    use geometry_interface_mod, only: initmp_f90, init_cube_geometry_f90, init_connectivity_f90, &
-                                      par, elem
-    use quadrature_mod,         only: gausslobatto, quadrature_t
-    use physical_constants,     only: scale_factor, scale_factor_inv, laplacian_rigid_factor, &
-                                      Sx, Sy, Lx, Ly, dx, dy, dx_ref, dy_ref, domain_size
+  subroutine init_planar_f90 (ne_x, ne_y, Lx, Ly, Sx, Sy, hyai, hybi, hyam, hybm, dvv, mp, ps0) bind(c)
+    ! Create a planar mesh, with ne_x x ne_y elements, covering the domain
+    ! [Sx,Sx+Lx] x [Sy,Sy+Ly] (in meters)
+    use dimensions_mod, only: nlev, nlevp, np
     !
     ! Inputs
     !
+    integer (kind=c_int), intent(in) :: ne_x, ne_y
+    real (kind=real_kind), intent(in) :: Lx, Ly, Sx, Sy
+    real (kind=real_kind), intent(in) :: hyai(nlevp), hybi(nlevp), hyam(nlev), hybm(nlev)
+    real (kind=real_kind), intent(in) :: ps0
+    real (kind=real_kind), intent(out) :: dvv(np,np), mp(np,np)
+
+    call init_mesh(.true., ne_x, ne_y, hyai, hybi, hyam, hybm, dvv, mp, ps0, [Lx, Ly, Sx, Sy])
+  end subroutine init_planar_f90
+
+  subroutine init_mesh (planar, ne_x_in, ne_y_in, hyai, hybi, hyam, hybm, dvv, mp, ps0, domain)
+    ! Common part of init_f90 and init_planar_f90.
+    ! The only differences between a cubed sphere and a planar mesh are in the settings
+    ! that determine the topology/geometry (and the scale factors), and in the routines
+    ! that set the element corners and the GLL points.
+    use control_mod,            only: cubed_sphere_map, geometry, topology
+    use cube_mod,               only: cube_init_atomic, set_corner_coordinates
+    use planar_mod,             only: plane_init_atomic, plane_set_corner_coordinates
+    use derivative_mod,         only: derivinit
+    use dimensions_mod,         only: nelemd, nlev, nlevp, np, ne_x, ne_y
+    use geometry_interface_mod, only: initmp_f90, init_cube_geometry_f90, init_connectivity_f90
+    use geometry_interface_mod, only: par, elem
+    use quadrature_mod,         only: gausslobatto, quadrature_t
+    use physical_constants,     only: scale_factor, scale_factor_inv, laplacian_rigid_factor, &
+                                      rearth, rrearth, Sx, Sy, Lx, Ly, dx, dy, dx_ref, dy_ref, domain_size
+    !
+    ! Inputs
+    !
+    logical, intent(in) :: planar
+    ! For a cubed sphere, ne_x_in is ne (the number of elements per cube face edge), and ne_y_in is unused
     integer (kind=c_int), intent(in) :: ne_x_in, ne_y_in
     real (kind=real_kind), intent(in) :: hyai(nlevp), hybi(nlevp), hyam(nlev), hybm(nlev)
     real (kind=real_kind), intent(in) :: ps0
     real (kind=real_kind), intent(out) :: dvv(np,np), mp(np,np)
+    ! Only used for planar meshes: Lx, Ly, Sx, Sy
+    real (kind=real_kind), intent(in), optional :: domain(4)
     !
     ! Locals
     !
     integer :: ie
     type (quadrature_t) :: gp
 
-    ne_x = ne_x_in
-    ne_y = ne_y_in
+    ! Set these explicitly, so that a cubed sphere mesh can be created
+    ! after a planar one (and vice versa) in the same process
+    if (planar) then
+      topology = 'plane'
+      geometry = 'plane'
 
-    scale_factor = 1
-    scale_factor_inv = 1
-    laplacian_rigid_factor = 0
-    topology = 'plane'
-    geometry = 'plane'
-    Lx = 10000
-    Ly = 5000
-    Sx = -5000
-    Sy = 2500
+      ne_x = ne_x_in
+      ne_y = ne_y_in
 
-    domain_size = Lx * Ly
-    dx = Lx/ne_x
-    dy = Ly/ne_y
-    dx_ref = 1.0D0/ne_x
-    dy_ref = 1.0D0/ne_y
+      scale_factor = 1
+      scale_factor_inv = 1
+      laplacian_rigid_factor = 0
+
+      Lx = domain(1)
+      Ly = domain(2)
+      Sx = domain(3)
+      Sy = domain(4)
+
+      domain_size = Lx * Ly
+      dx = Lx/ne_x
+      dy = Ly/ne_y
+      dx_ref = 1.0D0/ne_x
+      dy_ref = 1.0D0/ne_y
+    else
+      topology = 'cube'
+      geometry = 'sphere'
+
+      scale_factor = rearth
+      scale_factor_inv = rrearth
+      laplacian_rigid_factor = rrearth
+    endif
 
     call derivinit(deriv)
 
     call initmp_f90()
-    call init_cube_geometry_f90(ne_x) ! ne_x is unused
+    call init_cube_geometry_f90(ne_x_in) ! For planar meshes, the arg is unused (ne_x and ne_y are used)
     call init_connectivity_f90()
 
-    cubed_sphere_map = 2
     gp=gausslobatto(np)  ! GLL points
-    do ie=1,nelemd
-      call plane_set_corner_coordinates(elem(ie))
-    end do
-    do ie=1,nelemd
-      call plane_init_atomic(elem(ie),gp%points)
-    enddo
+    if (planar) then
+      cubed_sphere_map = 2
+      do ie=1,nelemd
+        call plane_set_corner_coordinates(elem(ie))
+      end do
+      do ie=1,nelemd
+        call plane_init_atomic(elem(ie),gp%points)
+      enddo
+    else
+      cubed_sphere_map = 0
+      do ie=1,nelemd
+        call set_corner_coordinates(elem(ie))
+      end do
+      do ie=1,nelemd
+        call cube_init_atomic(elem(ie),gp%points)
+      enddo
+    endif
 
     call init_common(hyai, hybi, hyam, hybm, dvv, mp, ps0)
-  end subroutine init_planar_f90
+  end subroutine init_mesh
 
   subroutine init_common(hyai, hybi, hyam, hybm, dvv, mp, ps0)
     use element_state,          only: allocate_element_arrays, setup_element_pointers_ie
