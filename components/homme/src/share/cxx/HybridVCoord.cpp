@@ -12,6 +12,7 @@
 #include "utilities/ViewUtils.hpp"
 
 #include <random>
+#include <vector>
 
 namespace Homme
 {
@@ -204,6 +205,40 @@ void HybridVCoord::random_init(int seed)
   compute_eta();
 
   m_inited = true;
+}
+
+void HybridVCoord::smooth_init (const Real ps0_in)
+{
+  constexpr int n  = NUM_INTERFACE_LEV;
+  constexpr int nh = (n+1)/2;  // Number of interfaces with b>0 (the lower half)
+  constexpr int nh0 = n-nh;    // First interface with b>0
+  static_assert (nh>1, "Error! Too few levels for smooth_init.\n");
+
+  constexpr Real eta_top = 1e-4;
+  constexpr Real b_min = 0.02;
+
+  std::vector<Real> ai(n), bi(n,0.0), am(NUM_PHYSICAL_LEV), bm(NUM_PHYSICAL_LEV);
+
+  // b: 0 in the upper half, then linearly growing from b_min to 1
+  for (int i=0; i<nh; ++i) {
+    const Real a = Real(i)/(nh-1);
+    bi[nh0+i] = (1-a)*b_min + a;
+  }
+
+  // eta=a+b is uniform in [eta_top,1], so that all layers have the same thickness
+  for (int i=0; i<n; ++i) {
+    const Real a = Real(i)/(n-1);
+    const Real eta = (1-a)*eta_top + a;
+    ai[i] = eta - bi[i];
+    EKAT_REQUIRE_MSG (ai[i]>=0, "Error! Negative hybrid_a coefficient in smooth_init.\n");
+  }
+
+  for (int i=0; i<NUM_PHYSICAL_LEV; ++i) {
+    am[i] = (ai[i] + ai[i+1])/2;
+    bm[i] = (bi[i] + bi[i+1])/2;
+  }
+
+  init(ps0_in, am.data(), ai.data(), bm.data(), bi.data());
 }
 
 void HybridVCoord::compute_deltas ()
