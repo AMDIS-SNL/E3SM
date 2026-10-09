@@ -30,7 +30,7 @@ using HVM = HostViewManaged<T>;
 // ============= THETA MODEL FORCING ================ //
 
 extern "C" {
-void init_f90 (const int& num_elems,
+void init_forcing_f90 (const int& num_elems,
                const Real* hyai_ptr, const Real* hybi_ptr,
                const Real* hyam_ptr, const Real* hybm_ptr,
                const Real* gradphis,
@@ -42,7 +42,7 @@ void set_forcing_pointers_f90 (Real*& q_ptr, Real*& fq_ptr, Real*& qdp_ptr,
                                Real*& fvtheta_ptr, Real*& fphi_ptr);
 void tracers_forcing_f90 (const Real& dt, const int& np1, const int& np1_qdp, const bool& hydrostatic, const bool& moist, const bool& adjustment);
 void dynamics_forcing_f90 (const Real& dt, const int& np1);
-void cleanup_f90();
+void cleanup_forcing_f90();
 } // extern "C"
 
 TEST_CASE("forcing", "forcing") {
@@ -104,7 +104,7 @@ TEST_CASE("forcing", "forcing") {
     h_hyam_r(i) = ADValue(h_hyam(ilev)[ivec]);
     h_hybm_r(i) = ADValue(h_hybm(ilev)[ivec]);
   }
-  init_f90(num_elems,
+  init_forcing_f90(num_elems,
            h_hyai.data(), h_hybi.data(),
            h_hyam_r.data(),
            h_hybm_r.data(),
@@ -386,7 +386,7 @@ TEST_CASE("forcing", "forcing") {
     }
   }
 
-  cleanup_f90();
+  cleanup_forcing_f90();
 
   c.finalize_singleton();
 }

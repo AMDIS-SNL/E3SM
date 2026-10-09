@@ -26,6 +26,8 @@ HommeConfigFile (${THIS_CONFIG_IN} ${THIS_CONFIG_HC} ${THIS_CONFIG_H} )
 ADD_LIBRARY(thetal_kokkos_ut_lib
   ${THETAL_DEPS}
   ${TEST_SRC_F90}
+  ${SHARE_UT_DIR}/geometry_interface.F90
+  ${THETA_UT_DIR}/thetal_test_interface.F90
   ${SRC_DIR}/checksum_mod.F90
   ${SRC_DIR}/common_io_mod.F90
   ${SRC_DIR}/common_movie_mod.F90
@@ -84,134 +86,69 @@ SET (CONFIG_DEFINES HAVE_CONFIG_H)
 # of where in the file that first use is.
 include (EkatCreateUnitTest)
 
+# Include dirs common to all the unit tests built with cxx_unit_test
+SET (THETAL_UT_INCLUDE_DIRS
+  ${SRC_THETA_DIR}/cxx
+  ${SRC_SHARE_DIR}
+  ${SRC_SHARE_DIR}/cxx
+  ${THETA_UT_DIR}
+  ${THETA_LIB_MODULE_DIR}
+  ${UTILS_TIMING_SRC_DIR}
+  ${UTILS_TIMING_BIN_DIR}
+  ${CMAKE_CURRENT_BINARY_DIR}
+  ${CMAKE_BINARY_DIR}/src/share/cxx
+)
+
+# Thin wrapper around cxx_unit_test, which also links against thetal_kokkos_ut_lib.
+# Note: thetal_test_interface.F90 and geometry_interface.F90 are part of the lib,
+#       so they must NOT be listed in F90_SRCS.
+#  - CXX_SRCS:     the C++ sources of the test
+#  - F90_SRCS:     the test-specific F90 sources (if any)
+#  - INCLUDE_DIRS: additional include dirs (on top of THETAL_UT_INCLUDE_DIRS)
+#  - NUM_CPUS:     number of MPI ranks (defaults to USE_NUM_PROCS, or 1 if not set)
+FUNCTION (thetal_cxx_unit_test test_name)
+  CMAKE_PARSE_ARGUMENTS (TUT "" "NUM_CPUS" "CXX_SRCS;F90_SRCS;INCLUDE_DIRS" ${ARGN})
+  IF (NOT TUT_NUM_CPUS)
+    IF (USE_NUM_PROCS)
+      SET (TUT_NUM_CPUS ${USE_NUM_PROCS})
+    ELSE ()
+      SET (TUT_NUM_CPUS 1)
+    ENDIF ()
+  ENDIF ()
+  cxx_unit_test (${test_name} "${TUT_F90_SRCS}" "${TUT_CXX_SRCS}"
+                 "${THETAL_UT_INCLUDE_DIRS};${TUT_INCLUDE_DIRS}" "${CONFIG_DEFINES}" ${TUT_NUM_CPUS})
+  TARGET_LINK_LIBRARIES (${test_name} thetal_kokkos_ut_lib)
+ENDFUNCTION ()
+
 IF (HOMMEXX_BFB_TESTING)
   ### Equation of state unit tests
 
-  SET (EOS_UT_CXX_SRCS
-    ${THETA_UT_DIR}/eos_ut.cpp
-    )
-
-  SET (EOS_UT_F90_SRCS
-    ${THETA_UT_DIR}/eos_interface.F90
-    )
-
-  SET (EOS_UT_INCLUDE_DIRS
-    ${SRC_THETA_DIR}/cxx
-    ${SRC_SHARE_DIR}
-    ${SRC_SHARE_DIR}/cxx
-    ${THETA_UT_DIR}
-    ${THETA_LIB_MODULE_DIR}
-    ${UTILS_TIMING_SRC_DIR}
-    ${UTILS_TIMING_BIN_DIR}
-    ${CMAKE_CURRENT_BINARY_DIR}
-    ${CMAKE_BINARY_DIR}/src/share/cxx
-    )
-
-  IF (USE_NUM_PROCS)
-    SET (NUM_CPUS ${USE_NUM_PROCS})
-  ELSE()
-    SET (NUM_CPUS 1)
-  ENDIF()
-  cxx_unit_test (eos_ut "${EOS_UT_F90_SRCS}" "${EOS_UT_CXX_SRCS}" "${EOS_UT_INCLUDE_DIRS}" "${CONFIG_DEFINES}" ${NUM_CPUS})
-  TARGET_LINK_LIBRARIES(eos_ut thetal_kokkos_ut_lib)
+  thetal_cxx_unit_test (eos_ut
+    CXX_SRCS ${THETA_UT_DIR}/eos_ut.cpp
+    F90_SRCS ${THETA_UT_DIR}/eos_interface.F90)
 
   ### Element ops unit tests
 
-  SET (ELEM_OPS_UT_CXX_SRCS
-    ${THETA_UT_DIR}/elem_ops_ut.cpp
-    )
-
-  SET (ELEM_OPS_UT_F90_SRCS
-    ${THETA_UT_DIR}/elem_ops_interface.F90
-    )
-
-  SET (ELEM_OPS_UT_INCLUDE_DIRS
-    ${SRC_THETA_DIR}/cxx
-    ${SRC_SHARE_DIR}
-    ${SRC_SHARE_DIR}/cxx
-    ${THETA_UT_DIR}
-    ${THETA_LIB_MODULE_DIR}
-    ${UTILS_TIMING_SRC_DIR}
-    ${UTILS_TIMING_BIN_DIR}
-    ${CMAKE_CURRENT_BINARY_DIR}
-    ${CMAKE_BINARY_DIR}/src/share/cxx
-    )
-
-  IF (USE_NUM_PROCS)
-    SET (NUM_CPUS ${USE_NUM_PROCS})
-  ELSE()
-    SET (NUM_CPUS 1)
-  ENDIF()
-  cxx_unit_test (elem_ops_ut "${ELEM_OPS_UT_F90_SRCS}" "${ELEM_OPS_UT_CXX_SRCS}" "${ELEM_OPS_UT_INCLUDE_DIRS}" "${CONFIG_DEFINES}" ${NUM_CPUS})
-  TARGET_LINK_LIBRARIES(elem_ops_ut thetal_kokkos_ut_lib)
+  thetal_cxx_unit_test (elem_ops_ut
+    CXX_SRCS ${THETA_UT_DIR}/elem_ops_ut.cpp
+    F90_SRCS ${THETA_UT_DIR}/elem_ops_interface.F90)
 
   # ### HyperViscosity unit tests
 
-  SET (HYPERVISCOSITY_UT_CXX_SRCS
-    ${THETA_UT_DIR}/hv_ut.cpp
-    )
-
-  SET (HYPERVISCOSITY_UT_F90_SRCS
-    ${THETA_UT_DIR}/hv_interface.F90
-    ${THETA_UT_DIR}/thetal_test_interface.F90
-    ${SHARE_UT_DIR}/geometry_interface.F90
-    )
-
-  SET (HYPERVISCOSITY_UT_INCLUDE_DIRS
-    ${SRC_THETA_DIR}/cxx
-    ${SRC_SHARE_DIR}
-    ${SRC_SHARE_DIR}/cxx
-    ${THETA_UT_DIR}
-    ${THETA_LIB_MODULE_DIR}
-    ${UTILS_TIMING_SRC_DIR}
-    ${UTILS_TIMING_BIN_DIR}
-    ${CMAKE_CURRENT_BINARY_DIR}
-    ${CMAKE_BINARY_DIR}/src/share/cxx
-    )
-
-  IF (USE_NUM_PROCS)
-    SET (NUM_CPUS ${USE_NUM_PROCS})
-  ELSE()
-    SET (NUM_CPUS 1)
-  ENDIF()
-  cxx_unit_test (hv_ut "${HYPERVISCOSITY_UT_F90_SRCS}" "${HYPERVISCOSITY_UT_CXX_SRCS}" "${HYPERVISCOSITY_UT_INCLUDE_DIRS}" "${CONFIG_DEFINES}" ${NUM_CPUS})
-  TARGET_LINK_LIBRARIES(hv_ut thetal_kokkos_ut_lib)
+  thetal_cxx_unit_test (hv_ut
+    CXX_SRCS ${THETA_UT_DIR}/hv_ut.cpp
+    F90_SRCS ${THETA_UT_DIR}/hv_interface.F90)
 
   ### Forcing unit tests
-
-  SET (FORCING_UT_CXX_SRCS
-    ${THETA_UT_DIR}/forcing_ut.cpp
-    )
-
-  SET (FORCING_UT_F90_SRCS
-    ${THETA_UT_DIR}/forcing_interface.F90
-    ${SHARE_UT_DIR}/geometry_interface.F90
-    )
-
-  SET (FORCING_UT_INCLUDE_DIRS
-    ${SRC_THETA_DIR}/cxx
-    ${SRC_SHARE_DIR}
-    ${SRC_SHARE_DIR}/cxx
-    ${THETA_UT_DIR}
-    ${THETA_LIB_MODULE_DIR}
-    ${UTILS_TIMING_SRC_DIR}
-    ${UTILS_TIMING_BIN_DIR}
-    ${CMAKE_CURRENT_BINARY_DIR}
-    ${CMAKE_BINARY_DIR}/src/share/cxx
-    )
 
   # Unfortunately, due to F90 dependencies, we end up including most of the f90
   # srcs, and one of them happens to include config.h explicitly
   # We already set all the config options by hand, so we can simply touch an empty config.h
   EXECUTE_PROCESS (COMMAND touch config.h WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
-  IF (USE_NUM_PROCS)
-    SET (NUM_CPUS ${USE_NUM_PROCS})
-  ELSE()
-    SET (NUM_CPUS 1)
-  ENDIF()
-  cxx_unit_test (forcing_ut "${FORCING_UT_F90_SRCS}" "${FORCING_UT_CXX_SRCS}" "${FORCING_UT_INCLUDE_DIRS}" "${CONFIG_DEFINES}" ${NUM_CPUS})
-  TARGET_LINK_LIBRARIES(forcing_ut thetal_kokkos_ut_lib)
+  thetal_cxx_unit_test (forcing_ut
+    CXX_SRCS ${THETA_UT_DIR}/forcing_ut.cpp
+    F90_SRCS ${THETA_UT_DIR}/forcing_interface.F90)
 
   ### Forcing adjoint unit test (dJ/dF, states_forcing_adj) ###
 
@@ -259,8 +196,6 @@ IF (HOMMEXX_BFB_TESTING)
   # neighbor min-max exchange itself isn't exercised.
   set (EULER_STEP_ADJOINT_SOURCES
     euler_step_adjoint_ut.cpp
-    thetal_test_interface.F90
-    ${SHARE_UT_DIR}/geometry_interface.F90
   )
   EkatCreateUnitTest ("euler_step_adjoint_ut"
     "${EULER_STEP_ADJOINT_SOURCES}"
@@ -270,164 +205,38 @@ IF (HOMMEXX_BFB_TESTING)
 
   # ### Caar functor unit test
 
-  SET (CAAR_UT_CXX_SRCS
-    ${THETA_UT_DIR}/caar_ut.cpp
-    )
-
-  SET (CAAR_UT_F90_SRCS
-    ${THETA_UT_DIR}/caar_interface.F90
-    ${THETA_UT_DIR}/thetal_test_interface.F90
-    ${SHARE_UT_DIR}/geometry_interface.F90
-    )
-
-  SET (CAAR_UT_INCLUDE_DIRS
-    ${SRC_THETA_DIR}/cxx
-    ${SRC_SHARE_DIR}
-    ${SRC_SHARE_DIR}/cxx
-    ${THETA_UT_DIR}
-    ${THETA_LIB_MODULE_DIR}
-    ${UTILS_TIMING_SRC_DIR}
-    ${UTILS_TIMING_BIN_DIR}
-    ${CMAKE_CURRENT_BINARY_DIR}
-    ${CMAKE_BINARY_DIR}/src/share/cxx
-    )
-
-  IF (USE_NUM_PROCS)
-    SET (NUM_CPUS ${USE_NUM_PROCS})
-  ELSE()
-    SET (NUM_CPUS 1)
-  ENDIF()
-  cxx_unit_test (caar_ut "${CAAR_UT_F90_SRCS}" "${CAAR_UT_CXX_SRCS}" "${CAAR_UT_INCLUDE_DIRS}" "${CONFIG_DEFINES}" ${NUM_CPUS})
-  TARGET_LINK_LIBRARIES(caar_ut thetal_kokkos_ut_lib)
+  thetal_cxx_unit_test (caar_ut
+    CXX_SRCS ${THETA_UT_DIR}/caar_ut.cpp
+    F90_SRCS ${THETA_UT_DIR}/caar_interface.F90)
 
   # ### Remap functor unit test
 
-  SET (REMAP_THETA_UT_CXX_SRCS
-    ${THETA_UT_DIR}/remap_theta_ut.cpp
-    )
-
-  SET (REMAP_THETA_UT_F90_SRCS
-    ${THETA_UT_DIR}/remap_theta_interface.F90
-    ${THETA_UT_DIR}/thetal_test_interface.F90
-    ${SHARE_UT_DIR}/geometry_interface.F90
-    )
-
-  SET (REMAP_THETA_UT_INCLUDE_DIRS
-    ${SRC_THETA_DIR}/cxx
-    ${SRC_SHARE_DIR}
-    ${SRC_SHARE_DIR}/cxx
-    ${THETA_UT_DIR}
-    ${THETA_LIB_MODULE_DIR}
-    ${UTILS_TIMING_SRC_DIR}
-    ${UTILS_TIMING_BIN_DIR}
-    ${CMAKE_CURRENT_BINARY_DIR}
-    ${CMAKE_BINARY_DIR}/src/share/cxx
-    )
-
-  IF (USE_NUM_PROCS)
-    SET (NUM_CPUS ${USE_NUM_PROCS})
-  ELSE()
-    SET (NUM_CPUS 1)
-  ENDIF()
-  cxx_unit_test (remap_theta_ut "${REMAP_THETA_UT_F90_SRCS}" "${REMAP_THETA_UT_CXX_SRCS}" "${REMAP_THETA_UT_INCLUDE_DIRS}" "${CONFIG_DEFINES}" ${NUM_CPUS})
-  TARGET_LINK_LIBRARIES(remap_theta_ut thetal_kokkos_ut_lib)
+  thetal_cxx_unit_test (remap_theta_ut
+    CXX_SRCS ${THETA_UT_DIR}/remap_theta_ut.cpp
+    F90_SRCS ${THETA_UT_DIR}/remap_theta_interface.F90)
 ENDIF ()
 
 # ### DIRK functor unit test
 
-SET (DIRK_UT_CXX_SRCS
-  ${THETA_UT_DIR}/dirk_ut.cpp
-)
-
-SET (DIRK_UT_F90_SRCS
-  ${THETA_UT_DIR}/dirk_interface.F90
-  ${THETA_UT_DIR}/thetal_test_interface.F90
-  ${SHARE_UT_DIR}/geometry_interface.F90
-)
-
-SET (DIRK_UT_INCLUDE_DIRS
-  ${SRC_THETA_DIR}/cxx
-  ${SRC_SHARE_DIR}
-  ${SRC_SHARE_DIR}/cxx
-  ${THETA_UT_DIR}
-  ${THETA_LIB_MODULE_DIR}
-  ${UTILS_TIMING_SRC_DIR}
-  ${UTILS_TIMING_BIN_DIR}
-  ${CMAKE_CURRENT_BINARY_DIR}
-  ${CMAKE_BINARY_DIR}/src/share/cxx
-)
-
-IF (USE_NUM_PROCS)
-  SET (NUM_CPUS ${USE_NUM_PROCS})
-ELSE()
-  SET (NUM_CPUS 1)
-ENDIF()
-cxx_unit_test (dirk_ut "${DIRK_UT_F90_SRCS}" "${DIRK_UT_CXX_SRCS}" "${DIRK_UT_INCLUDE_DIRS}" "${CONFIG_DEFINES}" ${NUM_CPUS})
-TARGET_LINK_LIBRARIES(dirk_ut thetal_kokkos_ut_lib)
+thetal_cxx_unit_test (dirk_ut
+  CXX_SRCS ${THETA_UT_DIR}/dirk_ut.cpp
+  F90_SRCS ${THETA_UT_DIR}/dirk_interface.F90)
 
 if (NOT HOMMEXX_ENABLE_FWD_SENS)
   # ### Compose semi-Lagrangian transport unit tests
   # NOTE: we don't use it for now in the AMDIS effort, so hold off conversion to Fad types
 
-  SET (COMPOSE_UT_CXX_SRCS
-    ${THETA_UT_DIR}/compose_ut.cpp
-  )
-
-  SET (COMPOSE_UT_F90_SRCS
-    ${THETA_UT_DIR}/compose_interface.F90
-    ${THETA_UT_DIR}/thetal_test_interface.F90
-    ${SHARE_UT_DIR}/geometry_interface.F90
-  )
-
-  SET (COMPOSE_UT_INCLUDE_DIRS
-    ${SRC_THETA_DIR}/cxx
-    ${SRC_SHARE_DIR}
-    ${SRC_SHARE_DIR}/compose
-    ${SRC_SHARE_DIR}/cxx
-    ${THETA_UT_DIR}
-    ${THETA_LIB_MODULE_DIR}
-    ${UTILS_TIMING_SRC_DIR}
-    ${UTILS_TIMING_BIN_DIR}
-    ${CMAKE_CURRENT_BINARY_DIR}
-    ${CMAKE_BINARY_DIR}/src/share/cxx
-  )
-
-  SET (NUM_CPUS 1)
-  cxx_unit_test (compose_ut "${COMPOSE_UT_F90_SRCS}" "${COMPOSE_UT_CXX_SRCS}" "${COMPOSE_UT_INCLUDE_DIRS}" "${CONFIG_DEFINES}" ${NUM_CPUS})
-  TARGET_LINK_LIBRARIES(compose_ut thetal_kokkos_ut_lib)
+  thetal_cxx_unit_test (compose_ut
+    CXX_SRCS ${THETA_UT_DIR}/compose_ut.cpp
+    F90_SRCS ${THETA_UT_DIR}/compose_interface.F90
+    INCLUDE_DIRS ${SRC_SHARE_DIR}/compose
+    NUM_CPUS 1)
 
   # ### GllFvRemap unit tests
   # NOTE: we don't use it in hommexx standalone, so hold off conversion to Fad types
-  SET (GLLFVREMAP_UT_CXX_SRCS
-    ${THETA_UT_DIR}/gllfvremap_ut.cpp
-  )
-
-  SET (GLLFVREMAP_UT_F90_SRCS
-    ${THETA_UT_DIR}/gllfvremap_interface.F90
-    ${THETA_UT_DIR}/compose_interface.F90
-    ${THETA_UT_DIR}/thetal_test_interface.F90
-    ${SHARE_UT_DIR}/geometry_interface.F90
-  )
-
-  SET (GLLFVREMAP_UT_INCLUDE_DIRS
-    ${SRC_THETA_DIR}/cxx
-    ${SRC_SHARE_DIR}
-    ${SRC_SHARE_DIR}/cxx
-    ${THETA_UT_DIR}
-    ${THETA_LIB_MODULE_DIR}
-    ${UTILS_TIMING_SRC_DIR}
-    ${UTILS_TIMING_BIN_DIR}
-    ${CMAKE_CURRENT_BINARY_DIR}
-    ${CMAKE_BINARY_DIR}/src/share/cxx
-  )
-
-  IF (USE_NUM_PROCS)
-    SET (NUM_CPUS ${USE_NUM_PROCS})
-  ELSE()
-    SET (NUM_CPUS 1)
-  ENDIF()
-  cxx_unit_test (gllfvremap_ut "${GLLFVREMAP_UT_F90_SRCS}" "${GLLFVREMAP_UT_CXX_SRCS}" "${GLLFVREMAP_UT_INCLUDE_DIRS}" "${CONFIG_DEFINES}" ${NUM_CPUS})
-  TARGET_LINK_LIBRARIES(gllfvremap_ut thetal_kokkos_ut_lib)
+  thetal_cxx_unit_test (gllfvremap_ut
+    CXX_SRCS ${THETA_UT_DIR}/gllfvremap_ut.cpp
+    F90_SRCS ${THETA_UT_DIR}/gllfvremap_interface.F90 ${THETA_UT_DIR}/compose_interface.F90)
   cxx_unit_test_add_test(gllfvremap_planar_ut gllfvremap_ut ${NUM_CPUS} "hommexx -planar")
 endif()
 
@@ -444,7 +253,7 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
 
   # Caar sacado derivatives tests
   EkatCreateUnitTest (caar_sacado_ut
-    "caar_sacado_ut.cpp;${SHARE_UT_DIR}/geometry_interface.F90;thetal_test_interface.F90"
+    caar_sacado_ut.cpp
     COMPILER_CXX_DEFS HOMMEXX_SPHERE_OP_ST_FACTORS
     LIBS thetal_kokkos_ut_lib
     LABELS AMDIS
@@ -459,14 +268,14 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
 
   # Dirk sacado derivatives tests
   EkatCreateUnitTest ("dirk_sacado_ut"
-    "dirk_sacado_ut.cpp;${SHARE_UT_DIR}/geometry_interface.F90;thetal_test_interface.F90"
+    dirk_sacado_ut.cpp
     LIBS thetal_kokkos_ut_lib
     LABELS AMDIS
   )
 
   # Hyperviscosity sacado derivatives tests
   EkatCreateUnitTest ("hv_sacado_ut"
-    "hv_sacado_ut.cpp;hv_interface.F90;thetal_test_interface.F90;${SHARE_UT_DIR}/geometry_interface.F90"
+    "hv_sacado_ut.cpp;hv_interface.F90"
     LIBS thetal_kokkos_ut_lib
     LABELS AMDIS
   )
@@ -481,8 +290,6 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
   # Test the gradient calculation via adjoints
   set (IMEX_ADJOINT_SOURCES
     imex_adjoint_ut.cpp
-    thetal_test_interface.F90
-    ${SHARE_UT_DIR}/geometry_interface.F90
     ${SRC_THETA_DIR}/cxx/prim_advance_adj.cpp
   )
   EkatCreateUnitTest ("imex_adjoint_ut"
@@ -495,8 +302,6 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
   # the w_i(n0) surface fix), via prim_advance_adj
   set (PRIM_ADVANCE_SACADO_SOURCES
     prim_advance_sacado_ut.cpp
-    thetal_test_interface.F90
-    ${SHARE_UT_DIR}/geometry_interface.F90
     ${SRC_THETA_DIR}/cxx/prim_advance_adj.cpp
   )
   EkatCreateUnitTest ("prim_advance_sacado_ut"

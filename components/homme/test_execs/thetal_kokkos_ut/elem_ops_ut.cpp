@@ -14,7 +14,7 @@
 using namespace Homme;
 
 extern "C" {
-void init_f90 (const Real* hyai_ptr, const Real& ps0);
+void init_elem_ops_f90 (const Real* hyai_ptr, const Real& ps0);
 void compute_r_star_f90(const int& num_elems,
                         const bool& moist,
                         const Real*& Q,
@@ -42,7 +42,7 @@ TEST_CASE("elem_ops", "elem_ops") {
   decltype(hvcoord.hybrid_ai)::HostMirror hyai = Kokkos::create_mirror_view(hvcoord.hybrid_ai);
   Kokkos::deep_copy(hyai,hvcoord.hybrid_ai);
   const Real* hyai_ptr = hyai.data();
-  init_f90(hyai_ptr,hvcoord.ps0);
+  init_elem_ops_f90(hyai_ptr,hvcoord.ps0);
 
   // F90 and CXX views (and host mirrors of cxx views)
   HostViewManaged<Real*[NUM_PHYSICAL_LEV][NP][NP]>  dp_f90("",num_elems);

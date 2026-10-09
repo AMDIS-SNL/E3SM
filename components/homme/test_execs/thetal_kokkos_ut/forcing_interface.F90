@@ -16,14 +16,14 @@ module forcing_interface
   real (kind=real_kind), pointer, dimension(:,:,:,:,:)   :: q, fq, w, vtheta, dp, phinh, fm
   real (kind=real_kind), pointer, dimension(:,:,:,:,:,:) :: qdp, v
 
-  public :: init_f90
+  public :: init_forcing_f90
   public :: set_forcing_pointers_f90
   public :: tracers_forcing_f90
-  public :: cleanup_f90
+  public :: cleanup_forcing_f90
 
 contains
 
-  subroutine init_f90 (num_elems, hyai, hybi, hyam, hybm, gradphis, ps0, qsz) bind(c)
+  subroutine init_forcing_f90 (num_elems, hyai, hybi, hyam, hybm, gradphis, ps0, qsz) bind(c)
     use dimensions_mod, only: nelemd, qsize
     use element_state,  only: allocate_element_arrays, setup_element_pointers_ie
     !
@@ -56,7 +56,7 @@ contains
       elem(ie)%derived%gradphis = gradphis(:,:,:,ie)
     enddo
 
-  end subroutine init_f90
+  end subroutine init_forcing_f90
 
   subroutine set_forcing_pointers_f90 (q_ptr, fq_ptr, qdp_ptr,    &
                                        v_ptr, w_ptr, vtheta_ptr,  &
@@ -185,11 +185,11 @@ contains
     enddo
   end subroutine tracers_forcing_f90
 
-  subroutine cleanup_f90 () bind(c)
+  subroutine cleanup_forcing_f90 () bind(c)
     use element_state, only: deallocate_element_arrays
 
     call deallocate_element_arrays()
     deallocate(elem)
-  end subroutine cleanup_f90
+  end subroutine cleanup_forcing_f90
 
 end module forcing_interface
