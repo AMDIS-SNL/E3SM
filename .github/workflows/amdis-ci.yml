@@ -32,7 +32,7 @@ defaults:
 jobs:
   changes:
     # PRs only run the tests if relevant files changed. The filtering is done
-    # here (rather than with 'paths:' in the trigger) so that the amdis-ci-check
+    # here (rather than with 'paths:' in the trigger) so that the amdis-ci-gate
     # job always reports a status and can be used as a required check.
     runs-on: [ubuntu-24.04]
     name: changes
@@ -195,13 +195,15 @@ jobs:
             e3sm/build/**/flags.make
           retention-days: 14
 
-  amdis-ci-check:
-    # Single status to use as a required check. It always runs, and it is
-    # green if all the tests passed or if they were not needed.
+  amdis-ci-gate:
+    # Single status to use as a required check (for PRs). It is green if all
+    # the tests passed or if they were not needed.
+    # NOTE: keep always(). Without it, the job is skipped if a needed job fails,
+    # and a skipped required check counts as passing.
     needs: [changes, hommexx, fad, pyhommexx]
-    if: always()
+    if: always() && github.event_name == 'pull_request'
     runs-on: [ubuntu-24.04]
-    name: amdis-ci-check
+    name: amdis-ci-gate
     steps:
       - name: Report the result
         env:
