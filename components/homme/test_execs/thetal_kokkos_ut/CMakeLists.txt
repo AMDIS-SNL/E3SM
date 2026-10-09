@@ -28,6 +28,7 @@ ADD_LIBRARY(thetal_kokkos_ut_lib
   ${TEST_SRC_F90}
   ${SHARE_UT_DIR}/geometry_interface.F90
   ${THETA_UT_DIR}/thetal_test_interface.F90
+  ${THETA_UT_DIR}/thetal_ut_session.cpp
   ${SRC_DIR}/checksum_mod.F90
   ${SRC_DIR}/common_io_mod.F90
   ${SRC_DIR}/common_movie_mod.F90
