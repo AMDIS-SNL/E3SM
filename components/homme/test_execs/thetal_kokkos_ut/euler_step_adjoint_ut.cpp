@@ -81,6 +81,7 @@
 #include "Tracers.hpp"
 #include "Types.hpp"
 #include "thetal_f90_interface.hpp"
+#include "thetal_ut_session.hpp"
 #include "mpi/Connectivity.hpp"
 #include "mpi/MpiBuffersManager.hpp"
 
@@ -92,13 +93,6 @@
 using namespace Homme;
 
 namespace {
-
-struct F90Cleanup {
-  ~F90Cleanup() {
-    cleanup_f90();
-    Context::finalize_singleton();
-  }
-};
 
 // Host round-trip dot product over two Pack-typed views of the same
 // logical shape (small problem sizes in this unit test, so a device
@@ -248,7 +242,6 @@ TEST_CASE("euler_step_adjoint")
   using RPDF = std::uniform_real_distribution<Real>;
 
   auto& c = Context::singleton();
-  F90Cleanup f90_cleanup_guard;
   auto& comm = c.create<ekat::Comm>(MPI_COMM_WORLD);
 
   auto& params = c.create<SimulationParams>();
@@ -261,81 +254,17 @@ TEST_CASE("euler_step_adjoint")
   params.scale_factor = PhysicalConstants::rearth0;
   params.laplacian_rigid_factor = PhysicalConstants::rrearth0;
 
-  auto& hvcoord = c.create<HybridVCoord>();
-  auto& ref_FE  = c.create<ReferenceElement>();
-  hvcoord.random_init(seed);
+  // Create the f90 mesh/connectivity, and init hvcoord and ref_FE.
+  // The session also takes care of cleaning up (f90 and Context) at the end of the scope.
+  CubeSphereTestSession session(ne_mesh,seed);
+  auto& hvcoord = session.hvcoord;
+  auto& ref_FE  = session.ref_FE;
 
-  auto hyai = Kokkos::create_mirror(hvcoord.hybrid_ai);
-  auto hybi = Kokkos::create_mirror(hvcoord.hybrid_bi);
-  auto hyam = Kokkos::create_mirror(hvcoord.hybrid_am);
-  auto hybm = Kokkos::create_mirror(hvcoord.hybrid_bm);
-  Kokkos::deep_copy(hyai,hvcoord.hybrid_ai);
-  Kokkos::deep_copy(hybi,hvcoord.hybrid_bi);
-  Kokkos::deep_copy(hyam,hvcoord.hybrid_am);
-  Kokkos::deep_copy(hybm,hvcoord.hybrid_bm);
-  HostViewManaged<Real[NUM_PHYSICAL_LEV]> hyam_r(""),hybm_r("");
-  for (int i=0;i<NUM_PHYSICAL_LEV;++i) {
-    int ilev = i / VECTOR_SIZE;
-    int ivec = i % VECTOR_SIZE;
-    hyam_r(i) = hyam(ilev)[ivec];
-    hybm_r(i) = hybm(ilev)[ivec];
-  }
-
-  std::vector<Real> dvv(NP*NP);
-  std::vector<Real> mp(NP*NP);
-  init_f90(ne_mesh,hyai.data(),hybi.data(),hyam_r.data(),hybm_r.data(),dvv.data(),mp.data(),hvcoord.ps0);
-
-  ref_FE.init_mass(mp.data());
-  ref_FE.init_deriv(dvv.data());
-
-  const int num_elems = c.get<Connectivity>().get_num_local_elements();
+  const int num_elems = session.num_elems();
 
   auto& geo = c.create<ElementsGeometry>();
   geo.init(num_elems,false,true,PhysicalConstants::rearth0,-1,true);
-  {
-    auto d        = Kokkos::create_mirror(geo.m_d);
-    auto dinv     = Kokkos::create_mirror(geo.m_dinv);
-    auto phis     = Kokkos::create_mirror(geo.m_phis);
-    auto gradphis = Kokkos::create_mirror(geo.m_gradphis);
-    auto fcor     = Kokkos::create_mirror(geo.m_fcor);
-    auto spmp     = Kokkos::create_mirror(geo.m_spheremp);
-    auto rspmp    = Kokkos::create_mirror(geo.m_rspheremp);
-    auto tVisc    = Kokkos::create_mirror(geo.m_tensorvisc);
-    auto sph2c    = Kokkos::create_mirror(geo.m_vec_sph2cart);
-    auto mdet     = Kokkos::create_mirror(geo.m_metdet);
-    auto minv     = Kokkos::create_mirror(geo.m_metinv);
-
-    Kokkos::deep_copy(phis,    Real(0));
-    Kokkos::deep_copy(gradphis,Real(0));
-
-    Real*        d_ptr        = d.data();
-    Real*        dinv_ptr     = dinv.data();
-    const Real*  phis_ptr     = phis.data();
-    const Real*  gradphis_ptr = gradphis.data();
-    Real*        fcor_ptr     = fcor.data();
-    Real*        spmp_ptr     = spmp.data();
-    Real*        rspmp_ptr    = rspmp.data();
-    Real*        tVisc_ptr    = tVisc.data();
-    Real*        sph2c_ptr    = sph2c.data();
-    Real*        mdet_ptr     = mdet.data();
-    Real*        minv_ptr     = minv.data();
-
-    init_geo_views_f90(d_ptr, dinv_ptr, phis_ptr, gradphis_ptr, fcor_ptr,
-                       spmp_ptr, rspmp_ptr, tVisc_ptr,
-                       sph2c_ptr, mdet_ptr, minv_ptr);
-
-    Kokkos::deep_copy(geo.m_d,           d);
-    Kokkos::deep_copy(geo.m_dinv,        dinv);
-    Kokkos::deep_copy(geo.m_spheremp,    spmp);
-    Kokkos::deep_copy(geo.m_rspheremp,   rspmp);
-    Kokkos::deep_copy(geo.m_tensorvisc,  tVisc);
-    Kokkos::deep_copy(geo.m_vec_sph2cart,sph2c);
-    Kokkos::deep_copy(geo.m_metdet,      mdet);
-    Kokkos::deep_copy(geo.m_metinv,      minv);
-    Kokkos::deep_copy(geo.m_fcor,        fcor);
-    Kokkos::deep_copy(geo.m_phis,        phis);
-    Kokkos::deep_copy(geo.m_gradphis,    gradphis);
-  }
+  session.init_geometry(geo);
 
   // Explicit ST=Real objects, independent of whatever ScalarValue/Tracers/
   // ElementsDerivedState/EulerStepFunctor the production build's
@@ -725,7 +654,6 @@ TEST_CASE("euler_step_adjoint_dot_product")
   using RPDF = std::uniform_real_distribution<Real>;
 
   auto& c = Context::singleton();
-  F90Cleanup f90_cleanup_guard;
   auto& comm = c.create<ekat::Comm>(MPI_COMM_WORLD);
 
   auto& params = c.create<SimulationParams>();
@@ -738,81 +666,17 @@ TEST_CASE("euler_step_adjoint_dot_product")
   params.scale_factor = PhysicalConstants::rearth0;
   params.laplacian_rigid_factor = PhysicalConstants::rrearth0;
 
-  auto& hvcoord = c.create<HybridVCoord>();
-  auto& ref_FE  = c.create<ReferenceElement>();
-  hvcoord.random_init(seed);
+  // Create the f90 mesh/connectivity, and init hvcoord and ref_FE.
+  // The session also takes care of cleaning up (f90 and Context) at the end of the scope.
+  CubeSphereTestSession session(ne_mesh,seed);
+  auto& hvcoord = session.hvcoord;
+  auto& ref_FE  = session.ref_FE;
 
-  auto hyai = Kokkos::create_mirror(hvcoord.hybrid_ai);
-  auto hybi = Kokkos::create_mirror(hvcoord.hybrid_bi);
-  auto hyam = Kokkos::create_mirror(hvcoord.hybrid_am);
-  auto hybm = Kokkos::create_mirror(hvcoord.hybrid_bm);
-  Kokkos::deep_copy(hyai,hvcoord.hybrid_ai);
-  Kokkos::deep_copy(hybi,hvcoord.hybrid_bi);
-  Kokkos::deep_copy(hyam,hvcoord.hybrid_am);
-  Kokkos::deep_copy(hybm,hvcoord.hybrid_bm);
-  HostViewManaged<Real[NUM_PHYSICAL_LEV]> hyam_r(""),hybm_r("");
-  for (int i=0;i<NUM_PHYSICAL_LEV;++i) {
-    int ilev = i / VECTOR_SIZE;
-    int ivec = i % VECTOR_SIZE;
-    hyam_r(i) = hyam(ilev)[ivec];
-    hybm_r(i) = hybm(ilev)[ivec];
-  }
-
-  std::vector<Real> dvv(NP*NP);
-  std::vector<Real> mp(NP*NP);
-  init_f90(ne_mesh,hyai.data(),hybi.data(),hyam_r.data(),hybm_r.data(),dvv.data(),mp.data(),hvcoord.ps0);
-
-  ref_FE.init_mass(mp.data());
-  ref_FE.init_deriv(dvv.data());
-
-  const int num_elems = c.get<Connectivity>().get_num_local_elements();
+  const int num_elems = session.num_elems();
 
   auto& geo = c.create<ElementsGeometry>();
   geo.init(num_elems,false,true,PhysicalConstants::rearth0,-1,true);
-  {
-    auto d        = Kokkos::create_mirror(geo.m_d);
-    auto dinv     = Kokkos::create_mirror(geo.m_dinv);
-    auto phis     = Kokkos::create_mirror(geo.m_phis);
-    auto gradphis = Kokkos::create_mirror(geo.m_gradphis);
-    auto fcor     = Kokkos::create_mirror(geo.m_fcor);
-    auto spmp     = Kokkos::create_mirror(geo.m_spheremp);
-    auto rspmp    = Kokkos::create_mirror(geo.m_rspheremp);
-    auto tVisc    = Kokkos::create_mirror(geo.m_tensorvisc);
-    auto sph2c    = Kokkos::create_mirror(geo.m_vec_sph2cart);
-    auto mdet     = Kokkos::create_mirror(geo.m_metdet);
-    auto minv     = Kokkos::create_mirror(geo.m_metinv);
-
-    Kokkos::deep_copy(phis,    Real(0));
-    Kokkos::deep_copy(gradphis,Real(0));
-
-    Real*        d_ptr        = d.data();
-    Real*        dinv_ptr     = dinv.data();
-    const Real*  phis_ptr     = phis.data();
-    const Real*  gradphis_ptr = gradphis.data();
-    Real*        fcor_ptr     = fcor.data();
-    Real*        spmp_ptr     = spmp.data();
-    Real*        rspmp_ptr    = rspmp.data();
-    Real*        tVisc_ptr    = tVisc.data();
-    Real*        sph2c_ptr    = sph2c.data();
-    Real*        mdet_ptr     = mdet.data();
-    Real*        minv_ptr     = minv.data();
-
-    init_geo_views_f90(d_ptr, dinv_ptr, phis_ptr, gradphis_ptr, fcor_ptr,
-                       spmp_ptr, rspmp_ptr, tVisc_ptr,
-                       sph2c_ptr, mdet_ptr, minv_ptr);
-
-    Kokkos::deep_copy(geo.m_d,           d);
-    Kokkos::deep_copy(geo.m_dinv,        dinv);
-    Kokkos::deep_copy(geo.m_spheremp,    spmp);
-    Kokkos::deep_copy(geo.m_rspheremp,   rspmp);
-    Kokkos::deep_copy(geo.m_tensorvisc,  tVisc);
-    Kokkos::deep_copy(geo.m_vec_sph2cart,sph2c);
-    Kokkos::deep_copy(geo.m_metdet,      mdet);
-    Kokkos::deep_copy(geo.m_metinv,      minv);
-    Kokkos::deep_copy(geo.m_fcor,        fcor);
-    Kokkos::deep_copy(geo.m_phis,        phis);
-    Kokkos::deep_copy(geo.m_gradphis,    gradphis);
-  }
+  session.init_geometry(geo);
 
   // ---- Real-typed stack: the adjoint half (euler_step_adj is Real-only). ----
   auto& tracers_r = c.create<TracersST<Real>>();
