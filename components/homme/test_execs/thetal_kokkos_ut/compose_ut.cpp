@@ -3,6 +3,7 @@
 
 #include "Types.hpp"
 #include "thetal_ut_utils.hpp"
+#include "thetal_f90_interface.hpp"
 #include "thetal_ut_session.hpp"
 #include "Context.hpp"
 #include "mpi/Connectivity.hpp"
@@ -41,7 +42,6 @@ extern "C" {
   // Compose-specific f90 init. Must be called after init_f90
   void init_compose_f90(int ne, int qsize, int hv_q, int limiter_option, bool cdr_check,
                         bool is_sphere, bool nearest_point, int halo, int traj_nsubstep);
-  void init_geometry_f90();
   // Must be called before the f90 cleanup
   void finalize_compose_f90();
   void run_compose_standalone_test_f90(int* nmax, Real* eval, int* nerr);
@@ -113,7 +113,7 @@ struct Session {
     e = c.get_ptr<Elements>();
     c.create<TimeLevel>();
 
-    init_geometry_f90();    
+    init_elements_geometry_f90();
     auto& geo = c.get<ElementsGeometry>();
 
     auto& sphop = c.create<SphereOperators>();
