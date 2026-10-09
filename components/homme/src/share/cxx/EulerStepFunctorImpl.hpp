@@ -1166,15 +1166,18 @@ public:
   //  - adj_tracers.qdp(n0_qdp,...): OUT, ACCUMULATED (+=) into (not
   //    overwritten), so repeated/chained calls compose correctly, exactly
   //    like the forward code's own "we allow np1_qdp==n0_qdp" aliasing.
-  //  - adj_tracers.qlim(...): IN/OUT. On entry, any downstream dependency
-  //    on qlim as it stood *before* this euler_step call (relevant only
-  //    when rhs_multiplier==1, which reuses/refines a previous call's
-  //    qlim rather than resetting it -- see compute_qmin_qmax). On exit,
-  //    ACCUMULATED with this call's own contribution to that same
-  //    quantity. The caller (a future multi-stage orchestrator, out of
-  //    scope for this step) is responsible for chaining this across the
-  //    (rhs_multiplier==0,1,2) call sequence, exactly as it must already
-  //    do for qdp via the n0_qdp/np1_qdp slot indices.
+  //  - adj_tracers.qlim(...): IN/OUT. On entry: dJ/d(qlim as it stands right
+  //    AFTER this euler_step call), nonzero only if a later call chained on
+  //    this call's qlim (a later rhs_multiplier==1 call reuses/refines it
+  //    rather than resetting it -- see compute_qmin_qmax); it is folded into
+  //    this call's own limiter-reverse seed on qlim and consumed (zeroed).
+  //    On exit: dJ/d(qlim as it stood right BEFORE this call), which is
+  //    nonzero only if rhs_multiplier==1 (all other calls reset qlim) --
+  //    i.e. the seed for the previous call in the chain. So the caller
+  //    chains the (rhs_multiplier==0,1,2) sequence by calling this in
+  //    REVERSE order (2,1,0) on the same adj_tracers, exactly as it must
+  //    already do for qdp via the n0_qdp/np1_qdp slot indices; zero
+  //    adj_tracers.qlim before the first (rhs_multiplier==2) call.
   //  - adj_tracers.qtens_biharmonic: used purely as internal scratch
   //    (reused across the several stages below); callers should not rely
   //    on its value before or after the call.
@@ -1521,6 +1524,24 @@ public:
       // adj_qtb (== adj_tracers.qtens_biharmonic) now holds g_bih.
     }
 
+    // ---- 1b. Fold in the downstream seed on qlim (see the adj_tracers.qlim
+    // note above): dJ/d(qlim after this call) joins the limiter's own
+    // dJ/d(qlim_final) contribution (both are seeds on the same quantity),
+    // and is consumed here. If rhs_multiplier==1, stage 2 below then
+    // re-populates adj_tracers.qlim with dJ/d(qlim before this call). ----
+    {
+      auto adj_qlim = adj_tracers.qlim;
+      Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<3>> pol({0,0,0},{ne,qsize,NUM_PHYSICAL_LEV});
+      Kokkos::parallel_for(pol, KOKKOS_LAMBDA (const int ie, const int iq, const int lev) {
+        const int vpi = lev/VECTOR_SIZE, vsi = lev%VECTOR_SIZE;
+        for (int b=0; b<2; ++b) { // b=0: min, b=1: max
+          adj_qlim_final_grad(ie,iq,b,vpi)[vsi] += adj_qlim(ie,iq,b,vpi)[vsi];
+          adj_qlim(ie,iq,b,vpi)[vsi] = 0;
+        }
+      });
+    }
+    Kokkos::fence();
+
     // ---- 2. Reverse of compute_qmin_qmax + whichever neighbor/MPI min-max
     // exchange ran (rhs_multiplier==0 or 2), plus the unconditional,
     // ordinary linear dependency qtens_biharmonic(i,j,k)=v (separate from
@@ -1729,6 +1750,87 @@ public:
         adj_divdp_proj(ie,i,j,vpi)[vsi]  += -rhsmdt*g;
       });
     }
+    Kokkos::fence();
+  }
+
+  // Adjoint of qdp_time_avg (np1 := (n0 + (rkstage-1)*np1)/rkstage, with
+  // rkstage=3 as in the forward). Pure linear map on adj_tracers.qdp:
+  //   adj_n0  += adj_np1/rkstage,   adj_np1 := (rkstage-1)*adj_np1/rkstage.
+  // Same slot convention as euler_step_adj: the seed on the post-average
+  // np1_qdp slot is consumed, the result is ACCUMULATED into n0_qdp.
+  // n0_qdp != np1_qdp is required (as in the forward call site).
+  void qdp_time_avg_adj (const int n0_qdp, const int np1_qdp,
+                         TracersST<Real>& adj_tracers)
+  {
+    EKAT_REQUIRE_MSG((std::is_same_v<ST,Real>),
+      "[qdp_time_avg_adj] Error! Adjoint is only implemented for Real scalar type.\n");
+    EKAT_REQUIRE_MSG(n0_qdp != np1_qdp,
+      "[qdp_time_avg_adj] Error! n0_qdp and np1_qdp must differ.\n");
+
+    const int ne    = m_geometry.num_elems();
+    const int qsize = m_data.qsize;
+    auto adj_qdp = adj_tracers.qdp;
+    const Real rkstage = 3.0;
+    Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<5>> pol({0,0,0,0,0},{ne,qsize,NP,NP,NUM_PHYSICAL_LEV});
+    Kokkos::parallel_for(pol, KOKKOS_LAMBDA (const int ie,const int iq,const int i,const int j,const int lev) {
+      const int vpi = lev/VECTOR_SIZE, vsi = lev%VECTOR_SIZE;
+      const Real g = adj_qdp(ie,np1_qdp,iq,i,j,vpi)[vsi];
+      adj_qdp(ie,n0_qdp,iq,i,j,vpi)[vsi]  += g/rkstage;
+      adj_qdp(ie,np1_qdp,iq,i,j,vpi)[vsi]  = (rkstage-1)*g/rkstage;
+    });
+    Kokkos::fence();
+  }
+
+  // Adjoint of precompute_divdp (divdp = div(vn0); divdp_proj := divdp).
+  // Consumes the adjoint of BOTH outputs (adj_derived.m_divdp and
+  // adj_derived.m_divdp_proj, each overwritten by the forward call, so
+  // their adjoint is zeroed here) and ACCUMULATES the transposed strong
+  // divergence of their sum into adj_derived.m_vn0. adj_divdp_proj must be
+  // the adjoint w.r.t. divdp_proj *as precompute_divdp left it*, i.e. as
+  // returned by euler_step_adj for the first (DIV_VDP_AVE) stage. The
+  // transposed divergence is the same kernel as the divergence_sphere_update
+  // reverse in euler_step_adj (both use the same strong-form stencil).
+  void precompute_divdp_adj (ElementsDerivedStateST<Real>& adj_derived)
+  {
+    EKAT_REQUIRE_MSG((std::is_same_v<ST,Real>),
+      "[precompute_divdp_adj] Error! Adjoint is only implemented for Real scalar type.\n");
+
+    const int ne     = m_geometry.num_elems();
+    const auto dinv   = m_geometry.m_dinv;
+    const auto metdet = m_geometry.m_metdet;
+    const auto dvv    = m_deriv;
+    const Real scale_factor_inv = m_sphere_ops.m_scale_factor_inv;
+    auto adj_vn0        = adj_derived.m_vn0;
+    auto adj_divdp      = adj_derived.m_divdp;
+    auto adj_divdp_proj = adj_derived.m_divdp_proj;
+
+    Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<2>> pol({0,0},{ne,NUM_PHYSICAL_LEV});
+    Kokkos::parallel_for(pol, KOKKOS_LAMBDA (const int ie, const int lev) {
+      const int vpi = lev/VECTOR_SIZE, vsi = lev%VECTOR_SIZE;
+      Real h[NP][NP];
+      for (int i=0;i<NP;++i) for (int j=0;j<NP;++j) {
+        h[i][j] = (adj_divdp(ie,i,j,vpi)[vsi] + adj_divdp_proj(ie,i,j,vpi)[vsi])
+                * scale_factor_inv/metdet(ie,i,j);
+        adj_divdp(ie,i,j,vpi)[vsi]      = 0;
+        adj_divdp_proj(ie,i,j,vpi)[vsi] = 0;
+      }
+      Real adjgv0[NP][NP], adjgv1[NP][NP];
+      for (int i=0;i<NP;++i) for (int k=0;k<NP;++k) {
+        Real s = 0; for (int j=0;j<NP;++j) s += dvv(j,k)*h[i][j];
+        adjgv0[i][k] = s;
+      }
+      for (int k=0;k<NP;++k) for (int j=0;j<NP;++j) {
+        Real s = 0; for (int i=0;i<NP;++i) s += dvv(i,k)*h[i][j];
+        adjgv1[k][j] = s;
+      }
+      for (int i=0;i<NP;++i) for (int j=0;j<NP;++j) {
+        const Real d00 = dinv(ie,0,0,i,j), d10 = dinv(ie,1,0,i,j);
+        const Real d01 = dinv(ie,0,1,i,j), d11 = dinv(ie,1,1,i,j);
+        const Real md  = metdet(ie,i,j);
+        adj_vn0(ie,0,i,j,vpi)[vsi] += (adjgv0[i][j]*d00 + adjgv1[i][j]*d01)*md;
+        adj_vn0(ie,1,i,j,vpi)[vsi] += (adjgv0[i][j]*d10 + adjgv1[i][j]*d11)*md;
+      }
+    });
     Kokkos::fence();
   }
 

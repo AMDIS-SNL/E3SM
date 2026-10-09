@@ -79,6 +79,32 @@ struct HVAdjointScratch {
   StateSnapshot seed; // holds a copy of the incoming seed (run_JtV needs x != y)
 };
 
+// mu += J_vn0^T * adj_vn0, where vn0 = eta_ave_w * v*dp evaluated at state y
+// (pointwise, so its transposed Jacobian is elementwise too):
+//   d mu_v[c] += eta_ave_w * dp * adj_vn0[c]
+//   d mu_dp   += eta_ave_w * sum_c v[c] * adj_vn0[c]
+void add_vn0_adjoint (const AdjVn0View& adj_vn0, const StateSnapshot& y,
+                      const Real eta_ave_w, StateSnapshot& mu)
+{
+  const int nelem = mu.num_elems;
+  auto y_v   = ekat::scalarize(y.v);
+  auto y_dp  = ekat::scalarize(y.dp3d);
+  auto mu_v  = ekat::scalarize(mu.v);
+  auto mu_dp = ekat::scalarize(mu.dp3d);
+  auto g     = ekat::scalarize(adj_vn0);
+
+  using md_range_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>>;
+  auto p4 = md_range_t({0,0,0,0},{nelem,NP,NP,NUM_PHYSICAL_LEV});
+  Kokkos::parallel_for(p4, KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k) {
+    const Real g0 = g(ie,0,ip,jp,k);
+    const Real g1 = g(ie,1,ip,jp,k);
+    mu_v(ie,0,ip,jp,k) += eta_ave_w*y_dp(ie,ip,jp,k)*g0;
+    mu_v(ie,1,ip,jp,k) += eta_ave_w*y_dp(ie,ip,jp,k)*g1;
+    mu_dp(ie,ip,jp,k)  += eta_ave_w*(y_v(ie,0,ip,jp,k)*g0 + y_v(ie,1,ip,jp,k)*g1);
+  });
+  Kokkos::fence();
+}
+
 } // anonymous namespace
 
 std::shared_ptr<BoundaryExchangeST<Real>> create_adj_bex (StateSnapshot& adj_state)
@@ -115,7 +141,8 @@ std::shared_ptr<BoundaryExchangeST<Real>> create_adj_bex (StateSnapshot& adj_sta
 
 void ttype10_imex_adjoint(const Real dt_dyn,
                           const Real eta_ave_w,
-                          StateSnapshot& adj_state)
+                          StateSnapshot& adj_state,
+                          const AdjVn0View* adj_vn0)
 {
   GPTLstart("ttype10_imex_adjoint");
   using const_tape_t = const Tape<StateSnapshot>;
@@ -247,6 +274,24 @@ void ttype10_imex_adjoint(const Real dt_dyn,
   debug_print("       apply Jt...\n");
   caar.run_JtV(stage5_data,lambda5,mu4);
 
+  // Stage 5 of the fwd also accumulated vn0 += eta_ave_w*v*dp, with (v,dp)
+  // taken from its input state (y4). Add the corresponding adjoint
+  // contribution to mu4 (the adjoint of y4).
+  // Notes:
+  //  - CaarFunctorImpl::compute_accumulated_quantities (run in the pre-exchange
+  //    kernel of *every* CAAR stage) is the only writer of vn0, but the
+  //    increment is eta_ave_w*v*dp of the stage's input state n0, and in
+  //    ttype10 only stage 5 has eta_ave_w!=0 (see ttype10_imex_timestep).
+  //    A scheme with eta_ave_w!=0 in several stages (ttype5/9) needs this
+  //    injection after each such stage's JtV, at that stage's input state.
+  //  - The increment is pointwise in the (already DSS'd, by the previous
+  //    stage's exchange) input state, so its transpose is pointwise too:
+  //    exact for any local seed, and no exchange is needed here.
+  if (adj_vn0 != nullptr) {
+    debug_print("       vn0 adjoint...\n");
+    add_vn0_adjoint(*adj_vn0,y4,eta_ave_w,mu4);
+  }
+
   // Stage 4
   debug_print("   stage 4...\n");
   dt = dt_dyn/2.0;
@@ -355,7 +400,8 @@ void ttype10_imex_adjoint(const Real dt_dyn,
   GPTLstop("ttype10_imex_adjoint");
 }
 
-void prim_advance_adj (const Real dt, StateSnapshot& adj_state)
+void prim_advance_adj (const Real dt, StateSnapshot& adj_state,
+                       const AdjVn0View* adj_vn0)
 {
   GPTLstart("prim_advance_adj");
 
@@ -405,7 +451,7 @@ void prim_advance_adj (const Real dt, StateSnapshot& adj_state)
 
   switch (params.time_step_type) {
     case TimeStepType::ttype10_imex:
-      ttype10_imex_adjoint(dt,eta_ave_w,adj_state);
+      ttype10_imex_adjoint(dt,eta_ave_w,adj_state,adj_vn0);
       break;
     default:
       {
