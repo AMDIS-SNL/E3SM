@@ -8,6 +8,9 @@ on:
   # Manual run is used to bless
   workflow_dispatch:
 
+  # Runs when a PR is added to a merge queue
+  merge_group:
+
   # Also run nightly
   schedule:
     - cron: '0 7 * * *'  # Runs at 7 AM UTC, which is midnight MT during Standard Time
@@ -15,7 +18,7 @@ on:
 concurrency:
   # Two runs are in the same group if they are testing the same git ref
   #  - if trigger=pull_request, the ref is refs/pull/<PR_NUMBER>/merge
-  #  - for other triggers, the ref is the branch tested
+  #  - for other triggers, the ref is the branch tested (or the merge group sha)
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
@@ -201,7 +204,7 @@ jobs:
     # NOTE: keep always(). Without it, the job is skipped if a needed job fails,
     # and a skipped required check counts as passing.
     needs: [changes, hommexx, fad, pyhommexx]
-    if: always() && github.event_name == 'pull_request'
+    if: always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
     runs-on: [ubuntu-24.04]
     name: amdis-ci-gate
     steps:
