@@ -101,6 +101,33 @@ NB_MODULE (pyhommexx,m) {
       "The dtype arg specifies which instantiation of the functor to use",
         nb::arg("name"), nb::arg("params"), nb::arg("dtype") = "real");
   m.def("forward",&forward);
+
+  // Dynamics advance, fwd and adjoint
+  m.def("get_time_levels",&get_time_levels,
+      "Returns a dict with the current time level indices (nm1, n0, np1) and nstep.");
+  m.def("update_dynamics_levels",&update_dynamics_levels,
+      "Rotates the dynamics time levels (leapfrog), as done at the end of each step.");
+  m.def("enable_adjoint",&enable_adjoint,
+      "Turns on fwd state taping and allocates the tape and the adjoint state.\n"
+      "Must be called after the model is initialized. Requires time_step_type=10 (ttype10_imex)\n"
+      "and a build with HOMMEXX_ENABLE_FAD_TYPES=ON.");
+  m.def("prim_advance_exp",&prim_advance_exp,
+      "Advances the dynamics by dt, from time level n0 to np1. Does NOT rotate time levels.\n"
+      "If the adjoint is enabled, the fwd trajectory is taped (only the LAST call is kept).",
+        nb::arg("dt"),
+        nb::arg("compute_diagnostics") = false);
+  m.def("prim_advance_adj",&prim_advance_adj,
+      "Applies the adjoint of the LAST prim_advance_exp call to the adjoint state, in place.\n"
+      "On entry the adjoint state holds dJ/dstate(np1); on exit, dJ/dstate(n0).",
+        nb::arg("dt"));
+  m.def("zero_adj_state",&zero_adj_state);
+  m.def("get_adj_state_var",&get_adj_state_var,
+      "Copies a field of the adjoint state into arr (same names/shapes as get_state_var).\n"
+      "Valid names: u, v, uv, vtheta_dp, dp, w, phi",
+        nb::arg("arr"), nb::arg("name"));
+  m.def("set_adj_state_var",&set_adj_state_var,
+      "Sets a field of the adjoint state from arr (same names/shapes as set_state_var).",
+        nb::arg("arr"), nb::arg("name"));
 }
 
 } // namespace pyhommexx

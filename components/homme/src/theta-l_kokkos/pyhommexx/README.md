@@ -25,3 +25,19 @@ sys.append('/path/to/homme/binary/dir/src/theta-l_kokkos/pyhommexx')
 import pyhommexx
 
 and you can later access functions from pyhommexx.
+
+## Forward/adjoint dynamics step
+
+`prim_advance_exp(dt)` and `prim_advance_adj(dt)` are available. The adjoint
+currently supports only `time_step_type=10` (ttype10_imex), no `prescribed_wind`,
+and requires `-D HOMMEXX_ENABLE_FAD_TYPES:BOOL=ON`. Usage:
+
+    pyhommexx.enable_adjoint()            # after model_init: enables taping, allocs adj state
+    pyhommexx.prim_advance_exp(dt)        # n0 -> np1 (no time level rotation); taped
+    pyhommexx.set_adj_state_var(seed,'dp')  # seed = dJ/dstate(np1), for each field
+    pyhommexx.prim_advance_adj(dt)        # in place: adj state now holds dJ/dstate(n0)
+    pyhommexx.get_adj_state_var(out,'dp')
+
+Only the LAST `prim_advance_exp` call is taped, so call `prim_advance_adj`
+right after the fwd step it differentiates. Use `update_dynamics_levels()` to
+rotate time levels between fwd steps.
