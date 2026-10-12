@@ -42,13 +42,6 @@ StateSnapshot& get_adj_state ()
   return std::any_cast<StateSnapshot&>(c.any_map().at(adj_state_key));
 }
 
-// Copy between a (scalarized) snapshot entry and a py array entry
-template<bool ToPy>
-KOKKOS_INLINE_FUNCTION void xfer (Real& snap, double& py)
-{
-  if constexpr (ToPy) py = snap; else snap = py;
-}
-
 template<bool ToPy>
 void copy_adj_state_var (nb::ndarray<double>& arr, const nb::str& name)
 {
@@ -72,7 +65,8 @@ void copy_adj_state_var (nb::ndarray<double>& arr, const nb::str& name)
     EKAT_ERROR_MSG("[pyhommexx] Unrecognized/unsupported adjoint state var '" + n + "'.\n"
                    " - valid names: u, v, uv, vtheta_dp, dp, w, phi\n");
   }
-  assert ((int)arr.dtype().bits==64);
+  EKAT_REQUIRE_MSG ((int)arr.dtype().bits==64,
+      "[pyhommexx] Error! The input array must have dtype float64.\n");
 
   auto v   = ekat::scalarize(s.v);
   auto vth = ekat::scalarize(s.vtheta_dp);
@@ -92,33 +86,37 @@ void copy_adj_state_var (nb::ndarray<double>& arr, const nb::str& name)
   using policy_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<4>>;
   policy_t p ({0,0,0,0},{nelem,NP,NP,nlev});
 
-  Kokkos::parallel_for(p,KOKKOS_LAMBDA (int ie, int ip, int jp, int k) {
-    switch (which) {
-      case U:   xfer<ToPy>(v(ie,0,ip,jp,k),scl_m(ie,ip,jp,k)); break;
-      case V:   xfer<ToPy>(v(ie,1,ip,jp,k),scl_m(ie,ip,jp,k)); break;
-      case UV:  xfer<ToPy>(v(ie,0,ip,jp,k),vec_v(ie,0,ip,jp,k));
-                xfer<ToPy>(v(ie,1,ip,jp,k),vec_v(ie,1,ip,jp,k)); break;
-      case VTH: xfer<ToPy>(vth(ie,ip,jp,k),scl_m(ie,ip,jp,k)); break;
-      case DP:  xfer<ToPy>(dp (ie,ip,jp,k),scl_m(ie,ip,jp,k)); break;
-      case W:   xfer<ToPy>(w  (ie,ip,jp,k),scl_i(ie,ip,jp,k)); break;
-      default:  xfer<ToPy>(phi(ie,ip,jp,k),scl_i(ie,ip,jp,k)); break;
-    }
-  });
+  if constexpr (ToPy) {
+    Kokkos::parallel_for(p,KOKKOS_LAMBDA (int ie, int ip, int jp, int k) {
+      switch (which) {
+        case U:   scl_m(ie,ip,jp,k)   = v(ie,0,ip,jp,k); break;
+        case V:   scl_m(ie,ip,jp,k)   = v(ie,1,ip,jp,k); break;
+        case UV:  vec_v(ie,0,ip,jp,k) = v(ie,0,ip,jp,k);
+                  vec_v(ie,1,ip,jp,k) = v(ie,1,ip,jp,k); break;
+        case VTH: scl_m(ie,ip,jp,k)   = vth(ie,ip,jp,k); break;
+        case DP:  scl_m(ie,ip,jp,k)   = dp (ie,ip,jp,k); break;
+        case W:   scl_i(ie,ip,jp,k)   = w  (ie,ip,jp,k); break;
+        default:  scl_i(ie,ip,jp,k)   = phi(ie,ip,jp,k); break;
+      }
+    });
+  } else {
+    Kokkos::parallel_for(p,KOKKOS_LAMBDA (int ie, int ip, int jp, int k) {
+      switch (which) {
+        case U:   v(ie,0,ip,jp,k)   = scl_m(ie,ip,jp,k); break;
+        case V:   v(ie,1,ip,jp,k)   = scl_m(ie,ip,jp,k); break;
+        case UV:  v(ie,0,ip,jp,k)   = vec_v(ie,0,ip,jp,k);
+                  v(ie,1,ip,jp,k)   = vec_v(ie,1,ip,jp,k); break;
+        case VTH: vth(ie,ip,jp,k)   = scl_m(ie,ip,jp,k); break;
+        case DP:  dp (ie,ip,jp,k)   = scl_m(ie,ip,jp,k); break;
+        case W:   w  (ie,ip,jp,k)   = scl_i(ie,ip,jp,k); break;
+        default:  phi(ie,ip,jp,k)   = scl_i(ie,ip,jp,k); break;
+      }
+    });
+  }
   Kokkos::fence();
 }
 
 } // anonymous namespace
-
-nb::dict get_time_levels ()
-{
-  const auto& tl = Context::singleton().get<TimeLevel>();
-  nb::dict d;
-  d["nm1"]   = tl.nm1;
-  d["n0"]    = tl.n0;
-  d["np1"]   = tl.np1;
-  d["nstep"] = tl.nstep;
-  return d;
-}
 
 void update_dynamics_levels ()
 {

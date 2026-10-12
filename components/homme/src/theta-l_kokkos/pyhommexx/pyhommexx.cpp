@@ -103,8 +103,6 @@ NB_MODULE (pyhommexx,m) {
   m.def("forward",&forward);
 
   // Dynamics advance, fwd and adjoint
-  m.def("get_time_levels",&get_time_levels,
-      "Returns a dict with the current time level indices (nm1, n0, np1) and nstep.");
   m.def("update_dynamics_levels",&update_dynamics_levels,
       "Rotates the dynamics time levels (leapfrog), as done at the end of each step.");
   m.def("enable_adjoint",&enable_adjoint,
