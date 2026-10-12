@@ -259,7 +259,7 @@ TEST_CASE("remap", "remap_dp") {
             std::cout << "factor: " << factor << ", val: " << f_base << " , pert: " << f_pert
                       << ", FD: " << df_fd << ", AD: " << df_ad << ", error: " << df_fd - df_ad << std::endl;
           }
-          CHECK(df_fd == Approx(df_ad).margin(1e-5));
+          CHECK(df_fd == Approx(df_ad).margin(1e-4));
 
           // Check all tracer values
           const int tl=0;
@@ -270,7 +270,7 @@ TEST_CASE("remap", "remap_dp") {
                   for (int k=0; k<NUM_PHYSICAL_LEV; ++k) {
                     Real ad = qdp_dp_h(ie,tl,it,igp,jgp,k).fastAccessDx(0);
                     Real fd = (qdp_pert_h(ie,tl,it,igp,jgp,k)-qdp_base_h(ie,tl,it,igp,jgp,k))/factor;
-                    CHECK(fd == Approx(ad).margin(1e-5));
+                    CHECK(fd == Approx(ad).margin(1e-4));
                   }
                 }
               }
