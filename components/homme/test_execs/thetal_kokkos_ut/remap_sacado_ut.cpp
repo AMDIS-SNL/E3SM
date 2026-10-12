@@ -39,7 +39,6 @@ TEST_CASE("remap_dp_testing") {
   std::cout << "seed: " << seed << (catchRngSeed==0 ? " (catch rng seed was 0)\n" : "\n");
   rngAlg engine(seed);
   using RPDF = std::uniform_real_distribution<Real>;
-  using IPDF = std::uniform_int_distribution<int>;
 
   // Use stuff from Context, to increase similarity with actual runs
   auto& c = Context::singleton();
@@ -123,11 +122,17 @@ TEST_CASE("remap_dp_testing") {
   // Tests don't seem to pass using PPM_LIMITED_EXTRAP
   auto remap_algs = {RemapAlg::PPM_MIRRORED/*, RemapAlg::PPM_LIMITED_EXTRAP*/};
   for (const bool hydrostatic : {true, false}) {
-    std::cout << " -> " << (hydrostatic ? "hydrostatic" : "non-hydrostatic") << "\n";
+    if (comm.am_i_root()) {
+      std::cout << " -> " << (hydrostatic ? "hydrostatic" : "non-hydrostatic") << "\n";
+    }
     for (const int rsplit : {3,0}) {
-      std::cout << "   -> rsplit = " << rsplit << "\n";
+      if (comm.am_i_root()) {
+        std::cout << "   -> rsplit = " << rsplit << "\n";
+      }
       for (auto alg : remap_algs) {
-        std::cout << "     -> remap alg = " << remapAlg2str(alg) << "\n";
+        if (comm.am_i_root()) {
+          std::cout << "     -> remap alg = " << remapAlg2str(alg) << "\n";
+        }
         
         // Set the parameters
         params.rsplit = rsplit;
@@ -135,7 +140,9 @@ TEST_CASE("remap_dp_testing") {
         params.theta_hydrostatic_mode = hydrostatic;
 
         // Generate timestep stage data
-        const Real dt      = RPDF(1.0,100.0)(engine);
+        Real dt = RPDF(1.0,100.0)(engine);
+        auto mpi_comm = Context::singleton().get<ekat::Comm>().mpi_comm();
+        MPI_Bcast(&dt,1,MPI_DOUBLE,0,mpi_comm);
         const int nm1 = 0, n0 = 1, np1 = 2, np1_qdp = 0;
 
         // Randomize state/derived/tracers
@@ -288,8 +295,6 @@ TEST_CASE("remap_jv_testing") {
   auto& params = c.create<SimulationParams>();
   params.params_set = true;
   params.qsize = std::max(int(QSIZE_D-1),0);
-  params.rsplit = 3;
-  params.theta_hydrostatic_mode = false;
 
   // Create and init hvcoord and ref_elem
   auto& hvcoord = c.create<HybridVCoord>();
@@ -316,8 +321,6 @@ TEST_CASE("remap_jv_testing") {
   auto& tracers_dx = c.create<TracersST<DxFadType>>();
   tracers_dp.init(num_elems, params.qsize);
   tracers_dx.init(num_elems, params.qsize);
-  tracers_dp.randomize(seed, 1.0, 10.0);
-  tracers_dx.import_values(tracers_dp, 0);
 
   // Lambda to compute min of dp3d, to give meaningful initial value to derived.m_eta_dot_dpdn
   auto dp3d_min = [] (decltype(elems_dp.m_state.m_dp3d) dp3d) -> Real {
@@ -353,121 +356,142 @@ TEST_CASE("remap_jv_testing") {
 
   auto& catch_capture = Catch::getResultCapture();
 
-  Real dt = RPDF(1.0,10.0)(engine);
-  auto mpi_comm = Context::singleton().get<ekat::Comm>().mpi_comm();
-  MPI_Bcast(&dt,1,MPI_DOUBLE,0,mpi_comm);
+  for (const bool hydrostatic : {true, false}) {
+    if (comm.am_i_root()) {
+      std::cout << " -> " << (hydrostatic ? "hydrostatic" : "non-hydrostatic") << "\n";
+    }
+    for (const int rsplit : {3,0}) {
+      if (comm.am_i_root()) {
+        std::cout << "   -> rsplit = " << rsplit << "\n";
+      }
 
-  const int  nm1 = 0;
-  const int  n0  = 1;
-  const int  np1 = 2;
-  const int  np1_qdp = 0;
+      // Set the parameters
+      params.rsplit = rsplit;
+      params.theta_hydrostatic_mode = hydrostatic;
 
-  // Randomize state, set derived stuff to 0
-  elems_dp.m_state.randomize(seed,max_pressure,hvcoord.ps0,hvcoord.hybrid_ai0,geo.m_phis);
-  elems_dp.m_derived.randomize(seed,dp3d_min(elems_dp.m_state.m_dp3d));
+      // Randomize tracers
+      tracers_dp.randomize(seed, 1.0, 10.0);
+      tracers_dx.import_values(tracers_dp, 0);
 
-  // We initialize also dp derivs of elems_dp at slice tl.np1 with random values
-  elems_dp.m_state.randomize_derivs(seed,np1);
+      // Randomized dt
+      Real dt = RPDF(1.0,10.0)(engine);
+      auto mpi_comm = Context::singleton().get<ekat::Comm>().mpi_comm();
+      MPI_Bcast(&dt,1,MPI_DOUBLE,0,mpi_comm);
 
-  // Extract derivs into a non-fad type for the Dp = Dx*Dp_old test
-  auto dxdp0 = elems_dp.m_state.take_deriv_snapshot(np1,0);
+      const int  nm1 = 0;
+      const int  n0  = 1;
+      const int  np1 = 2;
+      const int  np1_qdp = 0;
 
-  // Init d/dx state
-  for (int tl=0; tl<NUM_TIME_LEVELS; ++tl) {
-    elems_dx.m_state.import_values(elems_dp.m_state,tl);
-  }
-  elems_dx.m_derived.import_values(elems_dp.m_derived);
+      // Randomize state, set derived stuff to 0
+      elems_dp.m_state.randomize(seed,max_pressure,hvcoord.ps0,hvcoord.hybrid_ai0,geo.m_phis);
+      elems_dp.m_derived.randomize(seed,dp3d_min(elems_dp.m_state.m_dp3d));
 
-  // Create the remap functors
-  Remap::RemapFunctor<true, RemapAlgTypeDP, DpFadType> remap_dp(
-      1, elems_dp, tracers_dp, hvcoord, -1);
-  Remap::RemapFunctor<true, RemapAlgTypeDX, DxFadType> remap_dx(
-      1, elems_dx, tracers_dx, hvcoord, -1);
+      // We initialize also dp derivs of elems_dp at slice tl.np1 with random values
+      elems_dp.m_state.randomize_derivs(seed,np1);
 
-  FunctorsBuffersManager fbm;
-  fbm.request_size( remap_dp.requested_buffer_size() );
-  fbm.request_size( remap_dx.requested_buffer_size() );
-  fbm.allocate();
-  remap_dp.init_buffers(fbm);
-  remap_dx.init_buffers(fbm);
+      // Extract derivs into a non-fad type for the Dp = Dx*Dp_old test
+      auto dxdp0 = elems_dp.m_state.take_deriv_snapshot(np1,0);
 
-  // RUN Remap for ST=DpFadType
-  remap_dp.run_remap(np1, np1_qdp, dt);
+      // Init d/dx state
+      for (int tl=0; tl<NUM_TIME_LEVELS; ++tl) {
+        elems_dx.m_state.import_values(elems_dp.m_state,tl);
+      }
+      elems_dx.m_derived.import_values(elems_dp.m_derived);
 
-  // RUN remap's J*V functor for ST=DxFadType
-  remap_dx.init_J(np1, elems_dx.m_state);
-  remap_dx.run_remap(np1, np1_qdp, dt);
-  auto x = dxdp0.clone(true);
-  auto y = x.clone();
-  remap_dx.run_JV(np1, elems_dx.m_state, x, y);
+      // Create the remap functors
+      Remap::RemapFunctor<true, RemapAlgTypeDP, DpFadType> remap_dp(
+          1, elems_dp, tracers_dp, hvcoord, -1);
+      Remap::RemapFunctor<true, RemapAlgTypeDX, DxFadType> remap_dx(
+          1, elems_dx, tracers_dx, hvcoord, -1);
 
-  // Check that dXnew/dp = dXnew/dXold * dXold/dp. dXnew/dp is in elems_dp.m_state at slice np1
-  // while dXnew/dXold is in elems_dx.m_state at slice np1
+      FunctorsBuffersManager fbm;
+      fbm.request_size( remap_dp.requested_buffer_size() );
+      fbm.request_size( remap_dx.requested_buffer_size() );
+      fbm.allocate();
+      remap_dp.init_buffers(fbm);
+      remap_dx.init_buffers(fbm);
 
-  auto v_dp   = ekat::scalarize(elems_dp.m_state.m_v);
-  auto vth_dp = ekat::scalarize(elems_dp.m_state.m_vtheta_dp);
-  auto dp_dp  = ekat::scalarize(elems_dp.m_state.m_dp3d);
-  auto phi_dp = ekat::scalarize(elems_dp.m_state.m_phinh_i);
-  auto w_dp   = ekat::scalarize(elems_dp.m_state.m_w_i);
-  auto v_dp_h   = Kokkos::create_mirror_view(v_dp);
-  auto vth_dp_h = Kokkos::create_mirror_view(vth_dp);
-  auto dp_dp_h  = Kokkos::create_mirror_view(dp_dp);
-  auto phi_dp_h = Kokkos::create_mirror_view(phi_dp);
-  auto w_dp_h   = Kokkos::create_mirror_view(w_dp);
-  Kokkos::deep_copy(v_dp_h,   v_dp);
-  Kokkos::deep_copy(vth_dp_h, vth_dp);
-  Kokkos::deep_copy(dp_dp_h,  dp_dp);
-  Kokkos::deep_copy(phi_dp_h, phi_dp);
-  Kokkos::deep_copy(w_dp_h,   w_dp);
+      // RUN Remap for ST=DpFadType
+      remap_dp.run_remap(np1, np1_qdp, dt);
 
-  auto v_JV   = ekat::scalarize(y.v);
-  auto vth_JV = ekat::scalarize(y.vtheta_dp);
-  auto dp_JV  = ekat::scalarize(y.dp3d);
-  auto phi_JV = ekat::scalarize(y.phinh_i);
-  auto w_JV   = ekat::scalarize(y.w_i);
-  auto v_JV_h   = Kokkos::create_mirror_view(v_JV);
-  auto vth_JV_h = Kokkos::create_mirror_view(vth_JV);
-  auto dp_JV_h  = Kokkos::create_mirror_view(dp_JV);
-  auto phi_JV_h = Kokkos::create_mirror_view(phi_JV);
-  auto w_JV_h   = Kokkos::create_mirror_view(w_JV);
-  Kokkos::deep_copy(v_JV_h,   v_JV);
-  Kokkos::deep_copy(vth_JV_h, vth_JV);
-  Kokkos::deep_copy(dp_JV_h,  dp_JV);
-  Kokkos::deep_copy(phi_JV_h, phi_JV);
-  Kokkos::deep_copy(w_JV_h,   w_JV);
+      // RUN remap's J*V functor for ST=DxFadType
+      remap_dx.init_J(np1, elems_dx.m_state);
+      remap_dx.run_remap(np1, np1_qdp, dt);
+      auto x = dxdp0.clone(true);
+      auto y = x.clone();
+      remap_dx.run_JV(np1, elems_dx.m_state, x, y);
 
-  for (int ie=0; ie<num_elems; ++ie) {
-    for (int igp=0; igp<NP; ++igp) {
-      for (int jgp=0; jgp<NP; ++jgp) {
-        for (int k=0; k<NUM_PHYSICAL_LEV; ++k) {
-          auto du_src = v_JV_h(ie,0,igp,jgp,k), du_tgt = v_dp_h(ie,np1,0,igp,jgp,k).dx(0);
-          CHECK_THAT (du_src, Catch::WithinRel(du_tgt,rtol) || Catch::WithinAbs(du_tgt,atol));
+      // Check that dXnew/dp = dXnew/dXold * dXold/dp. dXnew/dp is in elems_dp.m_state at slice np1
+      // while dXnew/dXold is in elems_dx.m_state at slice np1
 
-          auto dv_src = v_JV_h(ie,1,igp,jgp,k), dv_tgt = v_dp_h(ie,np1,1,igp,jgp,k).dx(0);
-          CHECK_THAT (dv_src, Catch::WithinRel(dv_tgt,rtol) || Catch::WithinAbs(dv_tgt,atol));
+      auto v_dp   = ekat::scalarize(elems_dp.m_state.m_v);
+      auto vth_dp = ekat::scalarize(elems_dp.m_state.m_vtheta_dp);
+      auto dp_dp  = ekat::scalarize(elems_dp.m_state.m_dp3d);
+      auto phi_dp = ekat::scalarize(elems_dp.m_state.m_phinh_i);
+      auto w_dp   = ekat::scalarize(elems_dp.m_state.m_w_i);
+      auto v_dp_h   = Kokkos::create_mirror_view(v_dp);
+      auto vth_dp_h = Kokkos::create_mirror_view(vth_dp);
+      auto dp_dp_h  = Kokkos::create_mirror_view(dp_dp);
+      auto phi_dp_h = Kokkos::create_mirror_view(phi_dp);
+      auto w_dp_h   = Kokkos::create_mirror_view(w_dp);
+      Kokkos::deep_copy(v_dp_h,   v_dp);
+      Kokkos::deep_copy(vth_dp_h, vth_dp);
+      Kokkos::deep_copy(dp_dp_h,  dp_dp);
+      Kokkos::deep_copy(phi_dp_h, phi_dp);
+      Kokkos::deep_copy(w_dp_h,   w_dp);
 
-          auto dvth_src = vth_JV_h(ie,igp,jgp,k), dvth_tgt = vth_dp_h(ie,np1,igp,jgp,k).dx(0);
-          CHECK_THAT (dvth_src, Catch::WithinRel(dvth_tgt,rtol) || Catch::WithinAbs(dvth_tgt,atol));
+      auto v_JV   = ekat::scalarize(y.v);
+      auto vth_JV = ekat::scalarize(y.vtheta_dp);
+      auto dp_JV  = ekat::scalarize(y.dp3d);
+      auto phi_JV = ekat::scalarize(y.phinh_i);
+      auto w_JV   = ekat::scalarize(y.w_i);
+      auto v_JV_h   = Kokkos::create_mirror_view(v_JV);
+      auto vth_JV_h = Kokkos::create_mirror_view(vth_JV);
+      auto dp_JV_h  = Kokkos::create_mirror_view(dp_JV);
+      auto phi_JV_h = Kokkos::create_mirror_view(phi_JV);
+      auto w_JV_h   = Kokkos::create_mirror_view(w_JV);
+      Kokkos::deep_copy(v_JV_h,   v_JV);
+      Kokkos::deep_copy(vth_JV_h, vth_JV);
+      Kokkos::deep_copy(dp_JV_h,  dp_JV);
+      Kokkos::deep_copy(phi_JV_h, phi_JV);
+      Kokkos::deep_copy(w_JV_h,   w_JV);
 
-          auto ddp_src = dp_JV_h(ie,igp,jgp,k), ddp_tgt = dp_dp_h(ie,np1,igp,jgp,k).dx(0);
-          CHECK_THAT (ddp_src, Catch::WithinRel(ddp_tgt,rtol) || Catch::WithinAbs(ddp_tgt,atol));
+      for (int ie=0; ie<num_elems; ++ie) {
+        for (int igp=0; igp<NP; ++igp) {
+          for (int jgp=0; jgp<NP; ++jgp) {
+            for (int k=0; k<NUM_PHYSICAL_LEV; ++k) {
+              auto du_src = v_JV_h(ie,0,igp,jgp,k), du_tgt = v_dp_h(ie,np1,0,igp,jgp,k).dx(0);
+              CHECK_THAT (du_src, Catch::WithinRel(du_tgt,rtol) || Catch::WithinAbs(du_tgt,atol));
 
-          auto dphi_src = phi_JV_h(ie,igp,jgp,k), dphi_tgt = phi_dp_h(ie,np1,igp,jgp,k).dx(0);
-          CHECK_THAT (dphi_src, Catch::WithinRel(dphi_tgt,rtol) || Catch::WithinAbs(dphi_tgt,atol));
+              auto dv_src = v_JV_h(ie,1,igp,jgp,k), dv_tgt = v_dp_h(ie,np1,1,igp,jgp,k).dx(0);
+              CHECK_THAT (dv_src, Catch::WithinRel(dv_tgt,rtol) || Catch::WithinAbs(dv_tgt,atol));
 
-          auto dw_src = w_JV_h(ie,igp,jgp,k), dw_tgt = w_dp_h(ie,np1,igp,jgp,k).dx(0);
-          CHECK_THAT (dw_src, Catch::WithinRel(dw_tgt,rtol) || Catch::WithinAbs(dw_tgt,atol));
+              auto dvth_src = vth_JV_h(ie,igp,jgp,k), dvth_tgt = vth_dp_h(ie,np1,igp,jgp,k).dx(0);
+              CHECK_THAT (dvth_src, Catch::WithinRel(dvth_tgt,rtol) || Catch::WithinAbs(dvth_tgt,atol));
+
+              auto ddp_src = dp_JV_h(ie,igp,jgp,k), ddp_tgt = dp_dp_h(ie,np1,igp,jgp,k).dx(0);
+              CHECK_THAT (ddp_src, Catch::WithinRel(ddp_tgt,rtol) || Catch::WithinAbs(ddp_tgt,atol));
+
+              auto dphi_src = phi_JV_h(ie,igp,jgp,k), dphi_tgt = phi_dp_h(ie,np1,igp,jgp,k).dx(0);
+              CHECK_THAT (dphi_src, Catch::WithinRel(dphi_tgt,rtol) || Catch::WithinAbs(dphi_tgt,atol));
+
+              auto dw_src = w_JV_h(ie,igp,jgp,k), dw_tgt = w_dp_h(ie,np1,igp,jgp,k).dx(0);
+              CHECK_THAT (dw_src, Catch::WithinRel(dw_tgt,rtol) || Catch::WithinAbs(dw_tgt,atol));
+            }
+            int k = NUM_PHYSICAL_LEV;
+
+            auto dphi_src = phi_JV_h(ie,igp,jgp,k), dphi_tgt = phi_dp_h(ie,np1,igp,jgp,k).dx(0);
+            CHECK_THAT (dphi_src, Catch::WithinRel(dphi_tgt,rtol) || Catch::WithinAbs(dphi_tgt,atol));
+
+            auto dw_src = w_JV_h(ie,igp,jgp,k), dw_tgt = w_dp_h(ie,np1,igp,jgp,k).dx(0);
+            CHECK_THAT (dw_src, Catch::WithinRel(dw_tgt,rtol) || Catch::WithinAbs(dw_tgt,atol));
+          }
         }
-        int k = NUM_PHYSICAL_LEV;
-
-        auto dphi_src = phi_JV_h(ie,igp,jgp,k), dphi_tgt = phi_dp_h(ie,np1,igp,jgp,k).dx(0);
-        CHECK_THAT (dphi_src, Catch::WithinRel(dphi_tgt,rtol) || Catch::WithinAbs(dphi_tgt,atol));
-
-        auto dw_src = w_JV_h(ie,igp,jgp,k), dw_tgt = w_dp_h(ie,np1,igp,jgp,k).dx(0);
-        CHECK_THAT (dw_src, Catch::WithinRel(dw_tgt,rtol) || Catch::WithinAbs(dw_tgt,atol));
       }
     }
   }
+
   c.finalize_singleton();
 }
 
@@ -502,11 +526,6 @@ TEST_CASE("remap_jtv_testing") {
   auto& params = c.create<SimulationParams>();
   params.params_set = true;
   params.qsize = std::max(int(QSIZE_D-1),0);
-  params.rsplit = 3;
-  params.theta_hydrostatic_mode = false;
-
-  const int np1 = 2;
-  const Real dt = RPDF(1.0,10.0)(engine);
 
   // Create and init hvcoord and ref_elem
   auto& hvcoord = c.create<HybridVCoord>();
@@ -523,112 +542,132 @@ TEST_CASE("remap_jtv_testing") {
   elems.init(num_elems,false,true,PhysicalConstants::rearth0);
   elems.m_geometry = geo; // Use same views for geometry
 
-  // Random snapshots
-  StateSnapshot xa(num_elems), xb(num_elems);
-  xa.randomize(seed, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geo.m_phis);
-  xb.randomize(seed+1, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geo.m_phis);
-  auto ya = xa.clone();
-  auto yb = xb.clone();
+  for (const bool hydrostatic : {true, false}) {
+    if (comm.am_i_root()) {
+      std::cout << " -> " << (hydrostatic ? "hydrostatic" : "non-hydrostatic") << "\n";
+    }
+    for (const int rsplit : {3,0}) {
+      if (comm.am_i_root()) {
+        std::cout << "   -> rsplit = " << rsplit << "\n";
+      }
 
-  // Setup remap algorithm
-  using RemapAlgTypeDX = Remap::Ppm::PpmVertRemap<Remap::Ppm::PpmMirrored<DxFadType>>;
-  TracersST<DxFadType> tracers;
-  tracers.init(num_elems, params.qsize);
-  Remap::RemapFunctor<true, RemapAlgTypeDX, DxFadType> remap(1, elems, tracers, hvcoord, -1);
+      // Set the parameters
+      params.rsplit = rsplit;
+      params.theta_hydrostatic_mode = hydrostatic;
 
-  FunctorsBuffersManager fbm;
-  fbm.request_size(remap.requested_buffer_size());
-  fbm.allocate();
-  remap.init_buffers(fbm);
+      const int np1 = 2;
+      Real dt = RPDF(1.0,10.0)(engine);
+      auto mpi_comm = Context::singleton().get<ekat::Comm>().mpi_comm();
+      MPI_Bcast(&dt,1,MPI_DOUBLE,0,mpi_comm);
 
-  // Randomize element state
-  elems.m_state.randomize(seed+2, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geo.m_phis);
+      // Random snapshots
+      StateSnapshot xa(num_elems), xb(num_elems);
+      xa.randomize(seed, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geo.m_phis);
+      xb.randomize(seed+1, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geo.m_phis);
+      auto ya = xa.clone();
+      auto yb = xb.clone();
 
-  // Assemble Jacobian
-  remap.init_J(np1, elems.m_state);
-  remap.run_remap(np1, 0, dt);
-  Kokkos::fence();
+      // Setup remap algorithm
+      using RemapAlgTypeDX = Remap::Ppm::PpmVertRemap<Remap::Ppm::PpmMirrored<DxFadType>>;
+      TracersST<DxFadType> tracers;
+      tracers.init(num_elems, params.qsize);
+      Remap::RemapFunctor<true, RemapAlgTypeDX, DxFadType> remap(1, elems, tracers, hvcoord, -1);
 
-  // Compute ya = J*xa
-  remap.run_JV(np1, elems.m_state, xa, ya);
+      FunctorsBuffersManager fbm;
+      fbm.request_size(remap.requested_buffer_size());
+      fbm.allocate();
+      remap.init_buffers(fbm);
 
-  // compute yb = J^T*xb
-  remap.run_JtV(np1, elems.m_state, xb, yb);
-  Kokkos::fence();
+      // Randomize element state
+      elems.m_state.randomize(seed+2, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geo.m_phis);
 
-  //
-  // Check that xb^T*ya == yb^T*xa
-  //
+      // Assemble Jacobian
+      remap.init_J(np1, elems.m_state);
+      remap.run_remap(np1, 0, dt);
+      Kokkos::fence();
 
-  // Scalarize views for reductions
-  auto xa_v   = ekat::scalarize(xa.v);
-  auto xa_vth = ekat::scalarize(xa.vtheta_dp);
-  auto xa_dp3d= ekat::scalarize(xa.dp3d);
-  auto xa_phi = ekat::scalarize(xa.phinh_i);
-  auto xa_w   = ekat::scalarize(xa.w_i);
+      // Compute ya = J*xa
+      remap.run_JV(np1, elems.m_state, xa, ya);
 
-  auto xb_v   = ekat::scalarize(xb.v);
-  auto xb_vth = ekat::scalarize(xb.vtheta_dp);
-  auto xb_dp3d= ekat::scalarize(xb.dp3d);
-  auto xb_phi = ekat::scalarize(xb.phinh_i);
-  auto xb_w   = ekat::scalarize(xb.w_i);
+      // compute yb = J^T*xb
+      remap.run_JtV(np1, elems.m_state, xb, yb);
+      Kokkos::fence();
 
-  auto ya_v   = ekat::scalarize(ya.v);
-  auto ya_vth = ekat::scalarize(ya.vtheta_dp);
-  auto ya_dp3d= ekat::scalarize(ya.dp3d);
-  auto ya_phi = ekat::scalarize(ya.phinh_i);
-  auto ya_w   = ekat::scalarize(ya.w_i);
+      //
+      // Check that xb^T*ya == yb^T*xa
+      //
 
-  auto yb_v   = ekat::scalarize(yb.v);
-  auto yb_vth = ekat::scalarize(yb.vtheta_dp);
-  auto yb_dp3d= ekat::scalarize(yb.dp3d);
-  auto yb_phi = ekat::scalarize(yb.phinh_i);
-  auto yb_w   = ekat::scalarize(yb.w_i);
+      // Scalarize views for reductions
+      auto xa_v   = ekat::scalarize(xa.v);
+      auto xa_vth = ekat::scalarize(xa.vtheta_dp);
+      auto xa_dp3d= ekat::scalarize(xa.dp3d);
+      auto xa_phi = ekat::scalarize(xa.phinh_i);
+      auto xa_w   = ekat::scalarize(xa.w_i);
 
-  using p5_mid_t = Kokkos::MDRangePolicy<ExecSpace, Kokkos::Rank<5>>;
-  using p4_mid_t = Kokkos::MDRangePolicy<ExecSpace, Kokkos::Rank<4>>;
-  using p4_int_t = Kokkos::MDRangePolicy<ExecSpace, Kokkos::Rank<4>>;
-  const p5_mid_t p5_mid({0,0,0,0,0}, {num_elems, 2, NP, NP, NUM_PHYSICAL_LEV});
-  const p4_mid_t p4_mid({0,0,0,0}, {num_elems, NP, NP, NUM_PHYSICAL_LEV});
-  const p4_int_t p4_int({0,0,0,0}, {num_elems, NP, NP, NUM_INTERFACE_LEV});
+      auto xb_v   = ekat::scalarize(xb.v);
+      auto xb_vth = ekat::scalarize(xb.vtheta_dp);
+      auto xb_dp3d= ekat::scalarize(xb.dp3d);
+      auto xb_phi = ekat::scalarize(xb.phinh_i);
+      auto xb_w   = ekat::scalarize(xb.w_i);
 
-  Real2 V_dot, vth_dot, dp_dot, phi_dot, w_dot;
+      auto ya_v   = ekat::scalarize(ya.v);
+      auto ya_vth = ekat::scalarize(ya.vtheta_dp);
+      auto ya_dp3d= ekat::scalarize(ya.dp3d);
+      auto ya_phi = ekat::scalarize(ya.phinh_i);
+      auto ya_w   = ekat::scalarize(ya.w_i);
 
-  Kokkos::parallel_reduce(p5_mid,
-    KOKKOS_LAMBDA(int ie, int icmp, int ip, int jp, int k, Real2& acc) {
-      acc.v[0] += xa_v(ie, icmp, ip, jp, k) * yb_v(ie, icmp, ip, jp, k);
-      acc.v[1] += ya_v(ie, icmp, ip, jp, k) * xb_v(ie, icmp, ip, jp, k);
-    }, V_dot);
+      auto yb_v   = ekat::scalarize(yb.v);
+      auto yb_vth = ekat::scalarize(yb.vtheta_dp);
+      auto yb_dp3d= ekat::scalarize(yb.dp3d);
+      auto yb_phi = ekat::scalarize(yb.phinh_i);
+      auto yb_w   = ekat::scalarize(yb.w_i);
 
-  Kokkos::parallel_reduce(p4_mid,
-    KOKKOS_LAMBDA(int ie, int ip, int jp, int k, Real2& acc) {
-      acc.v[0] += xa_vth(ie, ip, jp, k) * yb_vth(ie, ip, jp, k);
-      acc.v[1] += ya_vth(ie, ip, jp, k) * xb_vth(ie, ip, jp, k);
-    }, vth_dot);
+      using p5_mid_t = Kokkos::MDRangePolicy<ExecSpace, Kokkos::Rank<5>>;
+      using p4_mid_t = Kokkos::MDRangePolicy<ExecSpace, Kokkos::Rank<4>>;
+      using p4_int_t = Kokkos::MDRangePolicy<ExecSpace, Kokkos::Rank<4>>;
+      const p5_mid_t p5_mid({0,0,0,0,0}, {num_elems, 2, NP, NP, NUM_PHYSICAL_LEV});
+      const p4_mid_t p4_mid({0,0,0,0}, {num_elems, NP, NP, NUM_PHYSICAL_LEV});
+      const p4_int_t p4_int({0,0,0,0}, {num_elems, NP, NP, NUM_INTERFACE_LEV});
 
-  Kokkos::parallel_reduce(p4_mid,
-    KOKKOS_LAMBDA(int ie, int ip, int jp, int k, Real2& acc) {
-      acc.v[0] += xa_dp3d(ie, ip, jp, k) * yb_dp3d(ie, ip, jp, k);
-      acc.v[1] += ya_dp3d(ie, ip, jp, k) * xb_dp3d(ie, ip, jp, k);
-    }, dp_dot);
+      Real2 V_dot, vth_dot, dp_dot, phi_dot, w_dot;
 
-  Kokkos::parallel_reduce(p4_int,
-    KOKKOS_LAMBDA(int ie, int ip, int jp, int k, Real2& acc) {
-      acc.v[0] += xa_phi(ie, ip, jp, k) * yb_phi(ie, ip, jp, k);
-      acc.v[1] += ya_phi(ie, ip, jp, k) * xb_phi(ie, ip, jp, k);
-    }, phi_dot);
+      Kokkos::parallel_reduce(p5_mid,
+        KOKKOS_LAMBDA(int ie, int icmp, int ip, int jp, int k, Real2& acc) {
+          acc.v[0] += xa_v(ie, icmp, ip, jp, k) * yb_v(ie, icmp, ip, jp, k);
+          acc.v[1] += ya_v(ie, icmp, ip, jp, k) * xb_v(ie, icmp, ip, jp, k);
+        }, V_dot);
 
-  Kokkos::parallel_reduce(p4_int,
-    KOKKOS_LAMBDA(int ie, int ip, int jp, int k, Real2& acc) {
-      acc.v[0] += xa_w(ie, ip, jp, k) * yb_w(ie, ip, jp, k);
-      acc.v[1] += ya_w(ie, ip, jp, k) * xb_w(ie, ip, jp, k);
-    }, w_dot);
+      Kokkos::parallel_reduce(p4_mid,
+        KOKKOS_LAMBDA(int ie, int ip, int jp, int k, Real2& acc) {
+          acc.v[0] += xa_vth(ie, ip, jp, k) * yb_vth(ie, ip, jp, k);
+          acc.v[1] += ya_vth(ie, ip, jp, k) * xb_vth(ie, ip, jp, k);
+        }, vth_dot);
 
-  Real2 gdot = V_dot; gdot += vth_dot; gdot += dp_dot; gdot += phi_dot; gdot += w_dot;
+      Kokkos::parallel_reduce(p4_mid,
+        KOKKOS_LAMBDA(int ie, int ip, int jp, int k, Real2& acc) {
+          acc.v[0] += xa_dp3d(ie, ip, jp, k) * yb_dp3d(ie, ip, jp, k);
+          acc.v[1] += ya_dp3d(ie, ip, jp, k) * xb_dp3d(ie, ip, jp, k);
+        }, dp_dot);
 
-  const Real rtol = 1e-8;
-  const Real atol = 1e-8;
-  CHECK_THAT(gdot.v[0], Catch::WithinRel(gdot.v[1], rtol) || Catch::WithinAbs(gdot.v[1], atol));
+      Kokkos::parallel_reduce(p4_int,
+        KOKKOS_LAMBDA(int ie, int ip, int jp, int k, Real2& acc) {
+          acc.v[0] += xa_phi(ie, ip, jp, k) * yb_phi(ie, ip, jp, k);
+          acc.v[1] += ya_phi(ie, ip, jp, k) * xb_phi(ie, ip, jp, k);
+        }, phi_dot);
+
+      Kokkos::parallel_reduce(p4_int,
+        KOKKOS_LAMBDA(int ie, int ip, int jp, int k, Real2& acc) {
+          acc.v[0] += xa_w(ie, ip, jp, k) * yb_w(ie, ip, jp, k);
+          acc.v[1] += ya_w(ie, ip, jp, k) * xb_w(ie, ip, jp, k);
+        }, w_dot);
+
+      Real2 gdot = V_dot; gdot += vth_dot; gdot += dp_dot; gdot += phi_dot; gdot += w_dot;
+
+      const Real rtol = 1e-8;
+      const Real atol = 1e-8;
+      CHECK_THAT(gdot.v[0], Catch::WithinRel(gdot.v[1], rtol) || Catch::WithinAbs(gdot.v[1], atol));
+    }
+  }
 
   c.finalize_singleton();
 }
