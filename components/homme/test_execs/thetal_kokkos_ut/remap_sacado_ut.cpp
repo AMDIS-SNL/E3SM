@@ -120,8 +120,7 @@ TEST_CASE("remap", "remap_dp") {
       for (int tl = 0; tl < NUM_TIME_LEVELS; ++tl) {
         for (int igp = 0; igp < NP; ++igp) {
           for (int jgp = 0; jgp < NP; ++jgp) {
-            ExecViewUnmanaged<Scalar[NUM_LEV]> pt_dp3d =
-                Homme::subview(dp3d, ie, tl, igp, jgp);
+            auto pt_dp3d = Homme::subview(dp3d, ie, tl, igp, jgp);
             auto h_dp3d = Kokkos::create_mirror_view(pt_dp3d);
             Kokkos::deep_copy(h_dp3d,pt_dp3d);
             for (int ilev=0; ilev<NUM_LEV; ++ilev) {
