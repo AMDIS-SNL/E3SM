@@ -23,7 +23,7 @@
 #include "utilities/SubviewUtils.hpp"
 #include "utilities/SyncUtils.hpp"
 #include "RemapStateProvider.hpp"
-#include "../../theta-l_kokkos/cxx/StateSnapshot.hpp"
+#include "StateSnapshot.hpp"
 
 #include "profiling.hpp"
 
