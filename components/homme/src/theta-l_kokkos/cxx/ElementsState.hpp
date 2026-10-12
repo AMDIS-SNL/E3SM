@@ -35,11 +35,6 @@ struct RefStates {
 
   int num_elems () const { return m_num_elems; }
 private:
-  // Set phinh_i so that the equation of state yields (nearly) the hydrostatic pressure,
-  // given dp3d, vtheta_dp, and the geopotential at the surface
-  void init_balanced_phi (const int seed, const Real ps0, const Real hyai0,
-                          const HostViewManaged<Real*[NP][NP]>& phis);
-
   int m_num_elems;
   Kokkos::TeamPolicy<ExecSpace> m_policy;
   TeamUtils<ExecSpace> m_tu;
@@ -125,12 +120,17 @@ public:
 #endif
 
 private:
+  // Set phinh_i so that the equation of state yields (nearly) the hydrostatic pressure,
+  // given dp3d, vtheta_dp, and the geopotential at the surface
+  void init_balanced_phi (const int seed, const Real ps0, const Real hyai0,
+                          const HostViewManaged<Real*[NP][NP]>& phis);
+
   int m_num_elems;
   Kokkos::TeamPolicy<ExecSpace> m_policy;
   TeamUtils<ExecSpace> m_tu;
 };
 
-using ElementsState = ElementsStateST<ScalarValue>;
+using ElementsState= ElementsStateST<ScalarValue>;
 
 // Copy values from one ElementStateST struct to another. All derivs get set to 0.
 template<typename ST>
