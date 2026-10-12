@@ -32,7 +32,7 @@
 using namespace Homme;
 
 // Test Fad dp calculation roughly matches a finite difference
-TEST_CASE("remap", "remap_dp") {
+TEST_CASE("remap_dp_testing") {
 
   // The random numbers generator
   std::random_device rd;
