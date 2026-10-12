@@ -160,7 +160,7 @@ TEST_CASE("remap_dp_testing") {
         auto dp3d_v_orig = ekat::scalarize(elems_orig.m_state.m_dp3d);
         auto dp3d_v_dp = ekat::scalarize(elems_dp.m_state.m_dp3d);
         Kokkos::parallel_for(Kokkos::MDRangePolicy<ExecSpace, Kokkos::Rank<3>>({0,0,0},{num_elems,NP,NP}),
-                            [=](int ie, int ip, int jp){
+                            KOKKOS_LAMBDA(int ie, int ip, int jp) {
                               for(int ilev=0; ilev<NUM_LEV; ++ilev){
                                 DpFadType val = dp3d_v_orig(ie,np1,ip,jp,ilev);
                                 // Mark ALL as active for differentiation to match the global perturbation in FD
@@ -193,7 +193,7 @@ TEST_CASE("remap_dp_testing") {
         auto qdp_base_h = Kokkos::create_mirror(qdp_base);
         Kokkos::deep_copy(qdp_base_h, qdp_base);
         Real f_base = qdp_base_h(0,0,0,0,0,0);
-        
+
         // Run AD computation
         vrm_dp.run_remap(np1,np1_qdp,dt);
         auto qdp_dp = ekat::scalarize(tracers_dp.qdp);
@@ -220,13 +220,11 @@ TEST_CASE("remap_dp_testing") {
 
           // Perturb all dp3d_v to ensure some effect
           auto dp3d_v = ekat::scalarize(elems.m_state.m_dp3d);
-          auto dp3d_v_h = Kokkos::create_mirror_view(dp3d_v);
-          for(int ie=0; ie<num_elems; ++ie)
-            for(int ip=0; ip<NP; ++ip)
-              for(int jp=0; jp<NP; ++jp)
-                for(int ilev=0; ilev<NUM_LEV; ++ilev)
-                  dp3d_v_h(ie,np1,ip,jp,ilev) = dp3d_v_orig(ie,np1,ip,jp,ilev) + factor;
-          Kokkos::deep_copy(dp3d_v, dp3d_v_h);
+          Kokkos::parallel_for(
+            Kokkos::MDRangePolicy<ExecSpace, Kokkos::Rank<4>>({0,0,0,0},{num_elems,NP,NP,NUM_LEV}),
+            KOKKOS_LAMBDA(int ie, int ip, int jp, int ilev)  {
+              dp3d_v(ie,np1,ip,jp,ilev) = dp3d_v_orig(ie,np1,ip,jp,ilev) + factor;
+            });
 
           // Run remap with perturbed values
           vrm.run_remap(np1,np1_qdp,dt);
