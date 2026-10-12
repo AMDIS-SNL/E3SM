@@ -162,7 +162,9 @@ TEST_CASE("remap", "remap_testing") {
 
           // Randomize state/derived/tracers
           elems.m_state.randomize(seed,max_pressure,hvcoord.ps0,hvcoord.hybrid_ai0,geo.m_phis);
-          elems.m_derived.randomize(seed,dp3d_min(elems.m_state.m_dp3d));
+          // The remap uses dp_star = dp3d + dt*d(eta_dot_dpdn), which must stay positive: since dt can
+          // be large compared to the (now well-behaved) dp3d, scale eta_dot_dpdn by 1/dt.
+          elems.m_derived.randomize(seed,dp3d_min(elems.m_state.m_dp3d)/dt);
           tracers.randomize(seed);
 
           // Copy initial values to f90
