@@ -601,7 +601,7 @@ struct RemapFunctor : public RemapperST<ST> {
       auto& dvthdx = dvthdx_v(ie, tl,    ip, jp, k);
       auto& ddpdx  = ddpdx_v (ie, tl,    ip, jp, k);
 
-      auto coeff = tl==dx_tl ? 1 : 0;
+      auto coeff = tl==dx_tl ? 1.0 : 0.0;
       dudx.zero();   dudx.fastAccessDx  (offset_u   + k) = coeff;
       dvdx.zero();   dvdx.fastAccessDx  (offset_v   + k) = coeff;
       dvthdx.zero(); dvthdx.fastAccessDx(offset_vth + k) = coeff;
@@ -612,7 +612,7 @@ struct RemapFunctor : public RemapperST<ST> {
       auto& dwdx   = dwdx_v  (ie, tl, ip, jp, k);
       auto& dphidx = dphidx_v(ie, tl, ip, jp, k);
 
-      auto coeff = tl==dx_tl ? 1 : 0;
+      auto coeff = tl==dx_tl ? 1.0 : 0.0;
       dwdx.zero();   dwdx.fastAccessDx  (offset_w   + k) = coeff;
       dphidx.zero(); dphidx.fastAccessDx(offset_phi + k) = coeff;
     };
