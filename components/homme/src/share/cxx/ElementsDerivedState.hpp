@@ -51,7 +51,7 @@ private:
 
 using ElementsDerivedState = ElementsDerivedStateST<ScalarValue>;
 
-// Copy values from one ElementStateST struct to another. All derivs get set to 0.
+// Copy values from one ElementsDerivedStateST struct to another. All derivs get set to 0.
 template<typename ST>
 template<typename RST>
 void ElementsDerivedStateST<ST>::import_values (const ElementsDerivedStateST<RST>& rhs)
