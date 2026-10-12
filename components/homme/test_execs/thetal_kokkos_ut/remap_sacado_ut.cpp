@@ -26,9 +26,6 @@
 #include "utilities/ViewUtils.hpp"
 #include "utilities/MathUtils.hpp"
 
-// #include <cfenv>
-// #include "ekat_fpe.hpp"
-
 using namespace Homme;
 
 // Test Fad dp calculation roughly matches a finite difference
@@ -68,11 +65,6 @@ TEST_CASE("remap_dp_testing") {
   // Create and init hvcoord
   auto& hvcoord = c.create<HybridVCoord>();
   hvcoord.random_init(seed);
-
-  // Force ps0 and hybrid_ai0 to be something reasonable to avoid negative thickness
-  // ps0 = 100.0, hybrid_ai0 = 1.0
-  // hvcoord.ps0 = 100.0;
-  // hvcoord.hybrid_ai0 = 1.0;
   const auto max_pressure = 1000.0 + hvcoord.ps0; // This ensures max_p > ps0
 
   // Create elements geometry
@@ -183,9 +175,6 @@ TEST_CASE("remap_dp_testing") {
         fbm.allocate();
         vrm.init_buffers(fbm);
         vrm_dp.init_buffers(fbm);
-
-        // int mask = FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW;
-        // ekat::enable_fpes(mask);
 
         // Run base (unperturbed) computation and save tracers
         vrm.run_remap(np1,np1_qdp,dt);
