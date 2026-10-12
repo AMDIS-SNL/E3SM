@@ -86,12 +86,6 @@ TEST_CASE("remap_dp_testing") {
   elems_orig.init(num_elems,false,true,PhysicalConstants::rearth0);
   elems_orig.m_geometry = geo; // Use same views for geometry
 
-  // Create elements with Real scalar type with the base (unperturbed) values in the F.D. calculation
-  // Can't use Context because it allows creating only one of each type
-  ElementsST<Real> elems_base;
-  elems_base.init(num_elems,false,true,PhysicalConstants::rearth0);
-  elems_base.m_geometry = geo; // Use same views for geometry
-
   // Create elements with Real scalar type -- what is computed by remap
   auto& elems = c.create<ElementsST<Real>>();
   elems.init(num_elems,false,true,PhysicalConstants::rearth0);
@@ -103,11 +97,10 @@ TEST_CASE("remap_dp_testing") {
   elems_dp.m_geometry = geo; // Use same views for geometry
 
   // Create tracers
-  TracersST<Real> tracers_orig, tracers_base;
+  TracersST<Real> tracers_orig;
   auto& tracers = c.create<TracersST<Real>>();
   auto& tracers_dp = c.create<TracersST<DpFadType>>();
   tracers_orig.init(num_elems,params.qsize);
-  tracers_base.init(num_elems,params.qsize);
   tracers.init(num_elems,params.qsize);
   tracers_dp.init(num_elems,params.qsize);
 
@@ -157,11 +150,9 @@ TEST_CASE("remap_dp_testing") {
         elems_orig.m_state.randomize(seed,max_pressure,hvcoord.ps0,hvcoord.hybrid_ai0,geo.m_phis);
         elems_orig.m_derived.randomize(seed,dp3d_min(elems_orig.m_state.m_dp3d));
         for (int tl=0; tl<NUM_TIME_LEVELS; ++tl) {
-          elems_base.m_state.import_values(elems_orig.m_state,tl);
           elems.m_state.import_values(elems_orig.m_state,tl);
           elems_dp.m_state.import_values(elems_orig.m_state,tl);
         }
-        elems_base.m_derived.import_values(elems_orig.m_derived);
         elems.m_derived.import_values(elems_orig.m_derived);
         elems_dp.m_derived.import_values(elems_orig.m_derived);
 
@@ -179,7 +170,6 @@ TEST_CASE("remap_dp_testing") {
                             });
 
         tracers_orig.randomize(seed);
-        tracers_base.import_values(tracers_orig, 0);
         tracers.import_values(tracers_orig, 0);
         tracers_dp.import_values(tracers_orig, 0);
 
@@ -203,14 +193,7 @@ TEST_CASE("remap_dp_testing") {
         auto qdp_base_h = Kokkos::create_mirror(qdp_base);
         Kokkos::deep_copy(qdp_base_h, qdp_base);
         Real f_base = qdp_base_h(0,0,0,0,0,0);
-
-        // Reset elems/tracers to original values
-        for (int tl=0; tl<NUM_TIME_LEVELS; ++tl) {
-          elems_base.m_state.import_values(elems_orig.m_state,tl);
-        }
-        elems_base.m_derived.import_values(elems_orig.m_derived);
-        tracers_base.import_values(tracers_orig, 0);
-
+        
         // Run AD computation
         vrm_dp.run_remap(np1,np1_qdp,dt);
         auto qdp_dp = ekat::scalarize(tracers_dp.qdp);
