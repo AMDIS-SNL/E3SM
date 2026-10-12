@@ -274,7 +274,6 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
     LABELS AMDIS
   )
 
-
   # Dirk sacado derivatives tests
   EkatCreateUnitTest ("dirk_sacado_ut"
     dirk_sacado_ut.cpp
