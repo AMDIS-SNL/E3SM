@@ -120,6 +120,27 @@ inline bool equal (const ScalarValue& a, const ScalarValue& b,
 }
 #endif
 
+// sum_{ie,iq<qsize,i,j,lev} a(ie,iq,i,j,lev) * b(ie,slot,iq,i,j,lev), where a is qdp
+// at a single time level, and b is the full qdp view (all time levels). Both are views
+// of Packs, and either can be a device view. Only the first qsize tracers are meaningful
+// (qdp is always allocated for QSIZE_D of them), and padding levels are skipped.
+template<typename View1, typename View2>
+double dot_qdp (const View1& a, const View2& b, const int slot, const int qsize) {
+  auto ah = Kokkos::create_mirror(a); Kokkos::deep_copy(ah,a);
+  auto bh = Kokkos::create_mirror(b); Kokkos::deep_copy(bh,b);
+  const int ne = ah.extent_int(0);
+  double s = 0;
+  for (int ie=0; ie<ne; ++ie)
+    for (int iq=0; iq<qsize; ++iq)
+      for (int i=0; i<NP; ++i)
+        for (int j=0; j<NP; ++j)
+          for (int lev=0; lev<NUM_PHYSICAL_LEV; ++lev) {
+            const int vpi = lev/VECTOR_SIZE, vsi = lev%VECTOR_SIZE;
+            s += ah(ie,iq,i,j,vpi)[vsi] * bh(ie,slot,iq,i,j,vpi)[vsi];
+          }
+  return s;
+}
+
 #ifdef HOMMEXX_ENABLE_FAD_TYPES
 // Helpers to move data between Real views and Fad views (host round trip: the
 // problem sizes in unit tests are small). fad_view and real_view must have the
