@@ -261,8 +261,10 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
   )
 
   # Remap sacado derivatives tests
+  # Note: the F90 interface sources (geometry_interface.F90, thetal_test_interface.F90)
+  #       are already part of thetal_kokkos_ut_lib; the test has no F90 sources of its own.
   EkatCreateUnitTest (remap_sacado_ut
-    "remap_sacado_ut.cpp;${SHARE_UT_DIR}/geometry_interface.F90;thetal_test_interface.F90;remap_theta_interface.F90"
+    remap_sacado_ut.cpp
     LIBS thetal_kokkos_ut_lib
     LABELS AMDIS
   )
