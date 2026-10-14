@@ -334,4 +334,23 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
     LIBS thetal_kokkos_ut_lib
     LABELS AMDIS
   )
+
+  if (NOT HOMMEXX_ENABLE_FWD_SENS)
+    # Test the adjoint of the whole prim_step (Eulerian tracers): prim_advance_adj (K times),
+    # prim_advec_tracers_remap_adj, and the glue in between. The adjoint recomputes the fwd
+    # trajectory with the Real-typed objects in the Context (the ones a run would use), so
+    # ScalarValue must be Real (like for the Real-only euler_step_adj/states_forcing_adj).
+    # Note: prim_step_adj.cpp is only compiled into this test for now (it has no other users
+    # yet), unlike prim_advance_adj.cpp, which is in the lib.
+    set (PRIM_STEP_ADJOINT_SOURCES
+      prim_step_adjoint_ut.cpp
+      ${SRC_THETA_DIR}/cxx/prim_step_adj.cpp
+      ${SRC_SHARE_DIR}/cxx/prim_advec_tracers_remap_adj.cpp
+    )
+    EkatCreateUnitTest ("prim_step_adjoint_ut"
+      "${PRIM_STEP_ADJOINT_SOURCES}"
+      LIBS thetal_kokkos_ut_lib
+      LABELS AMDIS
+    )
+  endif()
 endif()
