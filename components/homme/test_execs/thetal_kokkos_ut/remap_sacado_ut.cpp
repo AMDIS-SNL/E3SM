@@ -1,6 +1,8 @@
 #include <catch2/catch.hpp>
 
 #include "Types.hpp"
+#include "thetal_f90_interface.hpp"
+#include "thetal_ut_session.hpp"
 #include "Context.hpp"
 #include "RemapFunctor.hpp"
 #include "SimulationParams.hpp"
@@ -31,6 +33,8 @@ using namespace Homme;
 // Test Fad dp calculation roughly matches a finite difference
 TEST_CASE("remap_dp_testing") {
 
+  constexpr int ne = 2;
+
   // The random numbers generator
   std::random_device rd;
   using rngAlg = std::mt19937_64;
@@ -49,21 +53,19 @@ TEST_CASE("remap_dp_testing") {
     std::cout << "Running remap_dp_check..." << std::endl;
   }
 
-  // Init connectivity
-  auto& conn = c.create<Connectivity>();
-  conn.set_comm(comm);
-  conn.set_num_elements(4);
-  conn.finalize();
-  const int num_elems = c.get<Connectivity>().get_num_local_elements();
-
   // Init parameters
   auto& params = c.create<SimulationParams>();
   params.params_set = true;
   params.qsize = std::max(int(QSIZE_D-1),0);
 
-  // Create and init hvcoord
-  auto& hvcoord = c.create<HybridVCoord>();
-  hvcoord.random_init(seed);
+  // Create the f90 mesh/connectivity, and init hvcoord.
+  // The session also takes care of cleaning up (f90 and Context) at the end of the scope.
+  // We use a smooth hvcoord, so that layer thicknesses are well behaved (the random one
+  // can yield very thin layers, which may trigger the negative dp check in remap).
+  ThetalUnitTestSession session(ne, seed, ThetalUnitTestSession::VCoord::Smooth);
+  auto& hvcoord = session.hvcoord;
+
+  const int num_elems = session.num_elems();
   const auto max_pressure = 1000.0 + hvcoord.ps0; // This ensures max_p > ps0
 
   // Create elements geometry
@@ -256,8 +258,6 @@ TEST_CASE("remap_dp_testing") {
       }
     }
   }
-
-  c.finalize_singleton();
 }
 
 // Compute Dx/Dp two ways, and compare:
@@ -265,6 +265,8 @@ TEST_CASE("remap_dp_testing") {
 //  - Use product rule: Dx_new/Dp = Dx_new/Dx_old * Dx_old/Dp
 TEST_CASE("remap_jv_testing") {
   using DxFadType = DxFadTypeRemap;
+
+  constexpr int ne = 2;
 
   // The random numbers generator to init the state
   std::random_device rd;
@@ -284,21 +286,17 @@ TEST_CASE("remap_jv_testing") {
     std::cout << "Running remap_jv_testing..." << std::endl;
   }
 
-  // Init connectivity
-  auto& conn = c.create<Connectivity>();
-  conn.set_comm(c.get<ekat::Comm>());
-  conn.set_num_elements(4);
-  conn.finalize();
-  const int num_elems = c.get<Connectivity>().get_num_local_elements();
-
   // Init parameters
   auto& params = c.create<SimulationParams>();
   params.params_set = true;
   params.qsize = std::max(int(QSIZE_D-1),0);
 
-  // Create and init hvcoord and ref_elem
-  auto& hvcoord = c.create<HybridVCoord>();
-  hvcoord.random_init(seed);
+  // Create the f90 mesh/connectivity, and init hvcoord.
+  // The session also takes care of cleaning up (f90 and Context) at the end of the scope.
+  ThetalUnitTestSession session(ne, seed, ThetalUnitTestSession::VCoord::Smooth);
+  auto& hvcoord = session.hvcoord;
+
+  const int num_elems = session.num_elems();
   const auto max_pressure = 1000.0 + hvcoord.ps0; // This ensures max_p > ps0
 
   // Create elements geometry
@@ -491,13 +489,13 @@ TEST_CASE("remap_jv_testing") {
       }
     }
   }
-
-  c.finalize_singleton();
 }
 
 // Verify the JtV transpose identity: <a, J*b> == <J^T*a, b>.
 TEST_CASE("remap_jtv_testing") {
   using DxFadType = DxFadTypeRemap;
+
+  constexpr int ne = 2;
 
   std::random_device rd;
   using rngAlg = std::mt19937_64;
@@ -515,21 +513,17 @@ TEST_CASE("remap_jtv_testing") {
     std::cout << "Running remap_jtv_testing..." << std::endl;
   }
 
-  // Init connectivity
-  auto& conn = c.create<Connectivity>();
-  conn.set_comm(c.get<ekat::Comm>());
-  conn.set_num_elements(4);
-  conn.finalize();
-  const int num_elems = c.get<Connectivity>().get_num_local_elements();
-
   // Init parameters
   auto& params = c.create<SimulationParams>();
   params.params_set = true;
   params.qsize = std::max(int(QSIZE_D-1),0);
 
-  // Create and init hvcoord and ref_elem
-  auto& hvcoord = c.create<HybridVCoord>();
-  hvcoord.random_init(seed);
+  // Create the f90 mesh/connectivity, and init hvcoord.
+  // The session also takes care of cleaning up (f90 and Context) at the end of the scope.
+  ThetalUnitTestSession session(ne, seed, ThetalUnitTestSession::VCoord::Smooth);
+  auto& hvcoord = session.hvcoord;
+
+  const int num_elems = session.num_elems();
   const auto max_pressure = 1000.0 + hvcoord.ps0; // This ensures max_p > ps0
 
   // Create elements geometry
@@ -668,6 +662,4 @@ TEST_CASE("remap_jtv_testing") {
       CHECK_THAT(gdot.v[0], Catch::WithinRel(gdot.v[1], rtol) || Catch::WithinAbs(gdot.v[1], atol));
     }
   }
-
-  c.finalize_singleton();
 }
