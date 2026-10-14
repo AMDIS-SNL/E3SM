@@ -14,6 +14,9 @@
 namespace Homme
 {
 
+// Advance the dynamics by one time step dt (defined in prim_advance_exp.cpp)
+void prim_advance_exp (TimeLevel& tl, const Real dt, const bool compute_diagnostics);
+
 template<typename ST = ScalarValue>
 void ttype10_imex_timestep(const int nm1, const int n0, const int np1,
                            const Real dt_dyn,

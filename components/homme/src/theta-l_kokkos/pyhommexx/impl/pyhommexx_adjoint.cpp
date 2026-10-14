@@ -8,6 +8,7 @@
 #include "Tape.hpp"
 #include "TimeLevel.hpp"
 #include "Types.hpp"
+#include "prim_advance_exp.hpp"
 
 #ifdef HOMMEXX_ENABLE_FAD_TYPES
 #include "prim_advance_adj.hpp"
@@ -16,10 +17,6 @@
 #include <ekat_assert.hpp>
 
 #include <nanobind/ndarray.h>
-
-namespace Homme {
-void prim_advance_exp (TimeLevel& tl, const Real dt, const bool compute_diagnostics);
-} // namespace Homme
 
 namespace pyhommexx {
 

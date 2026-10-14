@@ -4,6 +4,8 @@
  * See the file 'COPYRIGHT' in the HOMMEXX/src/share/cxx directory
  *******************************************************************************/
 
+#include "prim_advance_exp.hpp"
+
 #include "CaarFunctor.hpp"
 #include "Context.hpp"
 #include "Elements.hpp"
