@@ -3,6 +3,7 @@
 #include "Types.hpp"
 #include "thetal_f90_interface.hpp"
 #include "thetal_ut_session.hpp"
+#include "thetal_ut_utils.hpp"
 #include "Tape.hpp"
 #include "Context.hpp"
 #include "CaarFunctor.hpp"
@@ -18,6 +19,7 @@
 #include "TimeLevel.hpp"
 #include "prim_advance_exp.hpp"
 #include "prim_advance_adj.hpp"
+#include "prim_step.hpp"
 #include "mpi/Connectivity.hpp"
 #include "mpi/MpiBuffersManager.hpp"
 
@@ -242,6 +244,14 @@ TEST_CASE("prim_advance_adj")
     Kokkos::fence();
   }
 
+  // The last CAAR stage also accumulates vn0 += eta_ave_w*v*dp (of its input state) into the
+  // derived state. Zero it first, so that its tangent after the step is just that increment.
+  {
+    TimeLevel tl_tmp = {};
+    tl_tmp.n0 = n0;
+    set_tracer_transport_derived_values<DpFadType>(params,elems_dp,tl_tmp);
+  }
+
   printf(" -> Run forward problem (ttype10 CAAR/DIRK stages)...\n");
   ttype10_imex_timestep<DpFadType>(nm1,n0,np1,dt,eta_ave_w);
   printf(" -> Run forward problem (ttype10 CAAR/DIRK stages)...done!\n");
@@ -300,6 +310,55 @@ TEST_CASE("prim_advance_adj")
       std::cout << std::setprecision(15)
                 << "   <du0, lambda0> = " << full_dot0
                 << ",  <duN, lambdaN> = " << full_dotN << "\n";
+  }
+
+  // Now also seed the derived vn0 (which depends on the state through the last CAAR stage).
+  // The identity becomes
+  //   <du0, lambda0> == <duN, lambdaN> + <dvn0N, mu_vn0>
+  // where mu_vn0 is the seed on vn0 and dvn0N its tangent. This is how prim_step's tracers
+  // step (which consumes vn0) hooks into the dynamics adjoint. The tape is read-only for
+  // prim_advance_adj, so we can run the adjoint again on the very same fwd trajectory.
+  {
+    std::mt19937_64 engine(seed+1);
+    std::uniform_real_distribution<Real> pdf(-1.0,1.0);
+
+    AdjVn0View mu_vn0("mu_vn0",num_elems);
+    {
+      auto h = Kokkos::create_mirror(mu_vn0);
+      genRandArray(h,engine,pdf);
+      Kokkos::deep_copy(mu_vn0,h);
+    }
+
+    // The tangent of vn0 after the step
+    AdjVn0View dvn0N("dvn0N",num_elems);
+    {
+      auto h = Kokkos::create_mirror(dvn0N);
+      ut::get_deriv0(h,elems_dp.m_derived.m_vn0);
+      Kokkos::deep_copy(dvn0N,h);
+    }
+
+    auto lambda_vn0 = lambdaN.clone(true);
+    printf(" -> Run adjoint problem (prim_advance_adj, with vn0 seed)...\n");
+    prim_advance_adj(dt,lambda_vn0,&mu_vn0);
+    printf(" -> Run adjoint problem (prim_advance_adj, with vn0 seed)...done!\n");
+
+    auto v_dot0_vn0 = dot(ekat::scalarize(du0.v),ekat::scalarize(lambda_vn0.v),nlevs);
+    auto vth_dot0_vn0 = dot(ekat::scalarize(du0.vtheta_dp),ekat::scalarize(lambda_vn0.vtheta_dp),nlevs);
+    auto dp_dot0_vn0 = dot(ekat::scalarize(du0.dp3d),ekat::scalarize(lambda_vn0.dp3d),nlevs);
+    auto w_dot0_vn0 = dot(ekat::scalarize(du0.w_i),ekat::scalarize(lambda_vn0.w_i),nlevs+1);
+    auto phi_dot0_vn0 = dot(ekat::scalarize(du0.phinh_i),ekat::scalarize(lambda_vn0.phinh_i),nlevs+1);
+
+    const double vn0_dotN = dot(ekat::scalarize(dvn0N),ekat::scalarize(mu_vn0),nlevs);
+
+    using namespace Catch::Matchers;
+    auto full_dot0 = v_dot0_vn0 + vth_dot0_vn0 + dp_dot0_vn0 + w_dot0_vn0 + phi_dot0_vn0;
+    auto full_dotN = v_dotN + vth_dotN + dp_dotN + w_dotN + phi_dotN + vn0_dotN;
+    CHECK_THAT (full_dot0, WithinRel(full_dotN,tol));
+
+    if (comm.am_i_root())
+      std::cout << std::setprecision(15)
+                << "   [vn0 seed] <du0, lambda0> = " << full_dot0
+                << ",  <duN, lambdaN> + <dvn0N, mu_vn0> = " << full_dotN << "\n";
   }
 }
 
