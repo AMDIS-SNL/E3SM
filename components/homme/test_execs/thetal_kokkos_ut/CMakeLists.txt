@@ -260,6 +260,15 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
     LABELS AMDIS
   )
 
+  # Remap sacado derivatives tests
+  # Note: the F90 interface sources (geometry_interface.F90, thetal_test_interface.F90)
+  #       are already part of thetal_kokkos_ut_lib; the test has no F90 sources of its own.
+  EkatCreateUnitTest (remap_sacado_ut
+    remap_sacado_ut.cpp
+    LIBS thetal_kokkos_ut_lib
+    LABELS AMDIS
+  )
+
   # Eqn of state sacado derivatives tests
   EkatCreateUnitTest (eos_sacado_ut
     eos_sacado_ut.cpp
