@@ -205,9 +205,9 @@ TEST_CASE("prim_advec_tracers_remap_adjoint")
   constexpr auto tol = std::numeric_limits<double>::epsilon()*1e5;
 
   // Runs the adjoint on the given seed, and returns <du0, J^T*lambdaN>
-  auto run_adjoint = [&](const TracersQdpAdjView& seed) {
+  auto run_adjoint = [&](const TracersQdpAdjView& seed_qdp) {
     TracersQdpAdjView adj_qdp("adj_qdp",num_elems);
-    Kokkos::deep_copy(adj_qdp,seed);
+    Kokkos::deep_copy(adj_qdp,seed_qdp);
     TracersVn0AdjView adj_vn0("adj_vn0",num_elems);
     TracersDpAdjView  adj_dp("adj_dp",num_elems);
 
@@ -218,16 +218,16 @@ TEST_CASE("prim_advec_tracers_remap_adjoint")
          + dot(ekat::scalarize(adj_dp),ekat::scalarize(ddp),nlevs);
   };
 
-  TracersQdpAdjView seed("seed_qdp",num_elems);
+  TracersQdpAdjView qdp_seed("qdp_seed",num_elems);
   {
-    auto h = Kokkos::create_mirror(seed);
+    auto h = Kokkos::create_mirror(qdp_seed);
     genRandArray(h, engine, unit_pdf);
-    Kokkos::deep_copy(seed,h);
+    Kokkos::deep_copy(qdp_seed,h);
   }
 
   // <du0, J^T*lambdaN> vs <J*du0, lambdaN>
-  const double lhs = run_adjoint(seed);
-  const double rhs = ut::dot_qdp(seed,duN_qdp,np1_qdp,qsize);
+  const double lhs = run_adjoint(qdp_seed);
+  const double rhs = ut::dot_qdp(qdp_seed,duN_qdp,np1_qdp,qsize);
   if (comm.am_i_root())
     std::cout << std::setprecision(15)
               << "   <du0,J^T*lambdaN> = " << lhs
@@ -238,7 +238,7 @@ TEST_CASE("prim_advec_tracers_remap_adjoint")
   // (see the comment on nu_q), by checking that the adjoint changes when we turn it off.
   // The adjoint of the fwd steps (which it replays) is recomputed with the new nu_q.
   params.nu_q = 0;
-  const double lhs_no_bih = run_adjoint(seed);
+  const double lhs_no_bih = run_adjoint(qdp_seed);
   params.nu_q = 1e20;
   if (comm.am_i_root())
     std::cout << std::setprecision(15)
