@@ -120,6 +120,50 @@ inline bool equal (const ScalarValue& a, const ScalarValue& b,
 }
 #endif
 
+#ifdef HOMMEXX_ENABLE_FAD_TYPES
+// Helpers to move data between Real views and Fad views (host round trip: the
+// problem sizes in unit tests are small). fad_view and real_view must have the
+// same logical (non-Fad) shape, which is the case for any pair of Pack views of
+// the same field (PackType<ST> has the same VECTOR_SIZE for every ST), so that
+// ekat::scalarize gives matching spans.
+
+// fad_view's .val() := real_view (elementwise). Assigning a plain scalar to a Fad
+// resets its derivatives, so call this *before* set_deriv0 on the same view.
+template<typename FadView, typename RealView>
+void set_val (const FadView& fad_view, const RealView& real_view) {
+  auto fh = Kokkos::create_mirror(fad_view); Kokkos::deep_copy(fh, fad_view);
+  auto rh = Kokkos::create_mirror(real_view); Kokkos::deep_copy(rh, real_view);
+  auto fs = ekat::scalarize(fh);
+  auto rs = ekat::scalarize(rh);
+  EKAT_REQUIRE_MSG(fs.span()==rs.span(), "[set_val] Error! Mismatched spans.\n");
+  for (size_t i=0; i<fs.span(); ++i) fs.data()[i] = rs.data()[i];
+  Kokkos::deep_copy(fad_view, fh);
+}
+
+// fad_view's .fastAccessDx(0) := real_view (elementwise); .val() untouched.
+// (DpFadType has a single derivative slot.)
+template<typename FadView, typename RealView>
+void set_deriv0 (const FadView& fad_view, const RealView& real_view) {
+  auto fh = Kokkos::create_mirror(fad_view); Kokkos::deep_copy(fh, fad_view);
+  auto rh = Kokkos::create_mirror(real_view); Kokkos::deep_copy(rh, real_view);
+  auto fs = ekat::scalarize(fh);
+  auto rs = ekat::scalarize(rh);
+  EKAT_REQUIRE_MSG(fs.span()==rs.span(), "[set_deriv0] Error! Mismatched spans.\n");
+  for (size_t i=0; i<fs.span(); ++i) fs.data()[i].fastAccessDx(0) = rs.data()[i];
+  Kokkos::deep_copy(fad_view, fh);
+}
+
+// real_view (a host view) := fad_view's .fastAccessDx(0) (elementwise)
+template<typename RealView, typename FadView>
+void get_deriv0 (const RealView& real_view, const FadView& fad_view) {
+  auto fh = Kokkos::create_mirror(fad_view); Kokkos::deep_copy(fh, fad_view);
+  auto fs = ekat::scalarize(fh);
+  auto rs = ekat::scalarize(real_view);
+  EKAT_REQUIRE_MSG(fs.span()==rs.span(), "[get_deriv0] Error! Mismatched spans.\n");
+  for (size_t i=0; i<fs.span(); ++i) rs.data()[i] = fs.data()[i].fastAccessDx(0);
+}
+#endif // HOMMEXX_ENABLE_FAD_TYPES
+
 } // namespace ut
 } // namespace Homme
 

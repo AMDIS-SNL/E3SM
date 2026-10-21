@@ -26,11 +26,6 @@ namespace {
 
 constexpr const char* adj_state_key = "pyhommexx_adj_state";
 
-// Checkpoints stored by one prim_advance_exp call (see ttype10_imex_timestep
-// and the store_fwd_state block of prim_advance_exp.cpp). prim_advance_adj
-// reads up to index 11 (post-HV state)
-constexpr int imex_tape_size = 12;
-
 StateSnapshot& get_adj_state ()
 {
   auto& c = Context::singleton();
@@ -135,7 +130,7 @@ void enable_adjoint ()
   const int nelem = c.get<ElementsState>().num_elems();
 
   params.store_fwd_state = true;
-  c.any_map().try_emplace("imex_tape",std::in_place_type<Tape<StateSnapshot>>,imex_tape_size,nelem);
+  ensure_imex_tape(nelem);
   c.any_map().try_emplace(adj_state_key,std::in_place_type<StateSnapshot>,nelem);
 #else
   EKAT_ERROR_MSG("[pyhommexx::enable_adjoint] Error! Adjoint requires homme to be built with HOMMEXX_ENABLE_FAD_TYPES=ON.\n");
