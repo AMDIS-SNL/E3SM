@@ -27,6 +27,7 @@
 #include <cmath>
 #include <iomanip>
 #include <random>
+#include <vector>
 
 #ifdef HOMMEXX_ENABLE_FAD_TYPES
 
@@ -66,12 +67,10 @@ TEST_CASE("prim_advec_tracers_remap_adjoint")
   params.transport_alg = 0;
   params.limiter_option = 9;
   params.nu_p = 0;
-  // Huge, since on this tiny grid (ne=2, and dp0 = ps0*delta(eta) with ps0=1 in the random
-  // hvcoord) it takes a huge viscosity for the biharmonic term to be non negligible (rough
-  // estimate: ~1e-3 relative to qdp). We want it to be, so that the adjoint of the last
-  // euler_step (rhs_multiplier=2), the only one with that term, is exercised. The end of this
-  // test checks that it is.
-  params.nu_q = 1e20;
+  // Set below, by looping over a few values (huge ones too: on this tiny grid, with ne=2 and
+  // dp0 = ps0*delta(eta) with ps0=1 in the random hvcoord, it takes a huge viscosity for the
+  // biharmonic term of the last euler_step, the only one with that term, to matter).
+  params.nu_q = 0;
   params.hypervis_scaling = 0.0;
   params.scale_factor = PhysicalConstants::rearth0;
   params.laplacian_rigid_factor = PhysicalConstants::rrearth0;
@@ -173,41 +172,55 @@ TEST_CASE("prim_advec_tracers_remap_adjoint")
   TracersDpAdjView ddp("ddp",num_elems);
   Kokkos::deep_copy(ddp,ddp_h);
 
+  // A random seed lambdaN on qdp after the step
+  TracersQdpAdjView qdp_seed("qdp_seed",num_elems);
+  {
+    auto h = Kokkos::create_mirror(qdp_seed);
+    genRandArray(h, engine, unit_pdf);
+    Kokkos::deep_copy(qdp_seed,h);
+  }
+
   // ==== Forward-tangent half (ST=DpFadType): exact duN = J*du0. ====
-  // Base point's .val() first (zeroes any pre-existing tangent), *then* the tangents
-  ut::set_val(tracers_dp.qdp,                 tracers_r.qdp);
-  ut::set_val(derived_dp.m_dp,                derived_r.m_dp);
-  ut::set_val(derived_dp.m_vn0,               derived_r.m_vn0);
-  ut::set_val(derived_dp.m_divdp,             derived_r.m_divdp);
-  ut::set_val(derived_dp.m_divdp_proj,        derived_r.m_divdp_proj);
-  ut::set_val(derived_dp.m_eta_dot_dpdn,      derived_r.m_eta_dot_dpdn);
-  ut::set_val(derived_dp.m_omega_p,           derived_r.m_omega_p);
-  ut::set_val(derived_dp.m_dpdiss_biharmonic, derived_r.m_dpdiss_biharmonic);
-  ut::set_val(derived_dp.m_dpdiss_ave,        derived_r.m_dpdiss_ave);
-
-  ut::set_deriv0(tracers_dp.qdp,  dqdp);
-  ut::set_deriv0(derived_dp.m_vn0, dvn0_h);
-  ut::set_deriv0(derived_dp.m_dp,  ddp_h);
-
-  // See prim_advec_tracers_remap_RK2 in prim_advec_tracers_remap.cpp
-  printf(" -> Run forward problem (prim_advec_tracers_remap replica)...\n");
-  euler_dp.precompute_divdp();
-  euler_dp.euler_step(np1_qdp,n0_qdp, dt/2.0,0.0,DSSOption::DIV_VDP_AVE);
-  euler_dp.euler_step(np1_qdp,np1_qdp,dt/2.0,1.0,DSSOption::ETA);
-  euler_dp.euler_step(np1_qdp,np1_qdp,dt/2.0,2.0,DSSOption::OMEGA);
-  euler_dp.qdp_time_avg(n0_qdp,np1_qdp);
-  printf(" -> Run forward problem (prim_advec_tracers_remap replica)...done!\n");
-
+  // Runs the fwd with the given nu_q, and returns <J*du0, lambdaN>. The base point is
+  // reset each time (the fwd overwrites qdp, and DSS's/recomputes some of the derived fields).
   auto duN_qdp = Kokkos::create_mirror(tracers_r.qdp);
-  ut::get_deriv0(duN_qdp, tracers_dp.qdp);
+  auto run_forward = [&](const Real nu_q) {
+    params.nu_q = nu_q;
+    euler_dp.reset(params);
+
+    // Base point's .val() first (zeroes any pre-existing tangent), *then* the tangents
+    ut::set_val(tracers_dp.qdp,                 tracers_r.qdp);
+    ut::set_val(derived_dp.m_dp,                derived_r.m_dp);
+    ut::set_val(derived_dp.m_vn0,               derived_r.m_vn0);
+    ut::set_val(derived_dp.m_divdp,             derived_r.m_divdp);
+    ut::set_val(derived_dp.m_divdp_proj,        derived_r.m_divdp_proj);
+    ut::set_val(derived_dp.m_eta_dot_dpdn,      derived_r.m_eta_dot_dpdn);
+    ut::set_val(derived_dp.m_omega_p,           derived_r.m_omega_p);
+    ut::set_val(derived_dp.m_dpdiss_biharmonic, derived_r.m_dpdiss_biharmonic);
+    ut::set_val(derived_dp.m_dpdiss_ave,        derived_r.m_dpdiss_ave);
+
+    ut::set_deriv0(tracers_dp.qdp,  dqdp);
+    ut::set_deriv0(derived_dp.m_vn0, dvn0_h);
+    ut::set_deriv0(derived_dp.m_dp,  ddp_h);
+
+    // See prim_advec_tracers_remap_RK2 in prim_advec_tracers_remap.cpp
+    euler_dp.precompute_divdp();
+    euler_dp.euler_step(np1_qdp,n0_qdp, dt/2.0,0.0,DSSOption::DIV_VDP_AVE);
+    euler_dp.euler_step(np1_qdp,np1_qdp,dt/2.0,1.0,DSSOption::ETA);
+    euler_dp.euler_step(np1_qdp,np1_qdp,dt/2.0,2.0,DSSOption::OMEGA);
+    euler_dp.qdp_time_avg(n0_qdp,np1_qdp);
+
+    ut::get_deriv0(duN_qdp, tracers_dp.qdp);
+    return ut::dot_qdp(qdp_seed,duN_qdp,np1_qdp,qsize);
+  };
 
   // ==== Adjoint half (ST=Real): J^T*lambdaN, at the SAME base point. ====
-  constexpr auto tol = std::numeric_limits<double>::epsilon()*1e5;
+  // Runs the adjoint with the given nu_q, and returns <du0, J^T*lambdaN>
+  auto run_adjoint = [&](const Real nu_q) {
+    params.nu_q = nu_q; // prim_advec_tracers_remap_adj resets the euler functor from params
 
-  // Runs the adjoint on the given seed, and returns <du0, J^T*lambdaN>
-  auto run_adjoint = [&](const TracersQdpAdjView& seed_qdp) {
     TracersQdpAdjView adj_qdp("adj_qdp",num_elems);
-    Kokkos::deep_copy(adj_qdp,seed_qdp);
+    Kokkos::deep_copy(adj_qdp,qdp_seed);
     TracersVn0AdjView adj_vn0("adj_vn0",num_elems);
     TracersDpAdjView  adj_dp("adj_dp",num_elems);
 
@@ -218,33 +231,34 @@ TEST_CASE("prim_advec_tracers_remap_adjoint")
          + dot(ekat::scalarize(adj_dp),ekat::scalarize(ddp),nlevs);
   };
 
-  TracersQdpAdjView qdp_seed("qdp_seed",num_elems);
-  {
-    auto h = Kokkos::create_mirror(qdp_seed);
-    genRandArray(h, engine, unit_pdf);
-    Kokkos::deep_copy(qdp_seed,h);
+  // <du0, J^T*lambdaN> vs <J*du0, lambdaN>, for several values of nu_q.
+  // With nu_q=0 the biharmonic term of the last euler step vanishes, so that case checks all
+  // the rest of the chain (qlim chaining, qdp_time_avg, precompute_divdp, the dependence on
+  // vn0 and dp). The larger values add the adjoint of the biharmonic term: if only those
+  // fail, the bug is there (or in the limiter branches a large term can trigger).
+  constexpr auto tol = std::numeric_limits<double>::epsilon()*1e5;
+  const Real nu_q_list[] = {0.0, 1e16, 1e18, 1e20};
+  double lhs_first = 0, lhs_last = 0;
+  for (const Real nu_q : nu_q_list) {
+    printf(" -> Run forward problem (prim_advec_tracers_remap replica), nu_q=%g...\n",nu_q);
+    const double rhs = run_forward(nu_q);
+    printf(" -> Run adjoint problem, nu_q=%g...\n",nu_q);
+    const double lhs = run_adjoint(nu_q);
+    if (comm.am_i_root())
+      std::cout << std::setprecision(15)
+                << "   nu_q=" << nu_q << ":  <du0,J^T*lambdaN> = " << lhs
+                << ",  <J*du0,lambdaN> = " << rhs
+                << ",  rel err = " << std::abs(lhs-rhs)/std::abs(rhs) << "\n";
+    INFO ("nu_q = " << nu_q);
+    CHECK_THAT (lhs, Catch::Matchers::WithinRel(rhs,tol));
+
+    if (nu_q==nu_q_list[0]) lhs_first = lhs;
+    lhs_last = lhs;
   }
 
-  // <du0, J^T*lambdaN> vs <J*du0, lambdaN>
-  const double lhs = run_adjoint(qdp_seed);
-  const double rhs = ut::dot_qdp(qdp_seed,duN_qdp,np1_qdp,qsize);
-  if (comm.am_i_root())
-    std::cout << std::setprecision(15)
-              << "   <du0,J^T*lambdaN> = " << lhs
-              << ",  <J*du0,lambdaN> = " << rhs << "\n";
-  CHECK_THAT (lhs, Catch::Matchers::WithinRel(rhs,tol));
-
   // Sanity check on the test itself: make sure that the biharmonic term is not negligible
-  // (see the comment on nu_q), by checking that the adjoint changes when we turn it off.
-  // The adjoint of the fwd steps (which it replays) is recomputed with the new nu_q.
-  params.nu_q = 0;
-  const double lhs_no_bih = run_adjoint(qdp_seed);
-  params.nu_q = 1e20;
-  if (comm.am_i_root())
-    std::cout << std::setprecision(15)
-              << "   biharmonic term: <du0,J^T*lambdaN> with nu_q=1e20: " << lhs
-              << ", with nu_q=0: " << lhs_no_bih << "\n";
-  CHECK (std::abs(lhs-lhs_no_bih) > 1e-9*std::abs(lhs));
+  // for the largest nu_q, by checking that the adjoint changes when we turn it off.
+  CHECK (std::abs(lhs_last-lhs_first) > 1e-9*std::abs(lhs_last));
 }
 
 } // namespace Homme
