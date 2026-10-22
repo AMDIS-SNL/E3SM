@@ -536,10 +536,14 @@ public:
     });
   }
 
+  // Number of stages of the RK2 tracer advection; qdp_time_avg (and its
+  // adjoint, qdp_time_avg_adj) average the stage-0 and last-stage qdp with it.
+  static constexpr Real s_qdp_time_avg_rkstage = 3.0;
+
   void qdp_time_avg (const int n0_qdp, const int np1_qdp) {
     const int qsize = m_data.qsize;
     const auto qdp = m_tracers.qdp;
-    const Real rkstage = 3.0;
+    const Real rkstage = s_qdp_time_avg_rkstage;
     Kokkos::parallel_for(
       Homme::get_default_team_policy<ExecSpace>(m_geometry.num_elems()*m_data.qsize,
                                                 m_tpref),
@@ -1153,6 +1157,10 @@ public:
   //    directly as its "tape", rather than re-snapshotting them, exactly
   //    as prim_advance_adj's ttype10_imex_adjoint relies on the
   //    just-completed forward trajectory's own checkpoints.
+  //  - qdp(n0_qdp) must still hold the call's *input* when this is called: the limiter
+  //    reverse reads it (not taped). With n0_qdp==np1_qdp (as in stages 1 and 2 of the
+  //    RK2 tracers step) the fwd call has overwritten it, so the caller must put the
+  //    input back (see prim_advec_tracers_remap_adj).
   //  - adj_tracers/adj_derived must be the SAME objects across repeated
   //    calls (the lazily-built adjoint boundary-exchange objects bind to
   //    their specific field Views on the first call).
@@ -1166,15 +1174,18 @@ public:
   //  - adj_tracers.qdp(n0_qdp,...): OUT, ACCUMULATED (+=) into (not
   //    overwritten), so repeated/chained calls compose correctly, exactly
   //    like the forward code's own "we allow np1_qdp==n0_qdp" aliasing.
-  //  - adj_tracers.qlim(...): IN/OUT. On entry, any downstream dependency
-  //    on qlim as it stood *before* this euler_step call (relevant only
-  //    when rhs_multiplier==1, which reuses/refines a previous call's
-  //    qlim rather than resetting it -- see compute_qmin_qmax). On exit,
-  //    ACCUMULATED with this call's own contribution to that same
-  //    quantity. The caller (a future multi-stage orchestrator, out of
-  //    scope for this step) is responsible for chaining this across the
-  //    (rhs_multiplier==0,1,2) call sequence, exactly as it must already
-  //    do for qdp via the n0_qdp/np1_qdp slot indices.
+  //  - adj_tracers.qlim(...): IN/OUT. On entry: dJ/d(qlim as it stands right
+  //    AFTER this euler_step call), nonzero only if a later call chained on
+  //    this call's qlim (a later rhs_multiplier==1 call reuses/refines it
+  //    rather than resetting it -- see compute_qmin_qmax); it is folded into
+  //    this call's own limiter-reverse seed on qlim and consumed (zeroed).
+  //    On exit: dJ/d(qlim as it stood right BEFORE this call), which is
+  //    nonzero only if rhs_multiplier==1 (all other calls reset qlim) --
+  //    i.e. the seed for the previous call in the chain. So the caller
+  //    chains the (rhs_multiplier==0,1,2) sequence by calling this in
+  //    REVERSE order (2,1,0) on the same adj_tracers, exactly as it must
+  //    already do for qdp via the n0_qdp/np1_qdp slot indices; zero
+  //    adj_tracers.qlim before the first (rhs_multiplier==2) call.
   //  - adj_tracers.qtens_biharmonic: used purely as internal scratch
   //    (reused across the several stages below); callers should not rely
   //    on its value before or after the call.
@@ -1433,6 +1444,8 @@ public:
     }
     Kokkos::fence();
 
+    // NOTE: the transposed-divergence kernel below is duplicated in
+    // precompute_divdp_adj (same stencil); keep them in sync.
     // ---- 4b-i. Reverse of compute_qtens (divergence_sphere_update):
     // bilinear in (vstar,qdp), so both get product-rule treatment (see
     // prim_advance_adj's handling of CAAR's own nonlinear/bilinear terms
@@ -1521,6 +1534,44 @@ public:
       // adj_qtb (== adj_tracers.qtens_biharmonic) now holds g_bih.
     }
 
+    // ---- 1b. Fold in the downstream seed on qlim (see the adj_tracers.qlim
+    // note above). A later call (rhs_multiplier==1) starts from the qlim this
+    // call left behind; adj_tracers.qlim holds dJ/d(that qlim). It is added to
+    // the limiter's own dJ/d(qlim_final) (the qlim entering the limiter) and
+    // consumed. If rhs_multiplier==1, stage 2 below re-populates
+    // adj_tracers.qlim with dJ/d(qlim before this call).
+    //
+    // What is and isn't exact. The limiter may overwrite qlim in place, so the
+    // qlim the next call sees can differ from qlim_final:
+    //  - 0-floor (qlim_final min < 0): qlim min is overwritten by the constant
+    //    0, so nothing downstream depends on anything upstream through it. The
+    //    seed is dropped, which is exact.
+    //  - mass-relaxation (the mean of x is outside [min,max]): qlim is
+    //    overwritten by sum0/sum1, which depends on this call's qtens and
+    //    dpdissk. That dependence is NOT differentiated: the limiter reverse
+    //    above drops its own qlim gradient in this branch (the "frozen
+    //    approximation", battleplan decision #2), and here the seed is routed
+    //    as if the overwrite had not happened. So when relaxation fires, the
+    //    gradient is approximate (not just inexact to roundoff).
+    // Relaxation is meant to be rare (the limiter's own comment: only needed
+    // for CFL>1 or roundoff), the 0-floor case is the likely one. ----
+    {
+      auto adj_qlim = adj_tracers.qlim;
+      const auto tape_qlim_final = adj_qlim_final;
+      Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<3>> pol({0,0,0},{ne,qsize,NUM_PHYSICAL_LEV});
+      Kokkos::parallel_for(pol, KOKKOS_LAMBDA (const int ie, const int iq, const int lev) {
+        const int vpi = lev/VECTOR_SIZE, vsi = lev%VECTOR_SIZE;
+        const bool min_floored = tape_qlim_final(ie,iq,0,vpi)[vsi] < 0;
+        for (int b=0; b<2; ++b) { // b=0: min, b=1: max
+          if (not (b==0 and min_floored)) {
+            adj_qlim_final_grad(ie,iq,b,vpi)[vsi] += adj_qlim(ie,iq,b,vpi)[vsi];
+          }
+          adj_qlim(ie,iq,b,vpi)[vsi] = 0;
+        }
+      });
+    }
+    Kokkos::fence();
+
     // ---- 2. Reverse of compute_qmin_qmax + whichever neighbor/MPI min-max
     // exchange ran (rhs_multiplier==0 or 2), plus the unconditional,
     // ordinary linear dependency qtens_biharmonic(i,j,k)=v (separate from
@@ -1584,17 +1635,26 @@ public:
               for (int b=0; b<2; ++b) { // b=0: min, b=1: max
                 const Real fin  = final_h(ie,iq,b,vpi)[vsi];
                 const Real seed = grad_h(ie,iq,b,vpi)[vsi];
-                if (preexch_h(ie,iq,b,vpi)[vsi] == fin)
+                // Single winner: ties are structural (e.g., neighbors share the DSS'd
+                // value at a shared node, hence the same function of the inputs), and
+                // routing the seed to every match would double count it. Priority: ie
+                // itself, then the first matching neighbor.
+                bool routed = false;
+                if (preexch_h(ie,iq,b,vpi)[vsi] == fin) {
                   sum_h(ie,iq,b,vpi)[vsi] += seed;
-                for (int ic = cbeg; ic < cend; ++ic) {
+                  routed = true;
+                }
+                for (int ic = cbeg; ic < cend and not routed; ++ic) {
                   const auto& info = h_ucon(ic);
                   if (info.sharing == etoi(ConnectionSharing::MISSING)) continue;
                   EKAT_REQUIRE_MSG(info.sharing != etoi(ConnectionSharing::SHARED),
                     "[euler_step_adj] Error! Unexpected remote-rank "
                     "connection in a single-rank run.\n");
                   const int je = info.remote.lid;
-                  if (preexch_h(je,iq,b,vpi)[vsi] == fin)
+                  if (preexch_h(je,iq,b,vpi)[vsi] == fin) {
                     sum_h(je,iq,b,vpi)[vsi] += seed;
+                    routed = true;
+                  }
                 }
               }
             }
@@ -1635,19 +1695,27 @@ public:
 
         const Real premin = tape_preexch(ie,iq,0,vpi)[vsi];
         const Real premax = tape_preexch(ie,iq,1,vpi)[vsi];
+        // Ties: the min/max is a function of a single winner, so the seed must go to ONE
+        // candidate, not to every candidate that matches. This matters because exact ties
+        // are not rare here: at an interior (unshared by DSS) node that was a neighborhood
+        // extremum in the previous Euler step, the local value qdp/dp is the previous
+        // bound itself, up to roundoff (often bit for bit), and both are the same function of
+        // the inputs. Routing to both would double count. The winner is the previous qlim
+        // first, then the first matching point.
+        bool min_routed = false, max_routed = false;
         if (reuse_prev) {
           const Real prelocalmin = tape_prelocal(ie,iq,0,vpi)[vsi];
           const Real prelocalmax = tape_prelocal(ie,iq,1,vpi)[vsi];
-          if (prelocalmin == premin) adj_qlim(ie,iq,0,vpi)[vsi] += gmin_preexch;
-          if (prelocalmax == premax) adj_qlim(ie,iq,1,vpi)[vsi] += gmax_preexch;
+          if (prelocalmin == premin) { adj_qlim(ie,iq,0,vpi)[vsi] += gmin_preexch; min_routed = true; }
+          if (prelocalmax == premax) { adj_qlim(ie,iq,1,vpi)[vsi] += gmax_preexch; max_routed = true; }
         }
 
         for (int i=0;i<NP;++i) for (int j=0;j<NP;++j) {
           const Real dpv = dp_fwd(ie,i,j,vpi)[vsi];
           const Real v   = qdp_fwd(ie,n0_qdp,iq,i,j,vpi)[vsi]/dpv;
           Real g = 0;
-          if (v == premin) g += gmin_preexch;
-          if (v == premax) g += gmax_preexch;
+          if (not min_routed and v == premin) { g += gmin_preexch; min_routed = true; }
+          if (not max_routed and v == premax) { g += gmax_preexch; max_routed = true; }
           if (has_bih) g += g_bih_view(ie,iq,i,j,vpi)[vsi];
           if (g != 0) {
             adj_qdp(ie,n0_qdp,iq,i,j,vpi)[vsi] += g/dpv;
@@ -1729,6 +1797,89 @@ public:
         adj_divdp_proj(ie,i,j,vpi)[vsi]  += -rhsmdt*g;
       });
     }
+    Kokkos::fence();
+  }
+
+  // Adjoint of qdp_time_avg (np1 := (n0 + (rkstage-1)*np1)/rkstage, with
+  // rkstage=s_qdp_time_avg_rkstage as in the forward). Pure linear map on adj_tracers.qdp:
+  //   adj_n0  += adj_np1/rkstage,   adj_np1 := (rkstage-1)*adj_np1/rkstage.
+  // Same slot convention as euler_step_adj: the seed on the post-average
+  // np1_qdp slot is consumed, the result is ACCUMULATED into n0_qdp.
+  // n0_qdp != np1_qdp is required (as in the forward call site).
+  void qdp_time_avg_adj (const int n0_qdp, const int np1_qdp,
+                         TracersST<Real>& adj_tracers)
+  {
+    EKAT_REQUIRE_MSG((std::is_same_v<ST,Real>),
+      "[qdp_time_avg_adj] Error! Adjoint is only implemented for Real scalar type.\n");
+    EKAT_REQUIRE_MSG(n0_qdp != np1_qdp,
+      "[qdp_time_avg_adj] Error! n0_qdp and np1_qdp must differ.\n");
+
+    const int ne    = m_geometry.num_elems();
+    const int qsize = m_data.qsize;
+    auto adj_qdp = adj_tracers.qdp;
+    const Real rkstage = s_qdp_time_avg_rkstage; // must match qdp_time_avg
+    Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<5>> pol({0,0,0,0,0},{ne,qsize,NP,NP,NUM_PHYSICAL_LEV});
+    Kokkos::parallel_for(pol, KOKKOS_LAMBDA (const int ie,const int iq,const int i,const int j,const int lev) {
+      const int vpi = lev/VECTOR_SIZE, vsi = lev%VECTOR_SIZE;
+      const Real g = adj_qdp(ie,np1_qdp,iq,i,j,vpi)[vsi];
+      adj_qdp(ie,n0_qdp,iq,i,j,vpi)[vsi]  += g/rkstage;
+      adj_qdp(ie,np1_qdp,iq,i,j,vpi)[vsi]  = (rkstage-1)*g/rkstage;
+    });
+    Kokkos::fence();
+  }
+
+  // Adjoint of precompute_divdp (divdp = div(vn0); divdp_proj := divdp).
+  // Consumes the adjoint of BOTH outputs (adj_derived.m_divdp and
+  // adj_derived.m_divdp_proj, each overwritten by the forward call, so
+  // their adjoint is zeroed here) and ACCUMULATES the transposed strong
+  // divergence of their sum into adj_derived.m_vn0. adj_divdp_proj must be
+  // the adjoint w.r.t. divdp_proj *as precompute_divdp left it*, i.e. as
+  // returned by euler_step_adj for the first (DIV_VDP_AVE) stage. The
+  // transposed divergence is the same kernel as the divergence_sphere_update
+  // reverse in euler_step_adj (both use the same strong-form stencil). The two
+  // copies must be kept in sync: if you fix an index in one, fix the other (the
+  // reverse of compute_qtens in euler_step_adj, the block with adjgv0/adjgv1).
+  void precompute_divdp_adj (ElementsDerivedStateST<Real>& adj_derived)
+  {
+    EKAT_REQUIRE_MSG((std::is_same_v<ST,Real>),
+      "[precompute_divdp_adj] Error! Adjoint is only implemented for Real scalar type.\n");
+
+    const int ne     = m_geometry.num_elems();
+    const auto dinv   = m_geometry.m_dinv;
+    const auto metdet = m_geometry.m_metdet;
+    const auto dvv    = m_deriv;
+    const Real scale_factor_inv = m_sphere_ops.m_scale_factor_inv;
+    auto adj_vn0        = adj_derived.m_vn0;
+    auto adj_divdp      = adj_derived.m_divdp;
+    auto adj_divdp_proj = adj_derived.m_divdp_proj;
+
+    Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<2>> pol({0,0},{ne,NUM_PHYSICAL_LEV});
+    Kokkos::parallel_for(pol, KOKKOS_LAMBDA (const int ie, const int lev) {
+      const int vpi = lev/VECTOR_SIZE, vsi = lev%VECTOR_SIZE;
+      Real h[NP][NP];
+      for (int i=0;i<NP;++i) for (int j=0;j<NP;++j) {
+        h[i][j] = (adj_divdp(ie,i,j,vpi)[vsi] + adj_divdp_proj(ie,i,j,vpi)[vsi])
+                * scale_factor_inv/metdet(ie,i,j);
+        adj_divdp(ie,i,j,vpi)[vsi]      = 0;
+        adj_divdp_proj(ie,i,j,vpi)[vsi] = 0;
+      }
+      Real adjgv0[NP][NP], adjgv1[NP][NP];
+      for (int i=0;i<NP;++i) for (int k=0;k<NP;++k) {
+        Real s = 0; for (int j=0;j<NP;++j) s += dvv(j,k)*h[i][j];
+        adjgv0[i][k] = s;
+      }
+      for (int k=0;k<NP;++k) for (int j=0;j<NP;++j) {
+        Real s = 0; for (int i=0;i<NP;++i) s += dvv(i,k)*h[i][j];
+        adjgv1[k][j] = s;
+      }
+      for (int i=0;i<NP;++i) for (int j=0;j<NP;++j) {
+        const Real d00 = dinv(ie,0,0,i,j), d10 = dinv(ie,1,0,i,j);
+        const Real d01 = dinv(ie,0,1,i,j), d11 = dinv(ie,1,1,i,j);
+        const Real md  = metdet(ie,i,j);
+        adj_vn0(ie,0,i,j,vpi)[vsi] += (adjgv0[i][j]*d00 + adjgv1[i][j]*d01)*md;
+        adj_vn0(ie,1,i,j,vpi)[vsi] += (adjgv0[i][j]*d10 + adjgv1[i][j]*d11)*md;
+      }
+    });
     Kokkos::fence();
   }
 

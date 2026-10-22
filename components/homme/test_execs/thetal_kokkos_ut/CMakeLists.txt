@@ -319,4 +319,19 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
     LIBS thetal_kokkos_ut_lib
     LABELS AMDIS
   )
+
+  # Test the adjoint of the whole tracers step of prim_step (precompute_divdp, 3 euler_steps,
+  # qdp_time_avg), via prim_advec_tracers_remap_adj. Only the Euler stack is involved here:
+  # the dynamics enters through vn0 and dp, which are inputs of this test.
+  # Note: prim_advec_tracers_remap_adj.cpp is only compiled into this test for now (it has no
+  # other users yet).
+  set (PRIM_ADVEC_TRACERS_REMAP_ADJOINT_SOURCES
+    prim_advec_tracers_remap_adjoint_ut.cpp
+    ${SRC_SHARE_DIR}/cxx/prim_advec_tracers_remap_adj.cpp
+  )
+  EkatCreateUnitTest ("prim_advec_tracers_remap_adjoint_ut"
+    "${PRIM_ADVEC_TRACERS_REMAP_ADJOINT_SOURCES}"
+    LIBS thetal_kokkos_ut_lib
+    LABELS AMDIS
+  )
 endif()
