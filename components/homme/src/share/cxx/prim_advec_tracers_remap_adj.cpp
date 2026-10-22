@@ -99,11 +99,26 @@ void prim_advec_tracers_remap_adj (EulerStepFunctorST<Real>& esf,
   const int       stage_n0_qdp[3] = {n0_qdp, np1_qdp, np1_qdp};
   const Real      stage_rhs[3]    = {0.0, 1.0, 2.0};
   const DSSOption stage_dss[3]    = {DSSOption::DIV_VDP_AVE, DSSOption::ETA, DSSOption::OMEGA};
+  //
+  // Stages 1 and 2 read and write the same qdp slot (n0_qdp==np1_qdp), but euler_step_adj
+  // reads the stage's *input* qdp(n0_qdp) (not taped) to route the limiter's qlim and
+  // min/max gradients. So, for the differentiated stage, we save its input and put it back
+  // after the replayed fwd call overwrote it.
+  auto& qdp_full = c.get<TracersST<Real>>().qdp;
+  TracersQdpAdjView qdp_input("prim_advec_tracers_remap_adj qdp_input",nelem);
   auto replay = [&](const int last_stage) {
+    // The 3rd stage's biharmonic set-up leaves m_data.rhs_viss=3 behind (the fwd resets it
+    // once, at the start of each prim_advec_tracers_remap), which would make the replayed
+    // stages 0 and 1 add the (garbage) biharmonic term. So start every replay from a fresh state.
+    esf.reset(params);
     esf.precompute_divdp();
     for (int j=0; j<=last_stage; ++j) {
-      esf_impl.set_tape_for_adjoint(j==last_stage);
+      const bool last = (j==last_stage);
+      const bool aliased = (stage_n0_qdp[j]==np1_qdp);
+      esf_impl.set_tape_for_adjoint(last);
+      if (last and aliased) copy_qdp_from_slot(qdp_input,qdp_full,np1_qdp,nelem,qsize);
       esf.euler_step(np1_qdp,stage_n0_qdp[j],dt_stage,stage_rhs[j],stage_dss[j]);
+      if (last and aliased) copy_qdp_to_slot(qdp_full,np1_qdp,qdp_input,nelem,qsize);
     }
     esf_impl.set_tape_for_adjoint(false);
   };
