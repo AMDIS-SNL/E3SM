@@ -14,6 +14,10 @@ inputs:
     description: 'Enable FAD types and forward sensitivities, and the AMDIS project (needs Trilinos, see build-trilinos)'
     required: false
     default: 'false'
+  fwd-sens:
+    description: 'With fad=true, whether to also enable forward sensitivities (they alias some of the Real types with FAD ones, so some AMDIS tests only build without them)'
+    required: false
+    default: 'true'
   pyhommexx:
     description: 'Build the python bindings (implies a theta-l_kokkos configuration with 128 levels and 10 tracers)'
     required: false
@@ -28,6 +32,7 @@ runs:
         BUILD_TYPE: ${{ inputs.build-type }}
         WITH_PIO: ${{ inputs.pio }}
         WITH_FAD: ${{ inputs.fad }}
+        WITH_FWD_SENS: ${{ inputs.fwd-sens }}
         WITH_PYHOMMEXX: ${{ inputs.pyhommexx }}
       run: |
         cd ${GITHUB_WORKSPACE}/e3sm
@@ -62,9 +67,11 @@ runs:
           export Trilinos_ROOT=${GITHUB_WORKSPACE}/trilinos/install
           args+=(
             -D HOMME_AMDIS_PROJECT:BOOL=ON
-            -D HOMMEXX_ENABLE_FWD_SENS:BOOL=ON
             -D HOMMEXX_ENABLE_FAD_TYPES:BOOL=ON
           )
+          if [[ "${WITH_FWD_SENS}" == "true" ]]; then
+            args+=(-D HOMMEXX_ENABLE_FWD_SENS:BOOL=ON)
+          fi
         fi
 
         if [[ "${WITH_PYHOMMEXX}" == "true" ]]; then

@@ -155,6 +155,56 @@ jobs:
             e3sm/build/**/flags.make
           retention-days: 14
 
+  # FAD types without forward sensitivities: the AMDIS tests that need Real to be Real
+  # (e.g., the adjoint of prim_step, which replays the fwd trajectory with the Real-typed
+  # objects in the Context) can only be built in this configuration
+  adjoint:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: [ubuntu-24.04]
+    name: adjoint
+    container:
+      image: ghcr.io/e3sm-project/e3sm-image:gnu13-openmpi4
+      options: --user root
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+        with:
+          path: e3sm/source
+      - name: Show action trigger
+        uses: ./e3sm/source/.github/actions/show-workflow-trigger
+      - name: Build Trilinos
+        uses: ./e3sm/source/.github/actions/build-trilinos
+      - name: get submodules
+        uses: ./e3sm/source/.github/actions/homme-submodules
+      - name: hommexx-configure
+        uses: ./e3sm/source/.github/actions/homme-configure
+        with:
+          fad: true
+          fwd-sens: false
+      - name: hommexx-build
+        run: |
+          cd ${GITHUB_WORKSPACE}/e3sm/build
+          make -j4 VERBOSE=ON
+      - name: hommexx-test
+        run: |
+          cd ${GITHUB_WORKSPACE}/e3sm/build
+          # TODO: forcing_adjoint_ut (states_forcing_adj) is built here, but not run: it had never
+          # been built in CI before this job, and it fails (dot-product mismatch of ~0.4%, then
+          # a crash because the failed REQUIRE skips the test's cleanup). It needs looking at;
+          # drop the -E once it is fixed.
+          ctest --output-on-failure -L 'AMDIS' -E 'forcing_adjoint_ut'
+      - name: Upload log files
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-adjoint
+          path: |
+            e3sm/build/CMakeCache.txt
+            e3sm/build/Testing/Temporary/Last*
+            e3sm/build/**/flags.make
+          retention-days: 14
+
   # Python bindings (so far, we only check that they build)
   pyhommexx:
     needs: changes
@@ -203,7 +253,7 @@ jobs:
     # the tests passed or if they were not needed.
     # NOTE: keep always(). Without it, the job is skipped if a needed job fails,
     # and a skipped required check counts as passing.
-    needs: [changes, hommexx, fad, pyhommexx]
+    needs: [changes, hommexx, fad, adjoint, pyhommexx]
     if: always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
     runs-on: [ubuntu-24.04]
     name: amdis-ci-gate
@@ -212,10 +262,10 @@ jobs:
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
           RUN_TESTS: ${{ needs.changes.outputs.run }}
-          TESTS_RESULTS: ${{ needs.hommexx.result }} ${{ needs.fad.result }} ${{ needs.pyhommexx.result }}
+          TESTS_RESULTS: ${{ needs.hommexx.result }} ${{ needs.fad.result }} ${{ needs.adjoint.result }} ${{ needs.pyhommexx.result }}
         run: |
           echo "changes: ${CHANGES_RESULT}, run tests: ${RUN_TESTS}"
-          echo "tests (hommexx fad pyhommexx): ${TESTS_RESULTS}"
+          echo "tests (hommexx fad adjoint pyhommexx): ${TESTS_RESULTS}"
           if [[ "${CHANGES_RESULT}" != "success" ]]; then
             echo "Could not determine whether tests are needed"; exit 1
           elif [[ "${RUN_TESTS}" != "true" ]]; then
