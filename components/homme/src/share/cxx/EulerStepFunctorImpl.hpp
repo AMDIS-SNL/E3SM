@@ -1157,6 +1157,10 @@ public:
   //    directly as its "tape", rather than re-snapshotting them, exactly
   //    as prim_advance_adj's ttype10_imex_adjoint relies on the
   //    just-completed forward trajectory's own checkpoints.
+  //  - qdp(n0_qdp) must still hold the call's *input* when this is called: the limiter
+  //    reverse reads it (not taped). With n0_qdp==np1_qdp (as in stages 1 and 2 of the
+  //    RK2 tracers step) the fwd call has overwritten it, so the caller must put the
+  //    input back (see prim_advec_tracers_remap_adj).
   //  - adj_tracers/adj_derived must be the SAME objects across repeated
   //    calls (the lazily-built adjoint boundary-exchange objects bind to
   //    their specific field Views on the first call).
@@ -1631,17 +1635,26 @@ public:
               for (int b=0; b<2; ++b) { // b=0: min, b=1: max
                 const Real fin  = final_h(ie,iq,b,vpi)[vsi];
                 const Real seed = grad_h(ie,iq,b,vpi)[vsi];
-                if (preexch_h(ie,iq,b,vpi)[vsi] == fin)
+                // Single winner: ties are structural (e.g., neighbors share the DSS'd
+                // value at a shared node, hence the same function of the inputs), and
+                // routing the seed to every match would double count it. Priority: ie
+                // itself, then the first matching neighbor.
+                bool routed = false;
+                if (preexch_h(ie,iq,b,vpi)[vsi] == fin) {
                   sum_h(ie,iq,b,vpi)[vsi] += seed;
-                for (int ic = cbeg; ic < cend; ++ic) {
+                  routed = true;
+                }
+                for (int ic = cbeg; ic < cend and not routed; ++ic) {
                   const auto& info = h_ucon(ic);
                   if (info.sharing == etoi(ConnectionSharing::MISSING)) continue;
                   EKAT_REQUIRE_MSG(info.sharing != etoi(ConnectionSharing::SHARED),
                     "[euler_step_adj] Error! Unexpected remote-rank "
                     "connection in a single-rank run.\n");
                   const int je = info.remote.lid;
-                  if (preexch_h(je,iq,b,vpi)[vsi] == fin)
+                  if (preexch_h(je,iq,b,vpi)[vsi] == fin) {
                     sum_h(je,iq,b,vpi)[vsi] += seed;
+                    routed = true;
+                  }
                 }
               }
             }
@@ -1682,19 +1695,27 @@ public:
 
         const Real premin = tape_preexch(ie,iq,0,vpi)[vsi];
         const Real premax = tape_preexch(ie,iq,1,vpi)[vsi];
+        // Ties: the min/max is a function of a single winner, so the seed must go to ONE
+        // candidate, not to every candidate that matches. This matters because exact ties
+        // are not rare here: at an interior (unshared by DSS) node that was a neighborhood
+        // extremum in the previous Euler step, the local value qdp/dp is the previous
+        // bound itself, up to roundoff (often bit for bit), and both are the same function of
+        // the inputs. Routing to both would double count. The winner is the previous qlim
+        // first, then the first matching point.
+        bool min_routed = false, max_routed = false;
         if (reuse_prev) {
           const Real prelocalmin = tape_prelocal(ie,iq,0,vpi)[vsi];
           const Real prelocalmax = tape_prelocal(ie,iq,1,vpi)[vsi];
-          if (prelocalmin == premin) adj_qlim(ie,iq,0,vpi)[vsi] += gmin_preexch;
-          if (prelocalmax == premax) adj_qlim(ie,iq,1,vpi)[vsi] += gmax_preexch;
+          if (prelocalmin == premin) { adj_qlim(ie,iq,0,vpi)[vsi] += gmin_preexch; min_routed = true; }
+          if (prelocalmax == premax) { adj_qlim(ie,iq,1,vpi)[vsi] += gmax_preexch; max_routed = true; }
         }
 
         for (int i=0;i<NP;++i) for (int j=0;j<NP;++j) {
           const Real dpv = dp_fwd(ie,i,j,vpi)[vsi];
           const Real v   = qdp_fwd(ie,n0_qdp,iq,i,j,vpi)[vsi]/dpv;
           Real g = 0;
-          if (v == premin) g += gmin_preexch;
-          if (v == premax) g += gmax_preexch;
+          if (not min_routed and v == premin) { g += gmin_preexch; min_routed = true; }
+          if (not max_routed and v == premax) { g += gmax_preexch; max_routed = true; }
           if (has_bih) g += g_bih_view(ie,iq,i,j,vpi)[vsi];
           if (g != 0) {
             adj_qdp(ie,n0_qdp,iq,i,j,vpi)[vsi] += g/dpv;
