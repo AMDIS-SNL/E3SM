@@ -151,7 +151,22 @@ TEST_CASE("prim_advec_tracers_remap_adjoint")
   // (for which euler_step_adj knowingly gives an approximate gradient).
   RPDF dp_pdf(80.0,120.0), qdp_pdf(300.0,400.0), vn0_pdf(-40.0,40.0), tiny_pdf(-1e-3,1e-3), unit_pdf(-1.0,1.0);
   genRandArray(tracers_r.qdp,               engine, qdp_pdf);
-  genRandArray(derived_r.m_dp,              engine, dp_pdf);
+  // dp is a DSS'd (continuous) field in real runs, so use one that only depends on the level
+  // (random per level), rather than a dp that jumps randomly from node to node. This also
+  // makes the DSS'd inputs of the 2nd and 3rd euler steps tie with their neighbors' at shared
+  // nodes (as they do in real runs), which the min/max reduction adjoint has to handle.
+  {
+    auto dp_h = Kokkos::create_mirror_view(derived_r.m_dp);
+    auto dp_s = ekat::scalarize(dp_h);
+    for (int lev=0; lev<nlevs; ++lev) {
+      const Real dp_lev = dp_pdf(engine);
+      for (int ie=0; ie<num_elems; ++ie)
+        for (int i=0; i<NP; ++i)
+          for (int j=0; j<NP; ++j)
+            dp_s(ie,i,j,lev) = dp_lev;
+    }
+    Kokkos::deep_copy(derived_r.m_dp,dp_h);
+  }
   genRandArray(derived_r.m_vn0,             engine, vn0_pdf);
   genRandArray(derived_r.m_divdp,           engine, tiny_pdf); // recomputed from vn0 by the fwd
   genRandArray(derived_r.m_divdp_proj,      engine, tiny_pdf); // ditto
@@ -184,7 +199,15 @@ TEST_CASE("prim_advec_tracers_remap_adjoint")
   // Runs the fwd with the given nu_q, and returns <J*du0, lambdaN>. The base point is
   // reset each time (the fwd overwrites qdp, and DSS's/recomputes some of the derived fields).
   auto duN_qdp = Kokkos::create_mirror(tracers_r.qdp);
-  auto run_forward = [&](const Real nu_q) {
+  // mq/mv/md in {0,1} switch on the tangent on qdp/vn0/dp: running with only one of them
+  // on isolates the part of the chain that carries it.
+  auto zq = Kokkos::create_mirror(tracers_r.qdp);
+  Kokkos::deep_copy(zq,Real(0));
+  auto zv = Kokkos::create_mirror(derived_r.m_vn0);
+  Kokkos::deep_copy(zv,Real(0));
+  auto zd = Kokkos::create_mirror(derived_r.m_dp);
+  Kokkos::deep_copy(zd,Real(0));
+  auto run_forward = [&](const Real nu_q, const int mq, const int mv, const int md) {
     params.nu_q = nu_q;
     euler_dp.reset(params);
 
@@ -199,9 +222,9 @@ TEST_CASE("prim_advec_tracers_remap_adjoint")
     ut::set_val(derived_dp.m_dpdiss_biharmonic, derived_r.m_dpdiss_biharmonic);
     ut::set_val(derived_dp.m_dpdiss_ave,        derived_r.m_dpdiss_ave);
 
-    ut::set_deriv0(tracers_dp.qdp,  dqdp);
-    ut::set_deriv0(derived_dp.m_vn0, dvn0_h);
-    ut::set_deriv0(derived_dp.m_dp,  ddp_h);
+    ut::set_deriv0(tracers_dp.qdp,  mq ? dqdp : zq);
+    ut::set_deriv0(derived_dp.m_vn0, mv ? dvn0_h : zv);
+    ut::set_deriv0(derived_dp.m_dp,  md ? ddp_h : zd);
 
     // See prim_advec_tracers_remap_RK2 in prim_advec_tracers_remap.cpp
     euler_dp.precompute_divdp();
@@ -216,7 +239,7 @@ TEST_CASE("prim_advec_tracers_remap_adjoint")
 
   // ==== Adjoint half (ST=Real): J^T*lambdaN, at the SAME base point. ====
   // Runs the adjoint with the given nu_q, and returns <du0, J^T*lambdaN>
-  auto run_adjoint = [&](const Real nu_q) {
+  auto run_adjoint = [&](const Real nu_q, const int mq, const int mv, const int md) {
     params.nu_q = nu_q; // prim_advec_tracers_remap_adj resets the euler functor from params
 
     TracersQdpAdjView adj_qdp("adj_qdp",num_elems);
@@ -226,34 +249,46 @@ TEST_CASE("prim_advec_tracers_remap_adjoint")
 
     prim_advec_tracers_remap_adj(euler_r,dt,adj_qdp,adj_vn0,adj_dp);
 
-    return ut::dot_qdp(adj_qdp,dqdp,n0_qdp,qsize)
-         + dot(ekat::scalarize(adj_vn0),ekat::scalarize(dvn0),nlevs)
-         + dot(ekat::scalarize(adj_dp),ekat::scalarize(ddp),nlevs);
+    return (mq ? ut::dot_qdp(adj_qdp,dqdp,n0_qdp,qsize) : 0.0)
+         + (mv ? dot(ekat::scalarize(adj_vn0),ekat::scalarize(dvn0),nlevs) : 0.0)
+         + (md ? dot(ekat::scalarize(adj_dp),ekat::scalarize(ddp),nlevs) : 0.0);
   };
 
-  // <du0, J^T*lambdaN> vs <J*du0, lambdaN>, for several values of nu_q.
+  // <du0, J^T*lambdaN> vs <J*du0, lambdaN>, for several values of nu_q. Each is checked with
+  // all the tangents on at once, and with each input's alone (to tell which input's path
+  // through the adjoint is off, if one is).
   // With nu_q=0 the biharmonic term of the last euler step vanishes, so that case checks all
   // the rest of the chain (qlim chaining, qdp_time_avg, precompute_divdp, the dependence on
-  // vn0 and dp). The larger values add the adjoint of the biharmonic term: if only those
-  // fail, the bug is there (or in the limiter branches a large term can trigger).
+  // vn0 and dp). The larger values add the adjoint of the biharmonic term.
   constexpr auto tol = std::numeric_limits<double>::epsilon()*1e5;
   const Real nu_q_list[] = {0.0, 1e16, 1e18, 1e20};
+  const int masks[4][3] = {{1,1,1},{1,0,0},{0,1,0},{0,0,1}};
+  const char* mnames[4] = {"all","qdp","vn0","dp"};
   double lhs_first = 0, lhs_last = 0;
   for (const Real nu_q : nu_q_list) {
-    printf(" -> Run forward problem (prim_advec_tracers_remap replica), nu_q=%g...\n",nu_q);
-    const double rhs = run_forward(nu_q);
-    printf(" -> Run adjoint problem, nu_q=%g...\n",nu_q);
-    const double lhs = run_adjoint(nu_q);
-    if (comm.am_i_root())
-      std::cout << std::setprecision(15)
-                << "   nu_q=" << nu_q << ":  <du0,J^T*lambdaN> = " << lhs
-                << ",  <J*du0,lambdaN> = " << rhs
-                << ",  rel err = " << std::abs(lhs-rhs)/std::abs(rhs) << "\n";
-    INFO ("nu_q = " << nu_q);
-    CHECK_THAT (lhs, Catch::Matchers::WithinRel(rhs,tol));
+    double scale = 0; // magnitude of the full inner product
+    for (int m=0; m<4; ++m) {
+      const int mq = masks[m][0], mv = masks[m][1], md = masks[m][2];
+      const double rhs = run_forward(nu_q,mq,mv,md);
+      const double lhs = run_adjoint(nu_q,mq,mv,md);
+      if (m==0) scale = std::abs(rhs);
+      if (comm.am_i_root())
+        std::cout << std::setprecision(15)
+                  << "   nu_q=" << nu_q << " [" << mnames[m] << "]:  <du0,J^T*lambdaN> = " << lhs
+                  << ",  <J*du0,lambdaN> = " << rhs
+                  << ",  rel err = " << std::abs(lhs-rhs)/std::abs(rhs) << "\n";
+      INFO ("nu_q = " << nu_q << ", tangent on " << mnames[m]);
+      // The single-input products can be orders of magnitude smaller than the full one
+      // (e.g., the dp tangent barely moves qdp), so roundoff in the full-size terms they are
+      // computed from can dominate them. Allow for it with a margin relative to the full product.
+      CHECK_THAT (lhs, Catch::Matchers::WithinRel(rhs,tol) ||
+                       Catch::Matchers::WithinAbs(rhs,1e-2*tol*scale));
 
-    if (nu_q==nu_q_list[0]) lhs_first = lhs;
-    lhs_last = lhs;
+      if (m==0) {
+        if (nu_q==nu_q_list[0]) lhs_first = lhs;
+        lhs_last = lhs;
+      }
+    }
   }
 
   // Sanity check on the test itself: make sure that the biharmonic term is not negligible
