@@ -259,12 +259,10 @@ public:
     m_lambda = lambda;
     m_dJ_dforcing = dJ_dforcing;
 
-    // Same index space as states_forcing (one entry per element), so reuse
-    // m_policy_states'/m_tu_states' sizing rather than recomputing it; only
-    // the work tag (which selects operator(TagStatesAdjoint,...) below) has
-    // to differ from m_policy_states itself.
-    Kokkos::TeamPolicy<ExecSpace,TagStatesAdjoint> policy_adj(
-        m_policy_states.league_size(), m_policy_states.team_size(), m_policy_states.vector_length());
+    // Same index space as states_forcing (one entry per element), and built the same way as
+    // m_policy_states (so it has the sizing m_tu_states was made for); only the work tag
+    // (which selects operator(TagStatesAdjoint,...) below) differs.
+    auto policy_adj = Homme::get_default_team_policy<ExecSpace,TagStatesAdjoint>(m_num_state_elems);
     policy_adj.set_chunk_size(1);
     Kokkos::parallel_for("adjoint of states forcing",policy_adj,*this);
     Kokkos::fence();
