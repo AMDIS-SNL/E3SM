@@ -42,10 +42,9 @@ void init_elements_impl (const int& num_elems)
 {
   auto& c = Context::singleton();
   const SimulationParams& params = c.get<SimulationParams>();
-  const bool consthv = (params.hypervis_scaling==0.0);
 
   auto& e = c.create<ElementsST<ST>> ();
-  e.init (num_elems, consthv, /* alloc_gradphis = */ true,
+  e.init (num_elems, /* alloc_gradphis = */ true,
           params.scale_factor, params.laplacian_rigid_factor,
           params.alloc_sphere_coords);
 
@@ -114,7 +113,13 @@ void create_functors_impl ()
     EKAT_ERROR_MSG ("Error! HOMME_ENABLE_COMPOSE must be enabled for this transport alg.\n"
                     " - transport_alg: " + std::to_string(params.transport_alg) + "\n");
 #endif
-  auto& hvf     = c.create_if_not_there<HyperviscosityFunctorST<ST>>();
+  // Pass (num_elems, params) so that, like caar above, this uses the
+  // lazy-construction path (is_setup=false), forcing the setup_needed()/
+  // setup() call below to actually run. That setup() call is what copies
+  // nu_scale_top/nu_scale_top_ilev_pack_lim from the Fortran-initialized
+  // ref states (needed when tom_sponge_start>0); the no-args constructor
+  // sets is_setup=true immediately, silently skipping that copy.
+  auto& hvf     = c.create_if_not_there<HyperviscosityFunctorST<ST>>(elems.num_elems(), params);
   auto& ff      = c.create_if_not_there<ForcingFunctorST<ST>>();
   auto& diag    = c.create_if_not_there<Diagnostics> (elems.num_elems(),tracers.num_tracers(),
                                                       params.theta_hydrostatic_mode);
@@ -284,13 +289,15 @@ extern "C"
 void init_simulation_params_c (const int& ne, const int& remap_alg, const int& limiter_option, const int& rsplit, const int& qsplit,
                                const int& time_step_type, const int& qsize, const int& state_frequency,
                                const Real& nu, const Real& nu_p, const Real& nu_q, const Real& nu_s, const Real& nu_div, const Real& nu_top,
-                               const int& hypervis_order, const int& hypervis_subcycle, const int& hypervis_subcycle_tom,
-                               const double& hypervis_scaling, const double& rel_perturb, const double& dcmip16_mu,
+                               const int& hypervis_order, const int& hypervis_subcycle, const int& horiz_turb_subcycle,
+                               const int& hypervis_subcycle_tom, const double& hypervis_scaling, const double& laplace_scaling,
+                               const double& rel_perturb, const double& dcmip16_mu,
                                const int& ftype, const int& theta_adv_form, const int& prescribed_wind, const int& use_moisture, const int& disable_diagnostics,
                                const int& use_cpstar, const int& transport_alg, const int& theta_hydrostatic_mode, const char** test_case,
                                const int& dt_remap_factor, const int& dt_tracer_factor,
                                const double& scale_factor, const double& laplacian_rigid_factor, const int& nsplit, const int& pgrad_correction,
-                               const double& dp3d_thresh, const double& vtheta_thresh, const int& internal_diagnostics_level)
+                               const double& dp3d_thresh, const double& vtheta_thresh, const int& internal_diagnostics_level,
+                               const int& do_3d_turbulence, const Real& tom_sponge_start)
 {
 
   // Check that the simulation options are supported. This helps us in the future, since we
@@ -298,6 +305,8 @@ void init_simulation_params_c (const int& ne, const int& remap_alg, const int& l
   // options in the C++ build, we will remove some checks
   Errors::check_option("init_simulation_params_c","vert_remap_q_alg",remap_alg,{1,3,10});
   Errors::check_option("init_simulation_params_c","hypervis_order",hypervis_order,{2});
+  Errors::check_option("init_simulation_params_c","hypervis_subcycle",hypervis_subcycle,0,Errors::ComparisonOp::GT);
+  Errors::check_option("init_simulation_params_c","horiz_turb_subcycle",horiz_turb_subcycle,0,Errors::ComparisonOp::GT);
   Errors::check_option("init_simulation_params_c","transport_alg",transport_alg,{0,12});
   Errors::check_option("init_simulation_params_c","time_step_type",time_step_type,{1,4,5,6,7,9,10});
   Errors::check_option("init_simulation_params_c","qsize",qsize,0,Errors::ComparisonOp::GE);
@@ -312,7 +321,7 @@ void init_simulation_params_c (const int& ne, const int& remap_alg, const int& l
   Errors::check_option("init_simulation_params_c","dp3d_thresh",dp3d_thresh,0.0,Errors::ComparisonOp::GT);
   Errors::check_option("init_simulation_params_c","vtheta_thresh",vtheta_thresh,0.0,Errors::ComparisonOp::GT);
   Errors::check_option("init_simulation_params_c","nu_div",nu_div,0.0,Errors::ComparisonOp::GT);
-  Errors::check_option("init_simulation_params_c","theta_advection_form",theta_adv_form,{0,1});
+  Errors::check_option("init_simulation_params_c","theta_advection_form",theta_adv_form,{0,1,2});
 #ifndef SCREAM
   Errors::check_option("init_simulation_params_c","nsplit",nsplit,1,Errors::ComparisonOp::GE);
 #else
@@ -333,8 +342,10 @@ void init_simulation_params_c (const int& ne, const int& remap_alg, const int& l
 
   if (theta_adv_form==0) {
     params.theta_adv_form = AdvectionForm::Conservative;
-  } else {
+  } else if (theta_adv_form==1) {
     params.theta_adv_form = AdvectionForm::NonConservative;
+  } else if (theta_adv_form==2) {
+    params.theta_adv_form = AdvectionForm::Split;
   }
 
   params.ne                            = ne;
@@ -355,8 +366,10 @@ void init_simulation_params_c (const int& ne, const int& remap_alg, const int& l
   params.nu_top                        = nu_top;
   params.hypervis_order                = hypervis_order;
   params.hypervis_subcycle             = hypervis_subcycle;
+  params.horiz_turb_subcycle           = horiz_turb_subcycle;
   params.hypervis_subcycle_tom         = hypervis_subcycle_tom;
   params.hypervis_scaling              = hypervis_scaling;
+  params.laplace_scaling               = laplace_scaling;
   params.disable_diagnostics           = (bool)disable_diagnostics;
   params.use_moisture                  = (bool)use_moisture;
   params.use_cpstar                    = (bool)use_cpstar;
@@ -370,6 +383,8 @@ void init_simulation_params_c (const int& ne, const int& remap_alg, const int& l
   params.dp3d_thresh                   = dp3d_thresh;
   params.vtheta_thresh                 = vtheta_thresh;
   params.internal_diagnostics_level    = internal_diagnostics_level;
+  params.do_3d_turbulence              = (bool)do_3d_turbulence;
+  params.tom_sponge_start              = tom_sponge_start;
   params.rel_perturb                   = rel_perturb;
 
   params.alloc_sphere_coords = params.transport_alg > 0;
@@ -437,19 +452,16 @@ void init_hvcoord_c (const Real& ps0, CRCPtr& hybrid_am_ptr, CRCPtr& hybrid_ai_p
   hvcoord.init(ps0,hybrid_am_ptr,hybrid_ai_ptr,hybrid_bm_ptr,hybrid_bi_ptr);
 }
 
-void cxx_push_results_to_f90(F90Ptr &elem_state_v_ptr,         F90Ptr &elem_state_w_i_ptr,
-                             F90Ptr &elem_state_vtheta_dp_ptr, F90Ptr &elem_state_phinh_i_ptr,
-                             F90Ptr &elem_state_dp3d_ptr,      F90Ptr &elem_state_ps_v_ptr,
-                             F90Ptr &elem_state_Qdp_ptr,       F90Ptr &elem_Q_ptr,
-                             F90Ptr &elem_derived_omega_p_ptr) {
-  ElementsState &state = Context::singleton().get<ElementsState>();
+// Shared tail of the two cxx_push_results_to_f90 entry points below: the fields
+// with no time-level dimension, plus ps_v, whose copy is a cheap contiguous
+// memcpy and so is not worth a trimmed variant.
+static void push_results_to_f90_tl_free (F90Ptr &elem_state_ps_v_ptr,
+                                         F90Ptr &elem_Q_ptr,
+                                         F90Ptr &elem_derived_omega_p_ptr) {
+  auto &c = Context::singleton();
+  ElementsState &state = c.get<ElementsState>();
+  Tracers &tracers = c.get<Tracers>();
   const int num_elems = state.num_elems();
-
-  state.push_to_f90_pointers(elem_state_v_ptr, elem_state_w_i_ptr, elem_state_vtheta_dp_ptr,
-                             elem_state_phinh_i_ptr, elem_state_dp3d_ptr);
-
-  Tracers &tracers = Context::singleton().get<Tracers>();
-  tracers.push_qdp(elem_state_Qdp_ptr);
 
   // F90 ptrs to arrays (np,np,num_time_levels,nelemd) can be stuffed directly
   // in an unmanaged view
@@ -465,7 +477,7 @@ void cxx_push_results_to_f90(F90Ptr &elem_state_v_ptr,         F90Ptr &elem_stat
 
   sync_to_host(state.m_ps_v, ps_v_f90);
 
-  ElementsDerivedState &derived = Context::singleton().get<ElementsDerivedState>();
+  ElementsDerivedState &derived = c.get<ElementsDerivedState>();
   sync_to_host(derived.m_omega_p,
                HostViewUnmanaged<Real * [NUM_PHYSICAL_LEV][NP][NP]>(
                    elem_derived_omega_p_ptr, num_elems));
@@ -567,6 +579,68 @@ void cxx_push_sensitivities_to_f90(F90Ptr &elem_sens_v_ptr,     F90Ptr &elem_sen
 #endif
 }
 
+// Copy back ALL time levels. Used at init time, where the f90 side does need a
+// fully populated state (e.g. EAMxx's prim_copy_cxx_to_f90 before model_init2).
+void cxx_push_results_to_f90(F90Ptr &elem_state_v_ptr,         F90Ptr &elem_state_w_i_ptr,
+                             F90Ptr &elem_state_vtheta_dp_ptr, F90Ptr &elem_state_phinh_i_ptr,
+                             F90Ptr &elem_state_dp3d_ptr,      F90Ptr &elem_state_ps_v_ptr,
+                             F90Ptr &elem_state_Qdp_ptr,       F90Ptr &elem_Q_ptr,
+                             F90Ptr &elem_derived_omega_p_ptr) {
+  auto &c = Context::singleton();
+
+  c.get<ElementsState>().push_to_f90_pointers(
+      elem_state_v_ptr, elem_state_w_i_ptr, elem_state_vtheta_dp_ptr,
+      elem_state_phinh_i_ptr, elem_state_dp3d_ptr);
+  c.get<Tracers>().push_qdp(elem_state_Qdp_ptr);
+
+  push_results_to_f90_tl_free(elem_state_ps_v_ptr, elem_Q_ptr, elem_derived_omega_p_ptr);
+}
+
+// Copy back only the time levels the f90 side will actually read. Used on the
+// per-step CAM path.
+void cxx_push_results_to_f90_tl(F90Ptr &elem_state_v_ptr,         F90Ptr &elem_state_w_i_ptr,
+                                F90Ptr &elem_state_vtheta_dp_ptr, F90Ptr &elem_state_phinh_i_ptr,
+                                F90Ptr &elem_state_dp3d_ptr,      F90Ptr &elem_state_ps_v_ptr,
+                                F90Ptr &elem_state_Qdp_ptr,       F90Ptr &elem_Q_ptr,
+                                F90Ptr &elem_derived_omega_p_ptr,
+                                const int &n0_f, const int &n0_qdp_f) {
+  auto &c = Context::singleton();
+
+  // Fortran passes the 1-based time levels its readers will use; convert to the
+  // 0-based C++ convention (same as init_time_level_c). Only those levels are
+  // copied back -- nothing on the Fortran side reads the others after a step.
+  const TimeLevel &tl = c.get<TimeLevel>();
+  const int dyn_tl  = n0_f     - 1;
+  const int qdp_dst = n0_qdp_f - 1;
+
+  // The dynamics levels are rotated inside prim_run_subcycle_c before we get
+  // here, so Fortran's tl%n0 must already agree with the C++ TimeLevel. If this
+  // trips, the two sides have gone out of sync and the copy would be garbage.
+  EKAT_REQUIRE_MSG(dyn_tl == tl.n0,
+                   "cxx_push_results_to_f90_tl: Fortran n0 disagrees with C++ TimeLevel::n0");
+
+  c.get<ElementsState>().push_to_f90_pointers(
+      elem_state_v_ptr, elem_state_w_i_ptr, elem_state_vtheta_dp_ptr,
+      elem_state_phinh_i_ptr, elem_state_dp3d_ptr, dyn_tl);
+
+  // The freshly remapped tracer mass is in np1_qdp (see update_q in
+  // prim_run_subcycle_c); Fortran reads the level TimeLevel_Qdp gives it.
+  //
+  // Those two always coincide: each tracer step flips the qdp parity, both here
+  // (TimeLevel::update_tracers_levels, keyed on nstep/qsplit) and in f90
+  // (TimeLevel_Qdp, keyed on nstep/dt_tracer_factor, with dt_tracer_factor ==
+  // qsplit), so the last np1_qdp written is the n0_qdp the advanced nstep asks
+  // for. push_qdp still takes the pair separately -- the qdp levels rotate
+  // before the vertical remap and the dynamics levels after it, so the two
+  // conventions are not interchangeable in general -- and this pins the
+  // invariant down instead of leaving it to a comment.
+  EKAT_REQUIRE_MSG(qdp_dst == tl.np1_qdp,
+                   "cxx_push_results_to_f90_tl: Fortran n0_qdp disagrees with C++ TimeLevel::np1_qdp");
+
+  c.get<Tracers>().push_qdp(elem_state_Qdp_ptr, tl.np1_qdp, qdp_dst);
+
+  push_results_to_f90_tl_free(elem_state_ps_v_ptr, elem_Q_ptr, elem_derived_omega_p_ptr);
+}
 
 //currently, we do not need FVTheta and FPHI, because they are computed from FT and FQ
 //in applycamforcing_tracers inside xx
@@ -694,15 +768,37 @@ void init_elements_2d_c (const int& ie,
                          CF90Ptr& spheremp, CF90Ptr& rspheremp,
                          CF90Ptr& metdet, CF90Ptr& metinv,
                          CF90Ptr &tensorvisc, CF90Ptr &vec_sph2cart,
-                         double* sphere_cart_vec, double* sphere_latlon_vec)
+                         double* sphere_cart_vec, double* sphere_latlon_vec,
+                         CF90Ptr &tensorvisc2)
 {
   auto& c = Context::singleton();
   ElementsGeometry& geo = c.get<ElementsGeometry> ();
-  const SimulationParams& params = c.get<SimulationParams>();
 
-  const bool consthv = (params.hypervis_scaling==0.0);
   geo.set_elem_data(ie,D,Dinv,fcor,spheremp,rspheremp,metdet,metinv,tensorvisc,
-                    vec_sph2cart,consthv,sphere_cart_vec,sphere_latlon_vec);
+                    vec_sph2cart,sphere_cart_vec,sphere_latlon_vec,
+                    tensorvisc2);
+}
+
+// Copies just tensorVisc from f90 arrays into the C++ view. Separate from
+// init_elements_2d_c() so that it can be called again, after dss_hvtensor
+// has updated tensorVisc, without re-copying the other (constant) geometry
+// fields.
+void init_tensorvisc_c (const int& ie, CF90Ptr& tensorvisc)
+{
+  auto& c = Context::singleton();
+  ElementsGeometry& geo = c.get<ElementsGeometry> ();
+
+  geo.set_tensorvisc(ie,tensorvisc);
+}
+
+// Same as init_tensorvisc_c(), but for tensorVisc_2 (the sponge-layer
+// tensor coefficient), which is likewise recomputed by dss_hvtensor.
+void init_tensorvisc2_c (const int& ie, CF90Ptr& tensorvisc2)
+{
+  auto& c = Context::singleton();
+  ElementsGeometry& geo = c.get<ElementsGeometry> ();
+
+  geo.set_tensorvisc2(ie,tensorvisc2);
 }
 
 void init_geopotential_c (const int& ie,
@@ -769,7 +865,8 @@ void init_elements_states_c (CF90Ptr& elem_state_v_ptr,       CF90Ptr& elem_stat
 
 void init_reference_states_c (CF90Ptr& elem_theta_ref_ptr,
                               CF90Ptr& elem_dp_ref_ptr,
-                              CF90Ptr& elem_phi_ref_ptr)
+                              CF90Ptr& elem_phi_ref_ptr,
+                              CF90Ptr& nu_scale_top_ptr)
 {
   auto& state = Context::singleton().get<ElementsState> ();
   auto& ref_states = state.m_ref_states;
@@ -784,6 +881,22 @@ void init_reference_states_c (CF90Ptr& elem_theta_ref_ptr,
   sync_to_device(theta_ref, ref_states.theta_ref);
   sync_to_device(dp_ref,    ref_states.dp_ref);
   sync_to_device(phi_ref,   ref_states.phi_i_ref);
+
+  // Unpack nu_scale_top from Fortran 1D array (nlev reals) into packed Scalar[NUM_LEV] view
+  const Real* nu_scale_top_f = static_cast<const Real*>(nu_scale_top_ptr);
+  auto h_nu_scale_top = Kokkos::create_mirror_view(ref_states.nu_scale_top);
+  ref_states.nu_scale_top_ilev_pack_lim = 0;
+  for (int phys_lev = 0; phys_lev < NUM_LEV * VECTOR_SIZE; ++phys_lev) {
+    const int ilev = phys_lev / VECTOR_SIZE;
+    const int ivec = phys_lev % VECTOR_SIZE;
+    const Real val = (phys_lev < NUM_PHYSICAL_LEV) ? nu_scale_top_f[phys_lev] : 0.0;
+    h_nu_scale_top(ilev)[ivec] = val;
+    if (val != 0.0) ref_states.nu_scale_top_ilev_pack_lim = phys_lev + 1;
+  }
+  // Convert last nonzero physical level index to pack index
+  ref_states.nu_scale_top_ilev_pack_lim =
+      (ref_states.nu_scale_top_ilev_pack_lim + VECTOR_SIZE - 1) / VECTOR_SIZE;
+  Kokkos::deep_copy(ref_states.nu_scale_top, h_nu_scale_top);
 }
 
 void init_diagnostics_c (F90Ptr& elem_state_q_ptr, F90Ptr& elem_accum_qvar_ptr,  F90Ptr& elem_accum_qmass_ptr,

@@ -83,23 +83,23 @@ void run_bfb_rain_vel()
 
   // Calc bulk rime from a kernel and copy results back to host
   Kokkos::parallel_for(num_test_itrs, KOKKOS_LAMBDA(const Int& i) {
-    const Int offset = i * Spack::n;
+    const Int offset = i * Pack::n;
 
     // Init pack inputs
-    Spack qr_incld, cld_frac_r, rhofacr, nr_incld;
-    for (Int s = 0, vs = offset; s < Spack::n; ++s, ++vs) {
+    Pack qr_incld, cld_frac_r, rhofacr, nr_incld;
+    for (Int s = 0, vs = offset; s < Pack::n; ++s, ++vs) {
       qr_incld[s] = crfv_device(vs).qr_incld;
       rhofacr[s]  = crfv_device(vs).rhofacr;
       nr_incld[s] = crfv_device(vs).nr_incld;
     }
 
-    Spack mu_r(0), lamr(0), V_qr(0), V_nr(0);
+    Pack mu_r(0), lamr(0), V_qr(0), V_nr(0);
     Functions::compute_rain_fall_velocity(
         vn_table_vals, vm_table_vals, qr_incld, rhofacr, nr_incld, mu_r, lamr,
         V_qr, V_nr, p3::Functions<Real,DefaultDevice>::P3Runtime());
 
     // Copy results back into views
-    for (Int s = 0, vs = offset; s < Spack::n; ++s, ++vs) {
+    for (Int s = 0, vs = offset; s < Pack::n; ++s, ++vs) {
       crfv_device(vs).nr_incld = nr_incld[s];
       crfv_device(vs).mu_r     = mu_r[s];
       crfv_device(vs).lamr     = lamr[s];
@@ -133,8 +133,8 @@ void run_bfb_rain_sed()
   // With stored baselines, we must use a fixed seed!
   auto engine = Base::get_engine();
 
-  // F90 is quite slow on weaver, so we decrease dt to reduce
-  // the number of steps in rain_sed.
+  // F90 was quite slow on weaver (an old GPU machine),
+  // so we decrease dt to reduce the number of steps in rain_sed.
 #ifdef EAMXX_ENABLE_GPU
   constexpr Scalar dt = 5.800E+01;
 #else
@@ -227,13 +227,18 @@ void run_bfb()
 
 namespace {
 
-TEST_CASE("p3_rain_sed", "[p3_functions]")
+TEST_CASE("p3_rain_sed_prop", "[p3_functions]")
 {
   using T = scream::p3::unit_test::UnitWrap::UnitTest<scream::DefaultDevice>::TestRainSed;
 
-  T t;
-  t.run_phys();
-  t.run_bfb();
+  T t;  t.run_phys();
+}
+
+TEST_CASE("p3_rain_sed_bfb", "[p3_functions]")
+{
+  using T = scream::p3::unit_test::UnitWrap::UnitTest<scream::DefaultDevice>::TestRainSed;
+
+  T t;  t.run_bfb();
 }
 
 } // namespace

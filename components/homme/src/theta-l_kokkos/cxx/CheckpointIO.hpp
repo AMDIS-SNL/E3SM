@@ -139,13 +139,13 @@ private:
   // "int" (np x np x ilev, shared by w_i and phinh_i), "ps" (np x np, used
   // by ps_v, which is never packed).
   Kokkos::View<Real*****,Kokkos::LayoutRight,ExecSpace> m_buf_v_dev;
-  Kokkos::View<Real*****,Kokkos::LayoutRight,ExecSpace>::HostMirror m_buf_v_host;
+  Kokkos::View<Real*****,Kokkos::LayoutRight,ExecSpace>::host_mirror_type m_buf_v_host;
   Kokkos::View<Real****, Kokkos::LayoutRight,ExecSpace> m_buf_mid_dev;
-  Kokkos::View<Real****, Kokkos::LayoutRight,ExecSpace>::HostMirror m_buf_mid_host;
+  Kokkos::View<Real****, Kokkos::LayoutRight,ExecSpace>::host_mirror_type m_buf_mid_host;
   Kokkos::View<Real****, Kokkos::LayoutRight,ExecSpace> m_buf_int_dev;
-  Kokkos::View<Real****, Kokkos::LayoutRight,ExecSpace>::HostMirror m_buf_int_host;
+  Kokkos::View<Real****, Kokkos::LayoutRight,ExecSpace>::host_mirror_type m_buf_int_host;
   Kokkos::View<Real***,  Kokkos::LayoutRight,ExecSpace> m_buf_ps_dev;
-  Kokkos::View<Real***,  Kokkos::LayoutRight,ExecSpace>::HostMirror m_buf_ps_host;
+  Kokkos::View<Real***,  Kokkos::LayoutRight,ExecSpace>::host_mirror_type m_buf_ps_host;
 
   // Currently-open file handles (a file is "open" here in the sense of "we
   // haven't moved on to another nn_call yet", not necessarily that its ncid

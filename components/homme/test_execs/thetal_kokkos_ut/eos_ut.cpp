@@ -284,7 +284,7 @@ TEST_CASE("eos", "eos") {
     // Note: to avoid errors in pnh_and_exner_from_eos, we need phi to be increasing.
     //       Rather than using a constraint (which may call the function many times,
     //       we simply ask that there are no duplicates, then we sort it later.
-    // auto sort_and_chek = [](const ExecViewManaged<Scalar[NUM_LEV_P]>::HostMirror v)->bool {
+    // auto sort_and_chek = [](const ExecViewManaged<Scalar[NUM_LEV_P]>::host_mirror_type v)->bool {
     //   Real* start = reinterpret_cast<Real*>(v.data());
     //   Real* end   = reinterpret_cast<Real*>(v.data()) + NUM_LEV_P*VECTOR_SIZE;
     //   std::sort(start,end);
@@ -308,7 +308,7 @@ TEST_CASE("eos", "eos") {
     }
 
     // Store initial phi.
-    decltype(phi_i_cxx)::HostMirror h_phi_i_in("",num_elems);
+    decltype(phi_i_cxx)::host_mirror_type h_phi_i_in("",num_elems);
     Kokkos::deep_copy(h_phi_i_in,phi_i_cxx);
 
     // phis should be phi at the bottom. Make it happen

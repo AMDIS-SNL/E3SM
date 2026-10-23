@@ -1,9 +1,9 @@
 #include "share/io/scorpio_output.hpp"
 
 #include "share/field/field_utils.hpp"
+#include "share/field/field_reader.hpp"
 #include "share/io/eamxx_io_utils.hpp"
-#include "share/io/scorpio_input.hpp"
-#include "share/remap/coarsening_remapper.hpp"
+#include "share/remap/horizontal_remapper.hpp"
 #include "share/remap/vertical_remapper.hpp"
 #include "share/util/eamxx_timing.hpp"
 
@@ -36,6 +36,13 @@ transfer_extra_data(const scream::Field &src, scream::Field &tgt)
     tgt.get_header().set_may_be_filled(true);
   }
 };
+
+// Helper function to get the name of a transposed helper field from a layout and data type
+std::string
+get_transposed_helper_name(const scream::FieldLayout& layout, const scream::DataType data_type)
+{
+  return "transposed_" + layout.transpose().to_string() + "_" + e2str(data_type);
+}
 
 // Note: this is also declared in eamxx_scorpio_interface.cpp. Move it somewhere else?
 template <typename T>
@@ -100,6 +107,11 @@ AtmosphereOutput::AtmosphereOutput(const ekat::Comm &comm, const ekat::Parameter
   // the name of the yaml file where the options are read from.
   m_stream_name = params.name();
 
+  // Is this output set to be transposed?
+  if (params.isParameter("transpose")) {
+    m_transpose = params.get<bool>("transpose");
+  }
+
   auto gm = field_mgr->get_grids_manager();
 
   // Figure out what kind of averaging is requested
@@ -135,6 +147,13 @@ AtmosphereOutput::AtmosphereOutput(const ekat::Comm &comm, const ekat::Parameter
           m_fields_names.resize(1, pl.get<std::string>("field_names"));
           if (m_fields_names[0]=="NONE") {
             m_fields_names.clear();
+          }
+        }
+        if (pl.isParameter("aliases")) {
+          if (pl.isType<vos_t>("aliases")) {
+            m_intermediate_aliases = pl.get<vos_t>("aliases");
+          } else {
+            m_intermediate_aliases.push_back(pl.get<std::string>("aliases"));
           }
         }
       }
@@ -200,6 +219,11 @@ AtmosphereOutput::AtmosphereOutput(const ekat::Comm &comm, const ekat::Parameter
     }
     if (params.isParameter("fill_threshold")) {
       m_avg_coeff_threshold = params.get<Real>("fill_threshold");
+      EKAT_REQUIRE_MSG (m_avg_coeff_threshold>=0 and m_avg_coeff_threshold<1,
+          "Error! Invalid value for 'fill_threshold'.\n"
+          "  - output stream: " + m_stream_name + "\n"
+          "  - fill_threshold: " + std::to_string(m_avg_coeff_threshold) + "\n"
+          "  - valid range   : [0,1)\n");
     }
   }
 
@@ -211,9 +235,14 @@ AtmosphereOutput::AtmosphereOutput(const ekat::Comm &comm, const ekat::Parameter
     auto p_mid = fm_model->get_field("p_mid");
     auto p_int = fm_model->get_field("p_int");
     auto vert_remapper = std::make_shared<VerticalRemapper>(fm_model->get_grid(),vert_remap_file);
-    vert_remapper->set_source_pressure (p_mid,p_int);
+    vert_remapper->set_source_pressure(p_mid);
+    vert_remapper->set_source_pressure(p_int);
     vert_remapper->set_extrapolation_type(VerticalRemapper::Mask); // both Top AND Bot
     m_vert_remapper = vert_remapper;
+    m_vert_remapper->set_name(m_stream_name + " VertRemap");
+    if (params.isParameter("enable_fine_grain_timers")) {
+      m_vert_remapper->toggle_timers(params.get<bool>("enable_fine_grain_timers"));
+    }
 
     grid_after_vr = m_vert_remapper->get_tgt_grid();
     fm_after_vr = std::make_shared<FieldManager>(grid_after_vr,RepoState::Closed);
@@ -237,11 +266,19 @@ AtmosphereOutput::AtmosphereOutput(const ekat::Comm &comm, const ekat::Parameter
     if (use_horiz_remap_from_file) {
       // Construct the coarsening remapper
       auto horiz_remap_file   = params.get<std::string>("horiz_remap_file");
-      m_horiz_remapper = std::make_shared<CoarseningRemapper>(grid_after_vr,horiz_remap_file,true);
+      auto hr = std::make_shared<HorizontalRemapper>(grid_after_vr,horiz_remap_file,true);
+      if (params.isParameter("horiz_remap_fill_threshold")) {
+        hr->set_mask_threshold(params.get<Real>("horiz_remap_fill_threshold"));
+      }
+      m_horiz_remapper = hr;
     } else {
       // Construct a generic remapper (likely, Dyn->PhysicsGLL)
       grid_after_hr = fm_grid->get_aux_grid(output_data_layout);
       m_horiz_remapper = gm->create_remapper(grid_after_vr,grid_after_hr);
+    }
+    m_horiz_remapper->set_name(m_stream_name + " HorizRemap");
+    if (params.isParameter("enable_fine_grain_timers")) {
+      m_horiz_remapper->toggle_timers(params.get<bool>("enable_fine_grain_timers"));
     }
 
     grid_after_hr = m_horiz_remapper->get_tgt_grid();
@@ -272,7 +309,7 @@ AtmosphereOutput::
   //       to prevent two output streams creating the same diag. So when this
   //       destructor runs, it's fine to clean up this static var
   for (auto d : m_diagnostics) {
-    const auto& name = d->get_diagnostic().name();
+    const auto& name = d->get().name();
     m_diag_repo.erase(name);
   }
 }
@@ -293,11 +330,10 @@ void AtmosphereOutput::restart (const std::string& filename)
     fields.push_back(*f_ptr);
   }
   for (const auto& f : m_avg_counts) {
-    fields.push_back(f);
+    fields.push_back(f.alias(f.name(),fm->get_grid()->name()));
   }
 
-  AtmosphereInput hist_restart (filename, fm->get_grid(), fields);
-  hist_restart.read_variables();
+  read_fields(filename, fields, fm->get_grid()->get_partitioned_dim_gids(), m_comm );
 }
 
 void AtmosphereOutput::init()
@@ -327,6 +363,7 @@ void AtmosphereOutput::init()
     // when calling Field's update methods
     if (m_avg_type!=OutputAvgType::Instant or
         fh.get_alloc_properties().get_padding()>0 or
+        not fh.get_alloc_properties().contiguous()>0 or
         fh.get_parent()!=nullptr) {
       Field copy(fid);
       copy.allocate_view();
@@ -338,7 +375,27 @@ void AtmosphereOutput::init()
 
     // Store the field layout, so that calls to setup_output_file are easier
     const auto& layout = fid.get_layout();
-    m_vars_dims[fname] = get_var_dimnames(layout);
+    m_vars_dims[fname] = get_var_dimnames(m_transpose ? layout.transpose() : layout);
+
+    // Initialize a helper_field for each unique layout.  This can be used for operations
+    // such as writing transposed output.
+    if (m_transpose) {
+      const auto helper_layout = layout.transpose();
+      const auto data_type = fid.data_type();
+      // Note: helper name is based on the ORIGINAL layout (not transposed) and data type, so that
+      // when we look up the helper during write, we use the field's original layout and data type
+      const std::string helper_name = get_transposed_helper_name(layout, data_type);
+      if (m_helper_fields.find(helper_name) == m_helper_fields.end()) {
+        // We can add a new helper field for this layout and data type
+        // Use Units::invalid() since this helper is reused for fields with same layout but different units
+        using namespace ekat::units;
+        FieldIdentifier fid_helper(helper_name,helper_layout,Units::invalid(),fid.get_grid_name(),data_type);
+        Field helper(fid_helper);
+        helper.get_header().get_alloc_properties().request_allocation();
+        helper.allocate_view();
+        m_helper_fields[helper_name] = helper;
+      }
+    }
 
     // Now check that all the dims of this field are already set to be registered.
     const auto& tags = layout.tags();
@@ -387,7 +444,7 @@ void AtmosphereOutput::init()
 
     if (m_track_avg_cnt) {
       // Create and store a Field to track the averaging count for this layout
-      set_avg_cnt_tracking(fname,layout);
+      set_avg_cnt_tracking(fid);
     }
   }
 
@@ -406,7 +463,7 @@ init_timestep (const util::TimeStamp& start_of_step)
 }
 
 void AtmosphereOutput::
-run (const std::string& filename,
+run (const std::string& filename, const util::TimeStamp& ts,
      const bool output_step, const bool checkpoint_step,
      const int nsteps_since_last_output,
      const bool allow_invalid_fields)
@@ -425,7 +482,7 @@ run (const std::string& filename,
 
   // Update all diagnostics, we need to do this before applying the remapper
   // to make sure that the remapped fields are the most up to date.
-  compute_diagnostics(allow_invalid_fields);
+  computes(ts,allow_invalid_fields);
 
   auto apply_remap = [&](AbstractRemapper& remapper)
   {
@@ -492,7 +549,7 @@ run (const std::string& filename,
       //    if we later need it. E.g, if no AvgCount AND no hremap, we don't need it.
       //////////////////////////////////////////////////////
       auto field = fm_after_hr->get_field(fname);
-      auto mask  = count.get_header().get_extra_data<Field>("mask");
+      auto mask  = count.get_valid_mask();
 
       // Find where the field is NOT equal to fill_value
       compute_mask(field,constants::fill_value<Real>,Comparison::NE,mask);
@@ -506,7 +563,18 @@ run (const std::string& filename,
         count.sync_to_host();
 
         auto func_start = std::chrono::steady_clock::now();
-        scorpio::write_var(filename,count.name(),count.get_internal_view_data<int,Host>());
+        if (m_transpose) {
+          const auto& id = count.get_header().get_identifier();
+          const auto& layout = id.get_layout();
+          const auto data_type = id.data_type();
+          const std::string helper_name = get_transposed_helper_name(layout, data_type);
+          auto& temp = m_helper_fields.at(helper_name);
+          transpose(count,temp);
+          temp.sync_to_host();
+          scorpio::write_var(filename,count.name(),temp.get_internal_view_data<const int,Host>());
+        } else {
+          scorpio::write_var(filename,count.name(),count.get_internal_view_data<const int,Host>());
+        }
         auto func_finish = std::chrono::steady_clock::now();
         auto duration_loc = std::chrono::duration_cast<std::chrono::milliseconds>(func_finish - func_start);
         duration_write += duration_loc.count();
@@ -534,7 +602,7 @@ run (const std::string& filename,
   // Take care of updating and possibly writing fields.
   for (size_t i = 0; i < m_fields_names.size(); ++i) {
     const auto& field_name = m_fields_names[i];
-    
+
     // Get all the info for this field.
     const auto& f_in  = fm_after_hr->get_field(field_name);
           auto& f_out = fm_scorpio->get_field(field_name);
@@ -565,13 +633,16 @@ run (const std::string& filename,
     if (is_write_step) {
       // NOTE: we don't divide by the avg cnt for checkpoint output
       if (output_step and m_avg_type==OutputAvgType::Average) {
-        // Even if m_track_avg_cnt=true, this field may not need it
-        if (m_track_avg_cnt) {
-          auto avg_count = m_field_to_avg_count.at(field_name);
+        // Even if m_track_avg_cnt=true, this field may not need it.
+        // Note: a missing entry is safe ONLY for fields that cannot contain
+        // fill values; the may_be_filled check above guarantees that.
+        auto avg_count_it = m_field_to_avg_count.find(field_name);
+        if (m_track_avg_cnt and avg_count_it!=m_field_to_avg_count.end()) {
+          auto avg_count = avg_count_it->second;
 
           f_out.scale_inv(avg_count);
 
-          const auto& mask = avg_count.get_header().get_extra_data<Field>("mask");
+          const auto& mask = avg_count.get_valid_mask();
           f_out.deep_copy(constants::fill_value<Real>,mask);
         } else {
           // Divide by steps count only when the summation is complete
@@ -579,12 +650,23 @@ run (const std::string& filename,
         }
       }
 
-      // Bring data to host
-      f_out.sync_to_host();
-
       // Write to file
       auto func_start = std::chrono::steady_clock::now();
-      scorpio::write_var(filename,field_name,f_out.get_internal_view_data<Real,Host>());
+
+      if (m_transpose) {
+        const auto& id = f_out.get_header().get_identifier();
+        const auto& layout = id.get_layout();
+        const auto data_type = id.data_type();
+        const std::string helper_name = get_transposed_helper_name(layout, data_type);
+        auto& temp = m_helper_fields.at(helper_name);
+        transpose(f_out,temp);
+        temp.sync_to_host();
+        scorpio::write_var(filename,field_name,temp.get_internal_view_data<const Real,Host>());
+      } else {
+        // Bring data to host (only needed for non-transposed output)
+        f_out.sync_to_host();
+        scorpio::write_var(filename,field_name,f_out.get_internal_view_data<const Real,Host>());
+      }
       auto func_finish = std::chrono::steady_clock::now();
       auto duration_loc = std::chrono::duration_cast<std::chrono::milliseconds>(func_finish - func_start);
       duration_write += duration_loc.count();
@@ -632,9 +714,11 @@ res_dep_memory_footprint () const
   return rdmf;
 }
 
-void AtmosphereOutput::set_avg_cnt_tracking(const std::string& name, const FieldLayout& layout)
+void AtmosphereOutput::set_avg_cnt_tracking(const FieldIdentifier& fid)
 {
   // Now create a Field to track the averaging count for this layout
+  const std::string& name = fid.name();
+  const auto& layout = fid.get_layout();
   const auto& avg_cnt_suffix = m_field_to_avg_cnt_suffix[name];
   const auto tags = layout.tags();
   std::string avg_cnt_name = "avg_count" + avg_cnt_suffix;
@@ -662,16 +746,14 @@ void AtmosphereOutput::set_avg_cnt_tracking(const std::string& name, const Field
   }
 
   // We have not created this avg count field yet.
-  m_vars_dims[avg_cnt_name] = get_var_dimnames(layout);
+  m_vars_dims[avg_cnt_name] = get_var_dimnames(m_transpose ? layout.transpose() : layout);
 
-  auto nondim = ekat::units::Units::nondimensional();
-  FieldIdentifier count_id (avg_cnt_name,layout,nondim,m_io_grid->name(),DataType::IntType);
+  auto count_id = fid.clone(avg_cnt_name).reset_units(ekat::units::none).reset_dtype(DataType::IntType);
   Field count(count_id);
   count.allocate_view();
 
-  // We will use a helper field for updating cnt, so store it inside the field header
-  auto mask = count.clone(count.name()+"_mask");
-  count.get_header().set_extra_data("mask",mask);
+  // We will use a mask field for updating cnt (to check where cnt>threshold)
+  count.create_valid_mask();
 
   m_avg_counts.push_back(count);
   m_field_to_avg_count[name] = count;
@@ -721,6 +803,9 @@ register_variables(const std::string& filename,
     const auto& dimnames = m_vars_dims.at(field_name);
     std::string units = fid.get_units().to_string();
 
+    // Auxiliary coordinates (lat, lon) should not list themselves in coordinates attribute
+    const bool is_aux_coord = field_name=="lat" or field_name=="lon";
+
     // TODO  Need to change dtype to allow for other variables.
     // Currently the field_manager only stores Real variables so it is not an issue,
     // but in the future if non-Real variables are added we will want to accomodate that.
@@ -754,13 +839,16 @@ register_variables(const std::string& filename,
       scorpio::define_var (filename, field_name, units, dimnames,
                             "real",fp_precision, m_add_time_dim);
 
-      // Add FillValue as an attribute of each variable
-      // FillValue is a protected metadata, do not add it if it already existed
-      if (fp_precision=="double" or
-          (fp_precision=="real" and std::is_same<Real,double>::value)) {
-        scorpio::set_attribute(filename, field_name, "_FillValue",constants::fill_value<double>);
-      } else {
-        scorpio::set_attribute(filename, field_name, "_FillValue",constants::fill_value<float>);
+      // CF compliance: Only add _FillValue for fields that may actually contain fill values
+      // (e.g., pressure-interpolated fields). Coordinate variables and regular fields
+      // without missing values should not have _FillValue (may_be_filled() should return false).
+      if (f.get_header().may_be_filled()) {
+        if (fp_precision=="double" or
+            (fp_precision=="real" and std::is_same<Real,double>::value)) {
+          scorpio::set_attribute(filename, field_name, "_FillValue",constants::fill_value<double>);
+        } else {
+          scorpio::set_attribute(filename, field_name, "_FillValue",constants::fill_value<float>);
+        }
       }
       if (m_alias_to_orig.count(field_name)==1) {
         // Store what this field is the alias of
@@ -805,32 +893,42 @@ register_variables(const std::string& filename,
 
       // Gather standard name, CF-Compliant (if not already in the io: string attributes)
       if (str_atts.count("standard_name")==0) {
+        // Get standard name from metadata registry
         auto standardname = m_default_metadata.get_standardname(field_name);
+
         scorpio::set_attribute(filename, field_name, "standard_name", standardname);
       }
-      
-      // If output represents an statistic over a time range add a "cell methods"
-      // attribute.
-      switch (m_avg_type) {
-        case OutputAvgType::Instant:
-          scorpio::set_attribute(filename, field_name, "cell_methods", "time: point");
-          break;  // Don't add the attribute
-        case OutputAvgType::Max:
-          scorpio::set_attribute(filename, field_name, "cell_methods", "time: maximum");
-          break;
-        case OutputAvgType::Min:
-          scorpio::set_attribute(filename, field_name, "cell_methods", "time: minimum");
-          break;
-        case OutputAvgType::Average:
-          scorpio::set_attribute(filename, field_name, "cell_methods", "time: mean");
-          break;
-        default:
-          EKAT_ERROR_MSG ("Unexpected/unsupported averaging type.\n");
+
+      // CF compliance: Only add cell_methods to variables with time dimension.
+      // Coordinate/dimension variables don't need cell_methods.
+      if (m_add_time_dim) {
+        switch (m_avg_type) {
+          case OutputAvgType::Instant:
+            scorpio::set_attribute(filename, field_name, "cell_methods", "time: point");
+            break;
+          case OutputAvgType::Max:
+            scorpio::set_attribute(filename, field_name, "cell_methods", "time: maximum");
+            break;
+          case OutputAvgType::Min:
+            scorpio::set_attribute(filename, field_name, "cell_methods", "time: minimum");
+            break;
+          case OutputAvgType::Average:
+            scorpio::set_attribute(filename, field_name, "cell_methods", "time: mean");
+            break;
+          default:
+            EKAT_ERROR_MSG ("Unexpected/unsupported averaging type.\n");
+        }
       }
 
-      // If output contains the column dimension add a "coordinates" attribute.
-      if (fid.get_layout().has_tag(COL)) {
+      // CF compliance: Auxiliary coordinate variables (lat, lon) should not list
+      // themselves in the coordinates attribute.
+      if (fid.get_layout().has_tag(COL) && !is_aux_coord) {
         scorpio::set_attribute(filename, field_name, "coordinates", "lat lon");
+      }
+
+      // If this is transposed output, mark the variable
+      if (m_transpose) {
+        scorpio::set_attribute(filename, field_name, "transposed_output", "true");
       }
     }
   }
@@ -929,31 +1027,33 @@ setup_output_file(const std::string& filename,
 }
 
 void AtmosphereOutput::
-compute_diagnostics(const bool allow_invalid_fields)
+computes(const util::TimeStamp& ts, const bool allow_invalid_fields)
 {
   for (auto diag : m_diagnostics) {
     // Check if all inputs are valid
     bool computable = true;
-    for (const auto& f : diag->get_fields_in()) {
-      computable &= f.get_header().get_tracking().get_time_stamp().is_valid();
+    for (const auto& fn : diag->get_input_fields_names()) {
+      const auto& f = m_field_mgrs[FromModel]->get_field(fn);
+      const auto& fts = f.get_header().get_tracking().get_time_stamp();
+      computable &= fts.is_valid();
 
       EKAT_REQUIRE_MSG (computable or allow_invalid_fields,
         "Error! Cannot compute a diagnostic. One dependency has an invalid timestamp.\n"
         " - stream name: " + m_stream_name + "\n"
-        " - diag name: " + diag->get_diagnostic().name() + "\n"
+        " - diag name: " + diag->get().name() + "\n"
         " - dep  name: " + f.name() + "\n");
     }
 
-    auto d = diag->get_diagnostic();
+    auto d = diag->get();
     if (computable) {
-      diag->compute_diagnostic();
+      diag->compute(ts);
     }
 
     bool computed = d.get_header().get_tracking().get_time_stamp().is_valid();
 
     EKAT_REQUIRE_MSG (computed or allow_invalid_fields,
       "Error! Failed to compute diagnostic.\n"
-      " - diag name: " + diag->get_diagnostic().name() + "\n");
+      " - diag name: " + diag->get().name() + "\n");
 
     if (not computed) {
       // The diag was either not computable or it may have failed to compute
@@ -974,12 +1074,60 @@ process_requested_fields()
   auto fm_model = m_field_mgrs[FromModel];
   auto fm_grid = m_field_mgrs[FromModel]->get_grid();
 
-  // First, find out which field names are just aliases
+  // Process intermediate-only fields declared in the 'aliases' YAML section.
+  // Each entry has the form "alias:=original". These are created and registered
+  // in the field manager so that dependents can use them, but are NOT written
+  // to the NC output file.
+  std::set<std::string> intermediate_names;
+  for (const auto& spec : m_intermediate_aliases) {
+    auto tokens = ekat::split(spec, ":=");
+    for (auto& t : tokens) {
+      t = ekat::trim(t);
+    }
+    EKAT_REQUIRE_MSG(tokens.size()==2 && !tokens[0].empty() && !tokens[1].empty(),
+        "Error! Invalid entry in 'aliases' section. Should be 'alias:=original'.\n"
+        " - entry: " + spec + "\n");
+    const auto& alias = tokens[0];
+    const auto& orig  = tokens[1];
+    EKAT_REQUIRE_MSG(m_alias_to_orig.count(alias)==0,
+        "Error! Intermediate alias conflicts with an existing alias.\n"
+        " - stream name: " + m_stream_name + "\n"
+        " - alias: " + alias + "\n");
+    m_alias_to_orig[alias] = orig;
+    intermediate_names.insert(alias);
+  }
+
+  // Check that no intermediate name also appears as a regular output field
+  for (const auto& iname : intermediate_names) {
+    for (const auto& fname : m_fields_names) {
+      EKAT_REQUIRE_MSG(fname != iname,
+          "Error! A field declared in the 'aliases' section also appears in 'field_names'.\n"
+          " - stream name: " + m_stream_name + "\n"
+          " - field name: " + iname + "\n");
+    }
+  }
+
+  // Next, find out which field names are just aliases (using ':=' syntax)
+  // NOTE: spaces around ':=' are allowed and stripped; expressions read
+  //       better with them.
   for (auto& name : m_fields_names) {
     auto tokens = ekat::split(name,":=");
+    for (auto& t : tokens) {
+      t = ekat::trim(t);
+    }
     EKAT_REQUIRE_MSG(tokens.size()==2 or tokens.size()==1,
         "Error! Invalid alias request. Should be 'alias:=original'.\n"
         " - request: " + name + "\n");
+    // Trimming can leave a token empty (' := expr', 'name :=', or an entry that
+    // is only whitespace). Catch it here: an empty name silently poisons
+    // m_fields_names/m_alias_to_orig, and only fails much later.
+    for (const auto& t : tokens) {
+      EKAT_REQUIRE_MSG(not t.empty(),
+          "Error! Empty field name in output request.\n"
+          " - stream name: " + m_stream_name + "\n"
+          " - request: '" + name + "'\n"
+          " - expected 'alias := original' with both sides non-empty.\n");
+    }
     if (tokens.size()==2) {
       EKAT_REQUIRE_MSG (m_alias_to_orig.count(tokens[0])==0,
           "Error! The same alias has been used multiple times.\n"
@@ -987,8 +1135,8 @@ process_requested_fields()
           " - first alias: " + tokens[0] + ":=" + m_alias_to_orig[tokens[0]] + "\n"
           " - second alias: " + tokens[0] + ":=" + tokens[1] + "\n");
       m_alias_to_orig[tokens[0]] = tokens[1];
-      name = tokens[0];
     }
+    name = tokens[0];
   }
 
   // In case someone has an alias of an alias, we need to resolve the TRUE orig names.
@@ -1010,14 +1158,14 @@ process_requested_fields()
   // Helper lambda to check if this fm_model field should trigger avg count
   auto check_for_avg_cnt = [&](const Field& f) {
     // We need avg-count tracking for any averaged (non-instant) field that:
-    //  - supplies explicit mask info (mask_data or mask_field), OR
+    //  - supplies explicit mask info ("mask_data" extra data, or mask field)
     //  - is marked as potentially containing fill values (may_be_filled()).
     // Without this, fill-aware updates skip fill_value during accumulation (good)
     // but we would still divide by the raw nsteps, biasing the result low.
     if (m_avg_type!=OutputAvgType::Instant) {
-      const bool has_mask = f.get_header().has_extra_data("mask_data") || f.get_header().has_extra_data("mask_field");
+      const bool has_mask_data = f.get_header().has_extra_data("mask_data");
       const bool may_be_filled = f.get_header().may_be_filled();
-      if (has_mask || may_be_filled) {
+      if (f.has_valid_mask() or has_mask_data or may_be_filled) {
         m_track_avg_cnt = true;
         // Avoid duplicate insertion if already present (e.g., mask + filled both true)
         if (m_field_to_avg_cnt_suffix.count(f.name())==0) {
@@ -1028,22 +1176,20 @@ process_requested_fields()
   };
 
   // Helper lambda that initializes a diagnostic
-  auto init_diag = [&](const std::shared_ptr<AtmosphereDiagnostic>& diag) {
+  auto init_diag = [&](const std::shared_ptr<AbstractDiagnostic>& diag) {
     // Set inputs in the diag
-    for (const auto& freq : diag->get_field_requests()) {
-      const auto& dep_name = freq.fid.name();
-
+    for (const auto& dep_name : diag->get_input_fields_names()) {
       auto dep = fm_model->get_field(dep_name);
-      diag->set_required_field(dep);
+      diag->set_input_field(dep);
     }
 
     // Initialize the diag
-    diag->initialize(util::TimeStamp(),RunType::Initial);
+    diag->initialize();
   };
 
-  auto check_diag_avg_cnt = [&](const std::shared_ptr<AtmosphereDiagnostic>& diag) {
+  auto check_diag_avg_cnt = [&](const std::shared_ptr<AbstractDiagnostic>& diag) {
     // Set the diag field in the FM
-    auto diag_field = diag->get_diagnostic();
+    auto diag_field = diag->get();
 
     // Add the field to the diag group
     diag_field.get_header().get_tracking().add_group("diagnostic");
@@ -1077,7 +1223,7 @@ process_requested_fields()
       m_field_to_avg_cnt_suffix.emplace(diag_field.name(),diag_avg_cnt_name);
     }
   };
-  
+
   // Now process each requested field, if possible. We can process a field if either:
   //  - it is already in the model FM
   //  - it is an alias of a field added to the FM
@@ -1094,8 +1240,17 @@ process_requested_fields()
   // This ensures we can evaluate diags in order at runtime
   bool done = false;
   std::set<std::string> remaining(m_fields_names.begin(),m_fields_names.end());
+  // m_fields_names now holds exactly the variables that reach the nc file:
+  // alias targets live in m_alias_to_orig, 'aliases' entries are intermediates.
+  // Copy it, since 'remaining' shrinks below.
+  const std::set<std::string> written_names(remaining);
   for (const auto& it : m_alias_to_orig) {
     remaining.insert(it.second);
+  }
+  // Intermediate-only fields must also be resolved (created and added to fm_model
+  // so that dependent diagnostics can use them), even though they won't be output.
+  for (const auto& n : intermediate_names) {
+    remaining.insert(n);
   }
   while (not done) {
     // We can't add-to/rm-form a std:;set while iterating on it, as that could
@@ -1119,17 +1274,36 @@ process_requested_fields()
           remove_these.insert(name);
         }
       } else {
-        auto& diag = m_diag_repo[name];
-        if (not diag) {
-          // First time we run into this diag. Create it
-          diag = create_diagnostic(name,fm_model->get_grid());
-        }
+        // Reuse the diag if another stream built it, else create it.
+        // NOTE: cache it only after the check below, or a stream that fails to
+        //       build leaves it in the shared static repo for everyone else.
+        auto it = m_diag_repo.find(name);
+        auto diag = it==m_diag_repo.end()
+                  ? create_diagnostic(name,fm_model->get_grid())
+                  : it->second;
+
+        // Field names go into the nc file verbatim, and '(qc+qv)*p_mid' is
+        // not a usable variable name, so an expression we must WRITE needs one.
+        // As an alias target, an 'aliases' intermediate, or nested in a larger
+        // expression, it is fine and needs no name.
+        EKAT_REQUIRE_MSG (
+            not (written_names.count(name)==1 and
+                 diag->get_params().isParameter("from_expression")),
+            "Error! An expression must be given an output name.\n"
+            " - stream name: " + m_stream_name + "\n"
+            " - request: " + name + "\n"
+            " - instead of\n"
+            "     - " + name + "\n"
+            "   write\n"
+            "     - <name> := " + name + "\n");
+
+        m_diag_repo[name] = diag;
         // Add its deps to the list of fields to process (if not already in fm_model)
         bool deps_met = true;
-        for (const auto& req : diag->get_field_requests()) {
-          if (not fm_model->has_field(req.fid.name())) {
+        for (const auto& dep_name : diag->get_input_fields_names()) {
+          if (not fm_model->has_field(dep_name)) {
             deps_met = false;
-            add_these.insert(req.fid.name());
+            add_these.insert(dep_name);
           }
         }
 
@@ -1142,7 +1316,7 @@ process_requested_fields()
           }
           check_diag_avg_cnt (diag);
           remove_these.insert(name);
-          fm_model->add_field(diag->get_diagnostic());
+          fm_model->add_field(diag->get());
           m_diagnostics.push_back(diag);
         }
       }

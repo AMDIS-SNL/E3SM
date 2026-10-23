@@ -295,7 +295,7 @@ struct RemapFunctor : public RemapperST<ST> {
   ExecViewManaged<PT*[Q_NUM_TIME_LEVELS][QSIZE_D][NP][NP][NUM_LEV]> m_qdp;
 
   ExecViewManaged<bool *> valid_layer_thickness;
-  typename decltype(valid_layer_thickness)::HostMirror host_valid_input;
+  typename decltype(valid_layer_thickness)::host_mirror_type host_valid_input;
 
   RemapType m_remap;
 

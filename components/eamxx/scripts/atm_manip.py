@@ -2,18 +2,41 @@
 Retrieve nodes from EAMxx XML config file.
 """
 
-import sys, os, re, pathlib
+import sys, os, re, pathlib, copy
+from collections import namedtuple
 
 # Used for doctests
 import xml.etree.ElementTree as ET # pylint: disable=unused-import
 
 # Add path to cime_config folder
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "cime_config"))
-from eamxx_buildnml_impl import check_value, is_array_type, get_child, find_node
+from eamxx_buildnml_impl import check_value, is_array_type, get_child, find_node, \
+        is_open_node, is_leaf, get_leaf_attribs
 from utils import expect, run_cmd_no_fail
 
 ATMCHANGE_SEP = "-ATMCHANGE_SEP-"
 ATMCHANGE_BUFF_XML_NAME = "SCREAM_ATMCHANGE_BUFFER"
+
+###############################################################################
+def is_atm_procs_list_change(chg):
+###############################################################################
+    """
+    Whether a buffered change modifies the atm_procs_list of an atm proc group.
+    Add/rm of leaves of open nodes are never atm_procs_list changes.
+
+    >>> is_atm_procs_list_change("atm_procs_list+=a")
+    True
+    >>> is_atm_procs_list_change("physics::atm_procs_list=a,b")
+    True
+    >>> is_atm_procs_list_change("test_only::open_params::my_atm_procs_list=1")
+    False
+    >>> is_atm_procs_list_change("test_only::open_params::atm_procs_list:=1")
+    False
+    >>> is_atm_procs_list_change("atm_procs_list::foo=1")
+    False
+    """
+    name, _, op = parse_change(chg)
+    return op not in ["add","rm"] and name.split("::")[-1]=="atm_procs_list"
 
 ###############################################################################
 def apply_atm_procs_list_changes_from_buffer(case, xml):
@@ -24,7 +47,7 @@ def apply_atm_procs_list_changes_from_buffer(case, xml):
         atmchgs = unbuffer_changes(case)
 
         for chg in atmchgs:
-            if "atm_procs_list" in chg:
+            if is_atm_procs_list_change(chg):
                 atm_config_chg_impl(xml, chg)
                 any_change = True
     return any_change
@@ -37,7 +60,7 @@ def apply_non_atm_procs_list_changes_from_buffer(case, xml):
         atmchgs = unbuffer_changes(case)
 
         for chg in atmchgs:
-            if "atm_procs_list" not in chg:
+            if not is_atm_procs_list_change(chg):
                 atm_config_chg_impl(xml, chg)
 
 ###############################################################################
@@ -70,6 +93,158 @@ def unbuffer_changes(case):
 def reset_buffer():
 ###############################################################################
     run_cmd_no_fail(f"./xmlchange {ATMCHANGE_BUFF_XML_NAME}=''")
+
+###############################################################################
+def get_changes_for_node(xml_root, node_name, changes):
+###############################################################################
+    """
+    Return the subset of changes from `changes` that do NOT target the given
+    XML node or any of its descendants.  This is the filtering kernel used by
+    reset_node_changes and can be called directly for testing.
+
+    NOTE: `changes` is a list of already-unescaped change strings
+          (commas are NOT escaped with backslash).
+
+    >>> xml = '''
+    ... <root>
+    ...     <foo type="integer">0</foo>
+    ...     <bar type="integer">10</bar>
+    ...     <sub>
+    ...         <child1 type="integer">1</child1>
+    ...         <child2 type="integer">2</child2>
+    ...     </sub>
+    ... </root>
+    ... '''
+    >>> import xml.etree.ElementTree as ET
+    >>> tree = ET.fromstring(xml)
+    >>> ################ ERROR: node not found #######################
+    >>> get_changes_for_node(tree, 'nonexistent', ['foo=5'])
+    Traceback (most recent call last):
+    SystemExit: ERROR: 'nonexistent' did not match any node in the XML file
+    >>> ################ Reset leaf node (foo), keep bar change #####
+    >>> get_changes_for_node(tree, 'foo', ['foo=5', 'bar=2'])
+    ['bar=2']
+    >>> ################ Reset leaf node (foo), no matching change ##
+    >>> get_changes_for_node(tree, 'foo', ['bar=2', 'sub::child1=99'])
+    ['bar=2', 'sub::child1=99']
+    >>> ################ Reset non-leaf node (sub), removes children
+    >>> get_changes_for_node(tree, 'sub', ['sub::child1=99', 'bar=3'])
+    ['bar=3']
+    >>> ################ Reset child only, keep sibling change #######
+    >>> get_changes_for_node(tree, 'sub::child1', ['sub::child1=99', 'sub::child2=5', 'bar=3'])
+    ['sub::child2=5', 'bar=3']
+    >>> ################ Empty changes list ##########################
+    >>> get_changes_for_node(tree, 'foo', [])
+    []
+    >>> ################ Add/rm changes target the parent node ########
+    >>> get_changes_for_node(tree, 'sub', ['sub::new:=1', 'sub::child1~=', 'bar=2'])
+    ['bar=2']
+    >>> get_changes_for_node(tree, 'sub::child1', ['sub::child1~=', 'sub::new:=1'])
+    ['sub::new:=1']
+    >>> get_changes_for_node(tree, 'foo', ['sub::new:=1'])
+    ['sub::new:=1']
+    >>> ################ Edits of leaves that were added and then removed ####
+    >>> get_changes_for_node(tree, 'sub', ['sub::new:=1', 'sub::new=2', 'sub::new+=3', 'sub::new~=', 'bar=3'])
+    ['bar=3']
+    >>> get_changes_for_node(tree, 'sub', ['sub::new:=1', 'new=2', 'sub::new~=', 'bar=3'])
+    ['bar=3']
+    >>> get_changes_for_node(tree, 'foo', ['sub::new:=1', 'sub::new=2', 'sub::new~='])
+    ['sub::new:=1', 'sub::new=2', 'sub::new~=']
+    >>> get_changes_for_node(tree, 'sub', ['other::new=2'])
+    ['other::new=2']
+    >>> ################ Edits are resolved against the tree at the time they were made ####
+    >>> xml = '''
+    ... <root>
+    ...     <a open="true" leaf_type="integer"/>
+    ...     <b open="true" leaf_type="integer"/>
+    ... </root>
+    ... '''
+    >>> tree2 = ET.fromstring(xml)
+    >>> chgs = ['a::x:=1', 'x=2', 'a::x~=', 'b::x:=3']
+    >>> get_changes_for_node(tree2, 'a', chgs)
+    ['b::x:=3']
+    >>> get_changes_for_node(tree2, 'b', chgs)
+    ['a::x:=1', 'x=2', 'a::x~=']
+    """
+    reset_targets = get_xml_nodes(xml_root, node_name)
+    expect(len(reset_targets) > 0,
+           f"'{node_name}' did not match any node in the XML file")
+
+    if not changes:
+        return []
+
+    # Each change must be resolved against the tree as it was when the change was made
+    # (a name like 'x' may match different leaves at different times). So we rewind a copy
+    # of the XML to its pre-changes state, and then replay the changes on it one by one.
+    sim = copy.deepcopy(xml_root)
+
+    def parents_of(name):
+        return get_xml_nodes(sim, split_parent_name(name)[0])
+
+    for chg in reversed(changes):
+        name, _, op = parse_change(chg)
+        if op in ["add","rm"]:
+            leaf_name = split_parent_name(name)[1]
+            for p in parents_of(name):
+                leaf = p.find(leaf_name)
+                if op=="add" and leaf is not None:
+                    p.remove(leaf)
+                elif op=="rm" and leaf is None:
+                    ET.SubElement(p, leaf_name).attrib.update(get_leaf_attribs(p))
+
+    def targets_reset (nodes):
+        # NOTE: is_anchestor_of(A, B, ...) returns True when A == B too, so this
+        #       covers both direct matches and descendant matches.
+        parent_map = create_parent_map(sim)
+        targets = get_xml_nodes(sim, node_name)
+        return any(is_anchestor_of(t, n, parent_map) for n in nodes for t in targets)
+
+    kept = []
+    for chg in changes:
+        name, _, op = parse_change(chg)
+        if op in ["add","rm"]:
+            parents = parents_of(name)
+            leaf_name = split_parent_name(name)[1]
+            if op=="add":
+                for p in parents:
+                    if p.find(leaf_name) is None:
+                        ET.SubElement(p, leaf_name).attrib.update(get_leaf_attribs(p))
+            # The leaf added/removed, or its parent, are the nodes being modified
+            leaves = [p.find(leaf_name) for p in parents if p.find(leaf_name) is not None]
+            affects = targets_reset(parents + leaves)
+            if op=="rm":
+                for p in parents:
+                    if p.find(leaf_name) is not None:
+                        p.remove(p.find(leaf_name))
+        else:
+            affects = targets_reset(get_xml_nodes(sim, name))
+
+        if not affects:
+            kept.append(chg)
+
+    return kept
+
+###############################################################################
+def reset_node_changes(xml_root, node_name):
+###############################################################################
+    """
+    Remove from the SCREAM_ATMCHANGE_BUFFER all changes that target
+    the given node or any of its descendants.
+    """
+    # Get current buffered changes
+    buff_str = run_cmd_no_fail(f"./xmlquery {ATMCHANGE_BUFF_XML_NAME} --value")
+    changes = []
+    for item in buff_str.split(ATMCHANGE_SEP):
+        if item.strip():
+            changes.append(item.replace(r"\,", ",").strip())
+
+    # Filter changes (also validates node_name exists in xml_root)
+    filtered_changes = get_changes_for_node(xml_root, node_name, changes)
+
+    # Reset buffer and write back the filtered changes
+    run_cmd_no_fail(f"./xmlchange {ATMCHANGE_BUFF_XML_NAME}=''")
+    if filtered_changes:
+        buffer_changes(filtered_changes)
 
 ###############################################################################
 def get_xml_nodes(xml_root, name):
@@ -167,7 +342,7 @@ def get_xml_nodes(xml_root, name):
     return result
 
 ###############################################################################
-def modify_ap_list(group, ap_list_str, append_this, defaults_xml=None):
+def modify_ap_list(group, ap_list_str, append_this, remove_this=False, defaults_xml=None):
 ###############################################################################
     """
     Modify the atm_procs_list entry of this XML node (which is an atm proc group).
@@ -196,24 +371,46 @@ def modify_ap_list(group, ap_list_str, append_this, defaults_xml=None):
     >>> node = ET.Element("my_group")
     >>> node.append(ET.Element("atm_procs_list"))
     >>> get_child(node,"atm_procs_list").text = ""
-    >>> modify_ap_list(node,"p1,p2",False,defaults)
+    >>> modify_ap_list(node,"p1,p2",False,False,defaults)
     True
     >>> get_child(node,"atm_procs_list").text
     'p1,p2'
-    >>> modify_ap_list(node,"p1",True,defaults)
+    >>> modify_ap_list(node,"p1",True,False,defaults)
     True
     >>> get_child(node,"atm_procs_list").text
     'p1,p2,p1'
-    >>> modify_ap_list(node,"p1,p3",False,defaults)
+    >>> modify_ap_list(node,"p1",False,True,defaults)
+    True
+    >>> get_child(node,"atm_procs_list").text
+    'p2,p1'
+    >>> modify_ap_list(node,"p1,p3",False,False,defaults)
     Traceback (most recent call last):
     SystemExit: ERROR: Cannot modify ap list for group 'my_group'
     Process 'p3' not found in XML tree 'dummy_defaults'
+    >>> modify_ap_list(node,"p3",False,True,defaults)
+    Traceback (most recent call last):
+    SystemExit: ERROR: Cannot remove 'p3' from atm_procs_list of group 'my_group': not found in current list 'p2,p1'
     """
     curr_apl = get_child(group,"atm_procs_list")
+
+    ap_list = ap_list_str.split(",")
+
+    if remove_this:
+        curr_list = curr_apl.text.split(",") if curr_apl.text else []
+        for ap in ap_list:
+            expect(ap in curr_list,
+                   f"Cannot remove '{ap}' from atm_procs_list of group '{group.tag}': "
+                   f"not found in current list '{curr_apl.text}'")
+            curr_list.remove(ap)
+        new_text = ','.join(curr_list)
+        if curr_apl.text == new_text:
+            return False
+        curr_apl.text = new_text
+        return True
+
     if curr_apl.text==ap_list_str:
         return False
 
-    ap_list = ap_list_str.split(",")
     expect (len(ap_list)==len(set(ap_list)),
             "Input list of atm procs contains repetitions")
 
@@ -257,7 +454,91 @@ def is_locked(xml_root, node):
     return False
 
 ###############################################################################
-def apply_change(xml_root, node, new_value, append_this):
+def split_parent_name(name):
+###############################################################################
+    """
+    Split a node name into the name of its parent node and its own name.
+
+    >>> split_parent_name('a::b::c')
+    ('a::b', 'c')
+    >>> split_parent_name('ANY::b')
+    ('ANY', 'b')
+    >>> split_parent_name('b')
+    Traceback (most recent call last):
+    SystemExit: ERROR: Cannot add/remove leaf 'b': the name must include the name of the parent open node (e.g., 'parent::b')
+    """
+    parent_name, sep, leaf_name = name.rpartition("::")
+    expect (sep!="" and parent_name!="",
+            f"Cannot add/remove leaf '{name}': the name must include the name of the parent open node (e.g., 'parent::{leaf_name or name}')")
+    return parent_name, leaf_name
+
+###############################################################################
+def check_can_edit_leaves(xml_root, parent, leaf_name, action):
+###############################################################################
+    expect (is_open_node(parent),
+            f"Cannot {action} leaf '{leaf_name}': '{parent.tag}' is not an open node.\n"
+            "Only nodes marked as open=\"true\" in the defaults file allow adding/removing leaves.")
+    expect (not is_locked(xml_root, parent),
+            f"Cannot change {parent.tag}, it is locked")
+
+###############################################################################
+def add_leaf(xml_root, name, value):
+###############################################################################
+    """
+    Add a new leaf to an open node. The leaf inherits its metadata from the
+    leaf_* attributes of the open node. Returns True (a leaf was added).
+    """
+    parent_name, leaf_name = split_parent_name(name)
+    parents = get_xml_nodes(xml_root, parent_name)
+    expect (len(parents)>0, f"Cannot add leaf '{name}': '{parent_name}' did not match any node")
+    expect (len(parents)==1,
+            f"Cannot add leaf '{name}': '{parent_name}' matches multiple nodes. Please, be more specific.")
+    parent = parents[0]
+
+    check_can_edit_leaves(xml_root, parent, leaf_name, "add")
+    expect (re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", leaf_name) is not None and leaf_name!="ANY",
+            f"Invalid leaf name '{leaf_name}'. Names must be alphanumeric (underscores allowed) and cannot start with a digit.")
+    expect (parent.find(leaf_name) is None,
+            f"Cannot add leaf '{leaf_name}' to '{parent.tag}': a leaf with that name already exists.\n"
+            f"  Use '{name}=<value>' to modify it.")
+
+    leaf = ET.SubElement(parent, leaf_name)
+    leaf.attrib.update(get_leaf_attribs(parent))
+    expect ("type" in leaf.attrib,
+            f"Open node '{parent.tag}' does not specify 'leaf_type'. Please, contact developers.")
+
+    try:
+        check_value(leaf, value)
+    except BaseException:
+        # Don't leave a half-baked leaf in the tree
+        parent.remove(leaf)
+        raise
+    leaf.text = value
+
+    return True
+
+###############################################################################
+def rm_leaf(xml_root, name):
+###############################################################################
+    """
+    Remove leaves from open nodes. Returns True (a leaf was removed).
+    """
+    split_parent_name(name) # Make sure the name is NODE::LEAF
+    matches = get_xml_nodes(xml_root, name)
+    expect (len(matches)>0, f"{name} did not match any items")
+
+    parent_map = create_parent_map(xml_root)
+    for node in matches:
+        expect (is_leaf(node), f"Cannot remove '{node.tag}': it is not a leaf")
+        parent = parent_map[node]
+        check_can_edit_leaves(xml_root, parent, node.tag, "remove")
+        expect (not is_locked(xml_root, node), f"Cannot change {node.tag}, it is locked")
+        parent.remove(node)
+
+    return True
+
+###############################################################################
+def apply_change(xml_root, node, new_value, append_this, remove_this=False):
 ###############################################################################
     any_change = False
 
@@ -266,7 +547,7 @@ def apply_change(xml_root, node, new_value, append_this):
     if node.tag=="atm_procs_list":
         parent_map = create_parent_map(xml_root)
         group = get_parents(node,parent_map)[-1]
-        return modify_ap_list (group,new_value,append_this)
+        return modify_ap_list(group, new_value, append_this, remove_this)
 
     if append_this:
 
@@ -289,6 +570,27 @@ def apply_change(xml_root, node, new_value, append_this):
 
         any_change = True
 
+    elif remove_this:
+
+        expect (not is_locked(xml_root, node), f"Cannot change {node.tag}, it is locked")
+        expect ("type" in node.attrib.keys(),
+                f"Error! Missing type information for {node.tag}")
+        type_ = node.attrib["type"]
+        expect (is_array_type(type_),
+                "Error! Can only remove with array types.\n"
+                f"    - name: {node.tag}\n"
+                f"    - type: {type_}")
+
+        curr_list = [v.strip() for v in node.text.split(",")] if node.text else []
+        remove_list = [v.strip() for v in new_value.split(",")]
+        for v in remove_list:
+            expect (v in curr_list,
+                    f"Error! Value '{v}' not found in {node.tag}. "
+                    f"Current value: {node.text}")
+            curr_list.remove(v)
+        node.text = ",".join(curr_list)
+        any_change = True
+
     elif node.text != new_value:
         expect (not is_locked(xml_root, node), f"Cannot change {node.tag}, it is locked")
         check_value(node,new_value)
@@ -298,29 +600,70 @@ def apply_change(xml_root, node, new_value, append_this):
     return any_change
 
 ###############################################################################
+# A change request. The 'op' field can be one of
+#  - set    : set the value of an existing leaf
+#  - append : append to an existing array (or string) leaf
+#  - remove : remove entries from an existing array leaf
+#  - add    : add a new leaf to an open node
+#  - rm     : remove a leaf from an open node (value must be empty)
+# The 'add' and 'rm' operations are internal: they are how the --add and --rm
+# options of atmchange are stored in the buffer (as 'A::B:=value' and 'A::B~='),
+# so they can be replayed. They are not accepted directly from the command line.
+Change = namedtuple("Change", ["name", "value", "op"])
+CHANGE_OPS = {"": "set", "+": "append", "-": "remove", ":": "add", "~": "rm"}
+CHANGE_OPS_INV = {v:k for k,v in CHANGE_OPS.items()}
+CHANGE_RE = re.compile(r"^([^=]*?)([+\-:~]?)=(.*)$", re.DOTALL)
+
+###############################################################################
 def parse_change(change):
 ###############################################################################
     """
     >>> parse_change("a+=2")
-    ('a', '2', True)
+    Change(name='a', value='2', op='append')
+    >>> parse_change("a-=2")
+    Change(name='a', value='2', op='remove')
     >>> parse_change("a=hello")
-    ('a', 'hello', False)
+    Change(name='a', value='hello', op='set')
+    >>> parse_change("a::b:=1,2")
+    Change(name='a::b', value='1,2', op='add')
+    >>> parse_change("a::b~=")
+    Change(name='a::b', value='', op='rm')
+    >>> parse_change("a::b=name=2")
+    Change(name='a::b', value='name=2', op='set')
+    >>> parse_change("a::b~=2")
+    Traceback (most recent call last):
+    SystemExit: ERROR: Invalid change request 'a::b~=2'. The 'rm' operation does not accept a value
+    >>> parse_change("a::=2")
+    Traceback (most recent call last):
+    SystemExit: ERROR: Invalid change request 'a::=2'. The node name cannot end with '::'
     """
-    tokens = change.split('+=')
-    if len(tokens)==2:
-        append_this = True
-    else:
-        append_this = False
-        tokens = change.split('=')
-
-    expect (len(tokens)==2,
+    m = CHANGE_RE.match(change)
+    expect (m is not None and m.group(1)!="",
         f"Invalid change request '{change}'. Valid formats are:\n"
         f"  - A[::B[...]=value\n"
-        f"  - A[::B[...]+=value  (implies append for this change)")
-    node_name = tokens[0]
-    new_value = tokens[1]
+        f"  - A[::B[...]+=value  (implies append for this change)\n"
+        f"  - A[::B[...]-=value  (implies removal for this change, arrays only)")
 
-    return node_name,new_value,append_this
+    name, op, value = m.group(1), CHANGE_OPS[m.group(2)], m.group(3)
+    expect (not name.endswith(":"),
+            f"Invalid change request '{change}'. The node name cannot end with '::'")
+    expect (op!="rm" or value=="",
+            f"Invalid change request '{change}'. The 'rm' operation does not accept a value")
+
+    return Change(name, value, op)
+
+###############################################################################
+def format_change(name, value, op):
+###############################################################################
+    """
+    Inverse of parse_change
+
+    >>> format_change('a::b','1','add')
+    'a::b:=1'
+    >>> parse_change(format_change('a::b','','rm'))
+    Change(name='a::b', value='', op='rm')
+    """
+    return f"{name}{CHANGE_OPS_INV[op]}={value}"
 
 ###############################################################################
 def atm_config_chg_impl(xml_root, change):
@@ -369,15 +712,16 @@ def atm_config_chg_impl(xml_root, change):
     SystemExit: ERROR: Invalid change request 'prop1->2'. Valid formats are:
       - A[::B[...]=value
       - A[::B[...]+=value  (implies append for this change)
+      - A[::B[...]-=value  (implies removal for this change, arrays only)
     >>> ################ INVALID TYPE #######################
     >>> atm_config_chg_impl(tree,'prop2=two')
     Traceback (most recent call last):
-    CIME.utils.CIMEError: ERROR: Could not refine 'two' as type 'integer':
+    CIME.core.exceptions.CIMEError: ERROR: Could not refine 'two' as type 'integer':
     could not convert string to float: 'two'
     >>> ################ INVALID VALUE #######################
     >>> atm_config_chg_impl(tree,'prop2=3')
     Traceback (most recent call last):
-    CIME.utils.CIMEError: ERROR: Invalid value '3' for element 'prop2'. Value not in the valid list ('[1, 2]')
+    CIME.core.exceptions.CIMEError: ERROR: Invalid value '3' for element 'prop2'. Value not in the valid list ('[1, 2]')
     >>> ################ AMBIGUOUS CHANGE #######################
     >>> atm_config_chg_impl(tree,'prop1=three')
     Traceback (most recent call last):
@@ -417,6 +761,25 @@ def atm_config_chg_impl(xml_root, change):
     True
     >>> get_xml_nodes(tree,'e')[0].text
     'one, two'
+    >>> ################ TEST REMOVE -= #################
+    >>> atm_config_chg_impl(tree,'a-=2')
+    True
+    >>> get_xml_nodes(tree,'a')[0].text
+    '1,3,4'
+    >>> atm_config_chg_impl(tree,'a-=1,3')
+    True
+    >>> get_xml_nodes(tree,'a')[0].text
+    '4'
+    >>> ################ ERROR, remove from non-array
+    >>> atm_config_chg_impl(tree,'c-=1')
+    Traceback (most recent call last):
+    SystemExit: ERROR: Error! Can only remove with array types.
+        - name: c
+        - type: int
+    >>> ################ ERROR, remove value not in list
+    >>> atm_config_chg_impl(tree,'b-=9')
+    Traceback (most recent call last):
+    SystemExit: ERROR: Error! Value '9' not found in b. Current value: 1
     >>> ################ Test locked ##################
     >>> atm_config_chg_impl(tree, 'lprop2=yo')
     Traceback (most recent call last):
@@ -427,15 +790,137 @@ def atm_config_chg_impl(xml_root, change):
     >>> atm_config_chg_impl(tree, 'lprop4=yo')
     Traceback (most recent call last):
     SystemExit: ERROR: Cannot change lprop4, it is locked
+    >>> ################ Test open nodes: add/rm leaves ##################
+    >>> xml = '''
+    ... <root>
+    ...   <closed><x type="real">1.0</x></closed>
+    ...   <open_empty open="true" leaf_type="array(real)"/>
+    ...   <open_pos open="true" leaf_type="real" leaf_constraints="ge 0"/>
+    ...   <open_full open="true" leaf_type="array(real)">
+    ...     <f1 type="array(real)">1.0</f1>
+    ...   </open_full>
+    ...   <open_locked open="true" locked="true" leaf_type="real"/>
+    ...   <open_dl open="true" leaf_type="real"><x locked="true">1</x><y>2</y></open_dl>
+    ...   <open_ll open="true" leaf_type="real" leaf_locked="true"/>
+    ...   <open_dup1 open="true" leaf_type="real"/>
+    ...   <open_dup2 open="true" leaf_type="real"/>
+    ... </root>
+    ... '''
+    >>> tree = ET.fromstring(xml)
+    >>> atm_config_chg_impl(tree,'open_empty::a:=1,2,3')
+    True
+    >>> [(c.tag,c.text,c.attrib) for c in get_xml_nodes(tree,'open_empty')[0]]
+    [('a', '1,2,3', {'type': 'array(real)'})]
+    >>> ###### The new leaf can be modified/appended to, as any other leaf
+    >>> atm_config_chg_impl(tree,'open_empty::a=4')
+    True
+    >>> atm_config_chg_impl(tree,'open_empty::a+=5')
+    True
+    >>> get_xml_nodes(tree,'open_empty::a')[0].text
+    '4, 5'
+    >>> atm_config_chg_impl(tree,'open_full::f2:=7')
+    True
+    >>> [c.tag for c in get_xml_nodes(tree,'open_full')[0]]
+    ['f1', 'f2']
+    >>> ###### Leaves from the defaults can be removed, and added back
+    >>> atm_config_chg_impl(tree,'open_full::f1~=')
+    True
+    >>> [c.tag for c in get_xml_nodes(tree,'open_full')[0]]
+    ['f2']
+    >>> atm_config_chg_impl(tree,'open_full::f1:=1')
+    True
+    >>> ###### Removing all leaves leaves the (open) node in place
+    >>> atm_config_chg_impl(tree,'open_full::f1~=')
+    True
+    >>> atm_config_chg_impl(tree,'open_full::f2~=')
+    True
+    >>> len(get_xml_nodes(tree,'open_full')[0])
+    0
+    >>> ################ ERRORS: adding leaves #####################
+    >>> atm_config_chg_impl(tree,'closed::y:=1')
+    Traceback (most recent call last):
+    SystemExit: ERROR: Cannot add leaf 'y': 'closed' is not an open node.
+    Only nodes marked as open="true" in the defaults file allow adding/removing leaves.
+    >>> atm_config_chg_impl(tree,'closed::x:=1')
+    Traceback (most recent call last):
+    SystemExit: ERROR: Cannot add leaf 'x': 'closed' is not an open node.
+    Only nodes marked as open="true" in the defaults file allow adding/removing leaves.
+    >>> atm_config_chg_impl(tree,'open_empy::a:=1')
+    Traceback (most recent call last):
+    SystemExit: ERROR: Cannot add leaf 'open_empy::a': 'open_empy' did not match any node
+    >>> atm_config_chg_impl(tree,'a:=1')
+    Traceback (most recent call last):
+    SystemExit: ERROR: Cannot add/remove leaf 'a': the name must include the name of the parent open node (e.g., 'parent::a')
+    >>> atm_config_chg_impl(tree,'open_empty::a:=1')
+    Traceback (most recent call last):
+    SystemExit: ERROR: Cannot add leaf 'a' to 'open_empty': a leaf with that name already exists.
+      Use 'open_empty::a=<value>' to modify it.
+    >>> atm_config_chg_impl(tree,'open_pos::b:=-1')
+    Traceback (most recent call last):
+    CIME.core.exceptions.CIMEError: ERROR: Value '-1.0' for entry 'b' violates constraint '-1.0 >= 0.0'
+    >>> len(get_xml_nodes(tree,'open_pos')[0])
+    0
+    >>> atm_config_chg_impl(tree,'open_pos::b:=1')
+    True
+    >>> get_xml_nodes(tree,'open_pos::b')[0].attrib
+    {'type': 'real', 'constraints': 'ge 0'}
+    >>> atm_config_chg_impl(tree,'open_empty::b:=hi')
+    Traceback (most recent call last):
+    CIME.core.exceptions.CIMEError: ERROR: Could not refine 'hi' as type 'real':
+    could not convert string to float: 'hi'
+    >>> atm_config_chg_impl(tree,'open_empty::1b:=1')
+    Traceback (most recent call last):
+    SystemExit: ERROR: Invalid leaf name '1b'. Names must be alphanumeric (underscores allowed) and cannot start with a digit.
+    >>> atm_config_chg_impl(tree,'open_locked::a:=1')
+    Traceback (most recent call last):
+    SystemExit: ERROR: Cannot change open_locked, it is locked
+    >>> atm_config_chg_impl(tree,'ANY::a:=1')
+    Traceback (most recent call last):
+    SystemExit: ERROR: Cannot add leaf 'ANY::a': 'ANY' matches multiple nodes. Please, be more specific.
+    >>> ################ ERRORS: removing leaves #####################
+    >>> atm_config_chg_impl(tree,'closed::x~=')
+    Traceback (most recent call last):
+    SystemExit: ERROR: Cannot remove leaf 'x': 'closed' is not an open node.
+    Only nodes marked as open="true" in the defaults file allow adding/removing leaves.
+    >>> atm_config_chg_impl(tree,'open_empty::nope~=')
+    Traceback (most recent call last):
+    SystemExit: ERROR: open_empty::nope did not match any items
+    >>> atm_config_chg_impl(tree,'ANY::open_empty~=')
+    Traceback (most recent call last):
+    SystemExit: ERROR: Cannot remove 'open_empty': it is not a leaf
+    >>> ###### The leaf name alone is not enough (the parent is needed, e.g., to reset it)
+    >>> atm_config_chg_impl(tree,'y~=')
+    Traceback (most recent call last):
+    SystemExit: ERROR: Cannot add/remove leaf 'y': the name must include the name of the parent open node (e.g., 'parent::y')
+    >>> ###### Locked leaves cannot be removed (they are locked explicitly, or via leaf_locked)
+    >>> atm_config_chg_impl(tree,'open_dl::x~=')
+    Traceback (most recent call last):
+    SystemExit: ERROR: Cannot change x, it is locked
+    >>> atm_config_chg_impl(tree,'open_ll::z:=1')
+    True
+    >>> atm_config_chg_impl(tree,'open_ll::z~=')
+    Traceback (most recent call last):
+    SystemExit: ERROR: Cannot change z, it is locked
+    >>> atm_config_chg_impl(tree,'open_dl::y~=')
+    True
     """
-    node_name, new_value, append_this = parse_change(change)
+    node_name, new_value, op = parse_change(change)
+
+    # Adding/removing leaves is dealt with separately: the leaf may not exist
+    if op=="add":
+        return add_leaf(xml_root, node_name, new_value)
+    elif op=="rm":
+        return rm_leaf(xml_root, node_name)
+
+    append_this = op=="append"
+    remove_this = op=="remove"
     matches = get_xml_nodes(xml_root, node_name)
 
     expect(len(matches) > 0, f"{node_name} did not match any items")
 
     any_change = False
     for node in matches:
-        any_change |= apply_change(xml_root, node, new_value, append_this)
+        any_change |= apply_change(xml_root, node, new_value, append_this, remove_this)
 
     return any_change
 
@@ -501,7 +986,7 @@ def is_root (node,parent_map):
 def print_var_impl(node,parent_map,full,dtype,value,valid_values,print_style="invalid",indent=""):
 ###############################################################################
 
-    if len(node)>0:
+    if not is_leaf(node):
         print (f"{indent}{node.tag}:")
         # This is not a leaf, so print all nested nodes.
         for child in node:

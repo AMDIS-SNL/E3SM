@@ -79,11 +79,11 @@ void run_bfb()
 
   // Run the lookup from a kernel and copy results back to host
   Kokkos::parallel_for(num_test_itrs, KOKKOS_LAMBDA(const Int& i) {
-    const Int offset = i * Spack::n;
+    const Int offset = i * Pack::n;
 
     // Init pack inputs
-    Spack rho, inv_rho, qc_incld, mu_c, nu, nc2nr_autoconv_tend;
-    for (Int s = 0, vs = offset; s < Spack::n; ++s, ++vs) {
+    Pack rho, inv_rho, qc_incld, mu_c, nu, nc2nr_autoconv_tend;
+    for (Int s = 0, vs = offset; s < Pack::n; ++s, ++vs) {
       rho[s]                   = device_data(vs).rho;
       inv_rho[s]               = device_data(vs).inv_rho;
       qc_incld[s]              = device_data(vs).qc_incld;
@@ -92,13 +92,13 @@ void run_bfb()
       nc2nr_autoconv_tend[s]   = device_data(vs).nc2nr_autoconv_tend;
     }
 
-    Spack nc_selfcollect_tend{0.0};
+    Pack nc_selfcollect_tend{0.0};
 
     Functions::droplet_self_collection(rho, inv_rho, qc_incld, mu_c, nu, nc2nr_autoconv_tend,
                                        nc_selfcollect_tend);
 
     // Copy results back into views
-    for (Int s = 0, vs = offset; s < Spack::n; ++s, ++vs) {
+    for (Int s = 0, vs = offset; s < Pack::n; ++s, ++vs) {
       device_data(vs).nc_selfcollect_tend  = nc_selfcollect_tend[s];
     }
   });
@@ -128,13 +128,18 @@ void run_bfb()
 
 namespace {
 
-TEST_CASE("p3_droplet_self_collection", "[p3_functions]")
+TEST_CASE("p3_droplet_self_collection_prop", "[p3_functions]")
 {
   using T = scream::p3::unit_test::UnitWrap::UnitTest<scream::DefaultDevice>::TestDropletSelfCollection;
 
-  T t;
-  t.run_phys();
-  t.run_bfb();
+  T t;  t.run_phys();
+}
+
+TEST_CASE("p3_droplet_self_collection_bfb", "[p3_functions]")
+{
+  using T = scream::p3::unit_test::UnitWrap::UnitTest<scream::DefaultDevice>::TestDropletSelfCollection;
+
+  T t;  t.run_bfb();
 }
 
 } // namespace

@@ -33,6 +33,9 @@
 <config_dt ice_grid="RRSwISC6to18E3r5">900.0</config_dt>
 <config_dt ice_grid="SOwISC12to30E3r3">1800.0</config_dt>
 <config_dt ice_grid="SOwISC12to30E3r4">1800.0</config_dt>
+<config_dt ice_grid="u01-oi6to18">900.0</config_dt>
+<config_dt ice_grid="u02-oi30">1800.0</config_dt>
+<config_dt ice_grid="u03-oi240">7200.0</config_dt>
 <config_calendar_type>'noleap'</config_calendar_type>
 <config_start_time>'2000-01-01_00:00:00'</config_start_time>
 <config_stop_time>'none'</config_stop_time>
@@ -68,6 +71,7 @@
 <!-- dimensions -->
 <config_nCategories>5</config_nCategories>
 <config_nFloeCategories>1</config_nFloeCategories>
+<config_nFrequencies>0</config_nFrequencies>
 <config_nIceLayers>7</config_nIceLayers>
 <config_nSnowLayers>5</config_nSnowLayers>
 
@@ -94,6 +98,8 @@
 <config_initial_latitude_north ice_grid="oRRS30to10v3wLI">85.0</config_initial_latitude_north>
 <config_initial_latitude_north ice_grid="oRRS18to6v3">85.0</config_initial_latitude_north>
 <config_initial_latitude_north ice_grid="RRSwISC6to18E3r5">85.0</config_initial_latitude_north>
+<config_initial_latitude_north ice_grid="u01-oi6to18">85.0</config_initial_latitude_north>
+<config_initial_latitude_north ice_grid="u02-oi30">70.0</config_initial_latitude_north>
 <config_initial_latitude_south>-60.0</config_initial_latitude_south>
 <config_initial_latitude_south ice_grid="oEC60to30v3wLI">-75.0</config_initial_latitude_south>
 <config_initial_latitude_south ice_grid="ECwISC30to60E1r2">-75.0</config_initial_latitude_south>
@@ -111,6 +117,8 @@
 <config_initial_latitude_south ice_grid="oRRS30to10v3wLI">-85.0</config_initial_latitude_south>
 <config_initial_latitude_south ice_grid="oRRS18to6v3">-85.0</config_initial_latitude_south>
 <config_initial_latitude_south ice_grid="RRSwISC6to18E3r5">-85.0</config_initial_latitude_south>
+<config_initial_latitude_south ice_grid="u01-oi6to18">-85.0</config_initial_latitude_south>
+<config_initial_latitude_south ice_grid="u02-oi30">-60.0</config_initial_latitude_south>
 <config_initial_velocity_type>'uniform'</config_initial_velocity_type>
 <config_initial_uvelocity>0.0</config_initial_uvelocity>
 <config_initial_vvelocity>0.0</config_initial_vvelocity>
@@ -146,6 +154,8 @@
 <config_limit_air_temperatures>true</config_limit_air_temperatures>
 
 <!-- velocity_solver -->
+<config_dynamics_area_minimum>1.0e-11</config_dynamics_area_minimum>
+<config_dynamics_mass_minimum>1.0e-10</config_dynamics_mass_minimum>
 <config_dynamics_subcycle_number>1</config_dynamics_subcycle_number>
 <config_dynamics_subcycle_number ice_grid="oQU480">1</config_dynamics_subcycle_number>
 <config_dynamics_subcycle_number ice_grid="oQU240">1</config_dynamics_subcycle_number>
@@ -174,9 +184,13 @@
 <config_dynamics_subcycle_number ice_grid="RRSwISC6to18E3r5">2</config_dynamics_subcycle_number>
 <config_dynamics_subcycle_number ice_grid="SOwISC12to30E3r3">1</config_dynamics_subcycle_number>
 <config_dynamics_subcycle_number ice_grid="SOwISC12to30E3r4">1</config_dynamics_subcycle_number>
+<config_dynamics_subcycle_number ice_grid="u01-oi6to18">2</config_dynamics_subcycle_number>
+<config_dynamics_subcycle_number ice_grid="u02-oi30">1</config_dynamics_subcycle_number>
+<config_dynamics_subcycle_number ice_grid="u03-oi240">1</config_dynamics_subcycle_number>
 <config_rotate_cartesian_grid>true</config_rotate_cartesian_grid>
 <config_include_metric_terms>true</config_include_metric_terms>
 <config_elastic_subcycle_number>120</config_elastic_subcycle_number>
+<config_elastic_subcycle_number ice_grid="SOwISC12to30E3r3">240</config_elastic_subcycle_number>
 <config_strain_scheme>'variational'</config_strain_scheme>
 <config_constitutive_relation_type>'evp'</config_constitutive_relation_type>
 <config_stress_divergence_scheme>'variational'</config_stress_divergence_scheme>
@@ -210,18 +224,26 @@
 <config_use_column_itd_thermodynamics prognostic_mode="prescribed">false</config_use_column_itd_thermodynamics>
 <config_use_column_ridging>true</config_use_column_ridging>
 <config_use_column_snow_tracers>true</config_use_column_snow_tracers>
+<config_use_column_waves>false</config_use_column_waves>
 
 <!-- column_tracers -->
 <config_use_ice_age>false</config_use_ice_age>
 <config_use_first_year_ice>false</config_use_first_year_ice>
 <config_use_level_ice>true</config_use_level_ice>
-<config_use_level_meltponds>true</config_use_level_meltponds>
+<config_use_level_meltponds>false</config_use_level_meltponds>
+<config_use_sealevel_meltponds>true</config_use_sealevel_meltponds>
 <config_use_topo_meltponds>false</config_use_topo_meltponds>
 <config_use_aerosols>false</config_use_aerosols>
 <config_use_effective_snow_density>true</config_use_effective_snow_density>
 <config_use_snow_grain_radius>true</config_use_snow_grain_radius>
 <config_use_special_boundaries_tracers>false</config_use_special_boundaries_tracers>
 <config_use_floe_size_distribution>false</config_use_floe_size_distribution>
+
+<!-- wave_config -->
+<config_xfreq>0.0</config_xfreq>
+<config_freq1>0.0</config_freq1>
+<config_wave_spec_type>'none'</config_wave_spec_type>
+<config_wave_height_type>'none'</config_wave_height_type>
 
 <!-- biogeochemistry -->
 <config_couple_biogeochemistry_fields>false</config_couple_biogeochemistry_fields>
@@ -350,7 +372,7 @@
 <config_mobility_type_lipids>0.0</config_mobility_type_lipids>
 <config_mobility_type_inorganic_carbon>-1.0</config_mobility_type_inorganic_carbon>
 <config_mobility_type_proteins>0.0</config_mobility_type_proteins>
-<config_mobility_type_dissolved_iron>0.0</config_mobility_type_dissolved_iron>
+<config_mobility_type_dissolved_iron>-1.0</config_mobility_type_dissolved_iron>
 <config_mobility_type_particulate_iron>0.5</config_mobility_type_particulate_iron>
 <config_mobility_type_black_carbon1>-1.0</config_mobility_type_black_carbon1>
 <config_mobility_type_black_carbon2>-1.0</config_mobility_type_black_carbon2>
@@ -407,11 +429,16 @@
 <config_snow_to_ice_transition_depth>0.0</config_snow_to_ice_transition_depth>
 <config_pond_refreezing_type>'hlid'</config_pond_refreezing_type>
 <config_pond_flushing_factor>1.0e-3</config_pond_flushing_factor>
-<config_min_meltwater_retained_fraction>0.15</config_min_meltwater_retained_fraction>
-<config_max_meltwater_retained_fraction>1.0</config_max_meltwater_retained_fraction>
+<config_min_meltwater_retained_fraction_lvlponds>0.15</config_min_meltwater_retained_fraction_lvlponds>
+<config_max_meltwater_retained_fraction_lvlponds>1.0</config_max_meltwater_retained_fraction_lvlponds>
+<config_min_meltwater_retained_fraction_sealvlponds>1.0</config_min_meltwater_retained_fraction_sealvlponds>
+<config_max_meltwater_retained_fraction_sealvlponds>1.0</config_max_meltwater_retained_fraction_sealvlponds>
+<config_min_meltwater_retained_fraction_topoponds>0.15</config_min_meltwater_retained_fraction_topoponds>
+<config_max_meltwater_retained_fraction_topoponds>0.7</config_max_meltwater_retained_fraction_topoponds>
 <config_pond_depth_to_fraction_ratio>0.8</config_pond_depth_to_fraction_ratio>
 <config_snow_on_pond_ice_tapering_parameter>0.03</config_snow_on_pond_ice_tapering_parameter>
 <config_critical_pond_ice_thickness>0.01</config_critical_pond_ice_thickness>
+<config_sealevel_pond_equilibrium_fraction>0.27</config_sealevel_pond_equilibrium_fraction>
 
 <!-- thermodynamics -->
 <config_thermodynamics_type>'mushy'</config_thermodynamics_type>
@@ -421,9 +448,13 @@
 <config_rapid_mode_aspect_ratio>1.0</config_rapid_mode_aspect_ratio>
 <config_slow_mode_drainage_strength>-5.0e-8</config_slow_mode_drainage_strength>
 <config_slow_mode_critical_porosity>0.05</config_slow_mode_critical_porosity>
-<config_macro_drainage_timescale>10.</config_macro_drainage_timescale>
+<config_macro_drainage_timescale_lvlponds>10.</config_macro_drainage_timescale_lvlponds>
+<config_macro_drainage_timescale_sealvlponds>0.5</config_macro_drainage_timescale_sealvlponds>
+<config_macro_drainage_timescale_topoponds>10.</config_macro_drainage_timescale_topoponds>
 <config_congelation_freezing_method>'two-step'</config_congelation_freezing_method>
 <config_congelation_freezing_method ice_grid="RRSwISC6to18E3r5">'one-step'</config_congelation_freezing_method>
+<config_congelation_freezing_method ice_grid="SOwISC12to30E3r3">'one-step'</config_congelation_freezing_method>
+<config_congelation_freezing_method ice_grid="u01-oi6to18">'one-step'</config_congelation_freezing_method>
 <config_congelation_ice_porosity>0.85</config_congelation_ice_porosity>
 
 <!-- itd -->
