@@ -1024,8 +1024,8 @@ endmacro(setSrcMods)
 #
 # Implicit inputs  (read from calling scope, CMake macro convention):
 #   USE_NUM_PROCS  -- the total MPI rank budget allocated by CIME (e.g. from a
-#                     _P24 test option).  If unset or 0, MPI_MAX_PROCS is used
-#                     as the rank count.
+#                     _P24 test option).  If unset or 0, a single rank is used
+#                     (AMDIS fork: keeps unit tests runnable on small CI runners).
 #   MPI_MAX_PROCS  -- per-test rank ceiling (max ranks the problem can use
 #                     without wasting tasks or triggering "too many MPI tasks"
 #                     aborts).  Defaults to 24 if not set before the call.
@@ -1043,6 +1043,6 @@ macro(set_mpi_num_cpus)
       SET (NUM_CPUS ${USE_NUM_PROCS})
     ENDIF ()
   ELSE ()
-    SET (NUM_CPUS ${MPI_MAX_PROCS})
+    SET (NUM_CPUS 1)
   ENDIF ()
 endmacro()
