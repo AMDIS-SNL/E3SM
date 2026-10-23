@@ -263,7 +263,7 @@ TEST_CASE("euler_step_adjoint")
   const int num_elems = session.num_elems();
 
   auto& geo = c.create<ElementsGeometry>();
-  geo.init(num_elems,false,true,PhysicalConstants::rearth0,-1,true);
+  geo.init(num_elems, true,PhysicalConstants::rearth0,-1,true);
   session.init_geometry(geo);
 
   // Explicit ST=Real objects, independent of whatever ScalarValue/Tracers/
@@ -675,7 +675,7 @@ TEST_CASE("euler_step_adjoint_dot_product")
   const int num_elems = session.num_elems();
 
   auto& geo = c.create<ElementsGeometry>();
-  geo.init(num_elems,false,true,PhysicalConstants::rearth0,-1,true);
+  geo.init(num_elems, true,PhysicalConstants::rearth0,-1,true);
   session.init_geometry(geo);
 
   // ---- Real-typed stack: the adjoint half (euler_step_adj is Real-only). ----

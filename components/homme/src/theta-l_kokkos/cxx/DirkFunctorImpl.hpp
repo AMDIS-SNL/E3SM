@@ -748,7 +748,7 @@ struct DirkFunctorImplST {
           gk = gk0 + s,
           gi = gk / NP,
           gj = gk % NP;
-          if (scaln % packn != 0 && // try to compile out this conditional when possible
+          if ((int)scaln % (int)packn != 0 && // try to compile out this conditional when possible
               gk >= scaln) break;
           dst(k,i)[s] = src(gi,gj,pk)[sk];
         }
@@ -827,7 +827,7 @@ struct DirkFunctorImplST {
           idx = packn*i + s,
           gi = idx / NP,
           gj = idx % NP;
-          if (scaln % packn != 0 && idx >= scaln) break;
+          if ((int)scaln % (int)packn != 0 && idx >= scaln) break;
           dp3dkm1[s] = dp3d(gi,gj,pkm1)[skm1];
           dp3dk  [s] = dp3d(gi,gj,pk  )[sk];
           v1km1  [s] = v (0,gi,gj,pkm1)[skm1];
@@ -944,7 +944,7 @@ struct DirkFunctorImplST {
   set_phis (const int i, const Rphis& phis, const W& phi_i) {
     for (int s = 0; s < packn; ++s) {
       const int idx = i*packn + s, gi = idx / NP, gj = idx % NP;
-      if (scaln % packn != 0 && idx >= scaln) break;
+      if ((int)scaln % (int)packn != 0 && idx >= scaln) break;
       phi_i(num_phys_lev,i)[s] = phis(gi,gj);
     }    
   }
@@ -960,7 +960,7 @@ struct DirkFunctorImplST {
       const auto g = [&] (int i, ST& lmaxval) {
         const auto v = w(k,i);
         for (int s = 0; s < packn; ++s) {
-          if (scaln % packn != 0 && i*packn + s >= scaln) break;
+          if ((int)scaln % (int)packn != 0 && i*packn + s >= scaln) break;
           lmaxval = max(lmaxval, std::abs(v[s]));
         }
       };
@@ -988,7 +988,7 @@ struct DirkFunctorImplST {
       const auto g = [&] (int i, ST& lmaxval) {
         const auto v = x(k,i);
         for (int s = 0; s < packn; ++s) {
-          if (scaln % packn != 0 && i*packn + s >= scaln) break;
+          if ((int)scaln % (int)packn != 0 && i*packn + s >= scaln) break;
           lmaxval = max(lmaxval, std::abs(v[s]));
         }
       };
@@ -1107,7 +1107,7 @@ struct DirkFunctorImplST {
     kv.team_barrier();
     loop_ki(kv, nlev, nvec, [&] (int k, int i) {
       for (int s = 0; s < packn; ++s) {
-        if (scaln % packn != 0 && i*packn + s >= scaln) break;
+        if ((int)scaln % (int)packn != 0 && i*packn + s >= scaln) break;
         if (wrk(0,i)[s] == 0) {
           // Indicate this column is already good.
           wrk(nlev,i)[s] = 0;
@@ -1162,7 +1162,7 @@ struct DirkFunctorImplST {
     kv.team_barrier();
     loop_ki(kv, nlev, nvec, [&] (int k, int i) {
       for (int s = 0; s < packn; ++s) {
-        if (scaln % packn != 0 && i*packn + s >= scaln) break;
+        if ((int)scaln % (int)packn != 0 && i*packn + s >= scaln) break;
         if (dphi(k,i)[s] > threshold) {
           dphi(k,i)[s] = threshold;
           wrk(0,i)[s] = 1; // benign write race
@@ -1185,7 +1185,7 @@ struct DirkFunctorImplST {
     kv.team_barrier();
     loop_ki(kv, nlev, nvec, [&] (int k, int i) {
       for (int s = 0; s < packn; ++s) {
-        if (scaln % packn != 0 && i*packn + s >= scaln) break;
+        if ((int)scaln % (int)packn != 0 && i*packn + s >= scaln) break;
         if (dphi(k,i)[s] >= threshold) {
           wrk(0,i)[s] = 1; // benign write race
           wrk(1,0)[0] = 1; // benign write race

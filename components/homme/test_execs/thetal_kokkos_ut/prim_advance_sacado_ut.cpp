@@ -105,7 +105,7 @@ TEST_CASE("prim_advance_adj")
 
   // Init geometry views once (same for all elements structs)
   auto& geo = c.create<ElementsGeometry>();
-  geo.init(num_elems,false,true,PhysicalConstants::rearth0,-1,true);
+  geo.init(num_elems, true,PhysicalConstants::rearth0,-1,true);
 
   // Pull physical geometry from f90 (gives realistic Dinv, spheremp, fcor, etc.)
   // Aquaplanet: zero phis/gradphis before passing to f90, as in
@@ -121,15 +121,15 @@ TEST_CASE("prim_advance_adj")
 
   // Create elements for FWD/BWD integration
   auto& elems_dp = c.create<ElementsST<DpFadType>>();
-  elems_dp.init(num_elems,false,true,PhysicalConstants::rearth0);
+  elems_dp.init(num_elems, true,PhysicalConstants::rearth0);
   elems_dp.m_geometry = geo;
 
   auto& elems_dx_caar = c.create<ElementsST<DxFadTypeCaar>>();
-  elems_dx_caar.init(num_elems,false,true,PhysicalConstants::rearth0);
+  elems_dx_caar.init(num_elems, true,PhysicalConstants::rearth0);
   elems_dx_caar.m_geometry = geo; // Use same views for geometry
 
   auto& elems_dx_dirk = c.create<ElementsST<DxFadTypeDirk>>();
-  elems_dx_dirk.init(num_elems,false,true,PhysicalConstants::rearth0);
+  elems_dx_dirk.init(num_elems, true,PhysicalConstants::rearth0);
   elems_dx_dirk.m_geometry = geo; // Use same views for geometry
 
   // Create auxiliary structures

@@ -86,7 +86,7 @@ TEST_CASE("prim_advec_tracers_remap_adjoint")
   const int num_elems = session.num_elems();
 
   auto& geo = c.create<ElementsGeometry>();
-  geo.init(num_elems,false,true,PhysicalConstants::rearth0,-1,true);
+  geo.init(num_elems, true,PhysicalConstants::rearth0,-1,true);
   session.init_geometry(geo);
 
   auto& bmm = c.create<MpiBuffersManagerMap>();

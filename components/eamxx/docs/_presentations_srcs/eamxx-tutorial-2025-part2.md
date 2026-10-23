@@ -166,8 +166,7 @@ class POMPEI : public AtmosphereProcess {
 
   std::string name() const override { return "my_disastrous_pompei"; }
 
-  void set_grids(
-      const std::shared_ptr<const GridsManager> grids_manager) override;
+  void create_requests() override;
 // Define the protected functions, usually at least initialize_impl, run_impl
 // and finalize_impl, but others could be included.  See
 // eamxx_template_process_interface.cpp for definitions of each of these.
@@ -197,7 +196,7 @@ class POMPEI : public AtmosphereProcess {
 Replace `AP_TEMPLATE` with `POMPEI` and then:
 
 - Define a constructor for the process
-- Define `set_grids`, which tells EAMxx variables and grid
+- Define `create_requests`, which tells EAMxx variables and grid
 - Define `initialize_impl`, which initializes the process
 - Define `run_impl`, what this process does each time step it is called
 - Define `finalize_impl`, and last actions to take at the end of the simulation
@@ -269,7 +268,7 @@ POMPEI::POMPEI(const ekat::Comm &comm, const ekat::ParameterList &params)
 
 ---
 
-## `set_grids`
+## `create_requests`
 
 - EAMxx stores grid info
 - FieldManager stores fields
@@ -284,23 +283,18 @@ POMPEI::POMPEI(const ekat::Comm &comm, const ekat::ParameterList &params)
 
 ```cpp
 /*-----------------------------------------------------------------------------------------------
- * set_grids(grids_manager)
+ * create_requests()
  *
- * set_grids establishes which grid this process will be run on.
+ * create_requests establishes which grid this process will be run on.
  * It is also where all fields (variables) that the process will need access to.
- *
- * Inputs:
- *     grids_manager - a grids manager object which stores all grids used in
- * this simulation
  */
-void POMPEI::set_grids(
-    const std::shared_ptr<const GridsManager> grids_manager) {
-  // Some typical namespaces used in set_grids,
+void POMPEI::create_requests() {
+  // Some typical namespaces used in create_requests,
   //   using namespace ShortFieldTagsNames;
   //   using PC = scream::physics::Constants<Real>;
 
   // Specify which grid this process will act upon, typical options are
-  // "dynamics" or "physics". auto m_grid = grids_manager->get_grid("physics");
+  // "dynamics" or "physics". auto m_grid = m_grids_manager->get_grid("physics");
 
   // When declaring a field for use we need:
   //
@@ -620,8 +614,11 @@ In `components/eamxx/cime_config/namelist_defaults_scream.xml`, add:
     <!-- later... -->
     <initial_conditions>
     <!-- ... -->
-    <!-- Ash initial condition to 0.0 -->
-    <ash               >0.0</ash>
+      <constant_fields>
+        <overrides>
+          <!-- ... -->
+          <!-- Ash initial condition to 0.0 -->
+          <ash               >0.0</ash>
 ```
 
 ---
@@ -638,8 +635,11 @@ In `components/eamxx/cime_config/namelist_defaults_scream.xml`, add:
 ## The runtime parameters in the run script
 
 ```bash
-# increase SCREAM_NUM_TRACERS from 10 to 11 (note that scream supports both 128 and 72 levels for low-res)
-./xmlchange SCREAM_CMAKE_OPTIONS="SCREAM_NP 4 SCREAM_NUM_VERTICAL_LEV 128 SCREAM_NUM_TRACERS 11"
+# increase SCREAM_NUM_TRACERS from 10 to 11
+./xmlchange SCREAM_CMAKE_OPTIONS="SCREAM_NP 4 SCREAM_NUM_TRACERS 11"
+
+# the vertical grid is chosen separately, and sets the number of levels (72 or 128)
+./xmlchange EAMXX_VGRID=L128v4
 
 # add pompei to the list of aerosol processes
 ./atmchange mac_aero_mic::atm_procs_list+=pompei

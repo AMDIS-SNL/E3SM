@@ -8,6 +8,7 @@
 #include <ekat_assert.hpp>
 
 #include <memory>
+#include <ranges>
 
 namespace scream {
 
@@ -147,7 +148,7 @@ bool AtmosphereProcessGroup::has_process(const std::string& name) const {
   return false;
 }
 
-void AtmosphereProcessGroup::set_grids (const std::shared_ptr<const GridsManager> grids_manager) {
+void AtmosphereProcessGroup::create_requests () {
 
   // The atm process group (APG) simply 'concatenates' required/computed
   // fields of the stored process. There is a single exception to this
@@ -156,7 +157,7 @@ void AtmosphereProcessGroup::set_grids (const std::shared_ptr<const GridsManager
   // field is not exposed as a required field of the group.
   const bool seq_splitting = m_group_schedule_type==ScheduleType::Sequential;
   for (auto& atm_proc : m_atm_processes) {
-    atm_proc->set_grids(grids_manager);
+    atm_proc->set_grids(m_grids_manager);
 
     // Add inputs/outputs to the list of inputs of the group
     for (const auto& ap_req : atm_proc->get_field_requests()) {
@@ -172,8 +173,6 @@ void AtmosphereProcessGroup::set_grids (const std::shared_ptr<const GridsManager
         req.usage = Computed;
     }
   }
-
-  m_grids_mgr = grids_manager;
 }
 
 void AtmosphereProcessGroup::
@@ -308,15 +307,21 @@ void AtmosphereProcessGroup::add_postcondition_nan_checks () const {
       group->add_postcondition_nan_checks();
     } else {
       for (const auto& f : proc->get_fields_out()) {
+        if (f.data_type()==DataType::IntType)
+          continue;
+
         const auto& grid_name = f.get_header().get_identifier().get_grid_name();
-        auto nan_check = std::make_shared<FieldNaNCheck>(f,m_grids_mgr->get_grid(grid_name));
+        auto nan_check = std::make_shared<FieldNaNCheck>(f,m_grids_manager->get_grid(grid_name));
         proc->add_postcondition_check(nan_check, CheckFailHandling::Fatal);
       }
 
       for (const auto& g : proc->get_groups_out()) {
-        const auto& grid = m_grids_mgr->get_grid(g.grid_name());
-        for (const auto& f : g.m_individual_fields) {
-          auto nan_check = std::make_shared<FieldNaNCheck>(*f.second,grid);
+        const auto& grid = m_grids_manager->get_grid(g.grid_name());
+        for (const auto& it : g.individual_fields()) {
+          if (it.second.data_type()==DataType::IntType)
+            continue;
+
+          auto nan_check = std::make_shared<FieldNaNCheck>(it.second,grid);
           proc->add_postcondition_check(nan_check, CheckFailHandling::Fatal);
         }
       }
@@ -507,7 +512,7 @@ set_required_field (const Field& f) {
       if (g.grid_name()!=fid.get_grid_name()) {
         continue;
       }
-      for (const auto& fn : g.m_info->m_fields_names) {
+      for (const auto& fn : std::views::keys(g.individual_fields())) {
         if (fid.name()==fn) {
           computed = true;
           goto endloop;
@@ -542,7 +547,7 @@ set_required_group (const FieldGroup& group) {
   // Find the first process that requires this group
   int first_proc_that_needs_group = -1;
   for (int iproc=0; iproc<m_group_size; ++iproc) {
-    if (m_atm_processes[iproc]->has_required_group(group.m_info->m_group_name,group.grid_name())) {
+    if (m_atm_processes[iproc]->has_required_group(group.name(),group.grid_name())) {
       first_proc_that_needs_group = iproc;
       break;
     }
@@ -550,7 +555,7 @@ set_required_group (const FieldGroup& group) {
 
   EKAT_REQUIRE_MSG (first_proc_that_needs_group>=0,
     "Error! This atmosphere process does not require the input group.\n"
-    "   group name: " + group.m_info->m_group_name + "\n"
+    "   group name: " + group.name() + "\n"
     "   grid name : " + group.grid_name() + "\n"
     "   atm process: " + this->name() + "\n"
     "Something is wrong up the call stack. Please, contact developers.\n");
@@ -563,9 +568,9 @@ set_required_group (const FieldGroup& group) {
   // NOTE: we still check also the groups computed by the previous procs,
   //       in case they contain all the fields in this group.
   std::set<std::string> computed;
-  for (const auto& it : group.m_individual_fields) {
+  for (const auto& it : group.individual_fields()) {
     const auto& fn = it.first;
-    const auto& fid = it.second->get_header().get_identifier();
+    const auto& fid = it.second.get_header().get_identifier();
     for (int iproc=0; iproc<first_proc_that_needs_group; ++iproc) {
       if (m_atm_processes[iproc]->has_computed_field(fid)) {
         computed.insert(fid.name());
@@ -578,7 +583,7 @@ set_required_group (const FieldGroup& group) {
         if (g.grid_name()!=group.grid_name()) {
           continue;
         }
-        for (const auto& f : g.m_info->m_fields_names) {
+        for (const auto& f : std::views::keys(g.individual_fields())) {
           if (f==fn) {
             computed.insert(fn);
             goto endloop;
@@ -590,12 +595,11 @@ set_required_group (const FieldGroup& group) {
   // Yes, goto statement are not the prettiest C++ feature, but they allow to
   // break from multiple nested loops without the need of several checks.
 endloop:
-    if (computed.size()==group.m_info->m_fields_names.size()) {
+    if (computed.size()==group.size())
       break;
-    }
   }
 
-  if (computed.size()==group.m_info->m_fields_names.size()) {
+  if (computed.size()==group.size()) {
     // We compute all the fields in the group *before* any atm proc
     // that requires this group. Simply set the group in those atm
     // proc that require it, without storing it as an input to this group.
@@ -613,7 +617,7 @@ void AtmosphereProcessGroup::
 set_required_group_impl (const FieldGroup& group)
 {
   for (auto atm_proc : m_atm_processes) {
-    if (atm_proc->has_required_group(group.m_info->m_group_name,group.grid_name())) {
+    if (atm_proc->has_required_group(group.name(),group.grid_name())) {
       atm_proc->set_required_group(group);
     }
   }
@@ -623,14 +627,14 @@ void AtmosphereProcessGroup::
 set_computed_group_impl (const FieldGroup& group)
 {
   for (auto atm_proc : m_atm_processes) {
-    if (atm_proc->has_computed_group(group.m_info->m_group_name,group.grid_name())) {
+    if (atm_proc->has_computed_group(group.name(),group.grid_name())) {
       atm_proc->set_computed_group(group);
     }
     // In sequential scheduling, some groups may be computed by
     // a process and used by the next one. In this case, the group
     // may not figure as 'input' for the group, but we still
     // need to set it in the processes that need it.
-    if (atm_proc->has_required_group(group.m_info->m_group_name,group.grid_name())) {
+    if (atm_proc->has_required_group(group.name(),group.grid_name())) {
       atm_proc->set_required_group(group.get_const());
     }
   }

@@ -152,7 +152,7 @@ TEST_CASE("prim_step_adjoint")
   // (see there for the reasons). With gradphis==0, the w_i(n0) surface fix
   // degenerates to w_i(n0,surface):=0.
   auto& geo = c.create<ElementsGeometry>();
-  geo.init(num_elems,false,true,PhysicalConstants::rearth0,-1,true);
+  geo.init(num_elems, true,PhysicalConstants::rearth0,-1,true);
   session.init_geometry(geo);
 
   // ===== Elements, tracers and derived state, for the 4 types involved =====
@@ -163,25 +163,25 @@ TEST_CASE("prim_step_adjoint")
   // the derived state registered in the Context is the one inside Elements,
   // so that functors that grab it from the Context see the same views.
   auto& elems_r = c.create<ElementsST<Real>>();
-  elems_r.init(num_elems,false,true,PhysicalConstants::rearth0);
+  elems_r.init(num_elems, true,PhysicalConstants::rearth0);
   elems_r.m_geometry = geo;
   c.create_ref<ElementsDerivedStateST<Real>>(elems_r.m_derived);
   auto& tracers_r = c.create<TracersST<Real>>();
   tracers_r.init(num_elems,qsize);
 
   auto& elems_dp = c.create<ElementsST<DpFadType>>();
-  elems_dp.init(num_elems,false,true,PhysicalConstants::rearth0);
+  elems_dp.init(num_elems, true,PhysicalConstants::rearth0);
   elems_dp.m_geometry = geo;
   c.create_ref<ElementsDerivedStateST<DpFadType>>(elems_dp.m_derived);
   auto& tracers_dp = c.create<TracersST<DpFadType>>();
   tracers_dp.init(num_elems,qsize);
 
   auto& elems_dx_caar = c.create<ElementsST<DxFadTypeCaar>>();
-  elems_dx_caar.init(num_elems,false,true,PhysicalConstants::rearth0);
+  elems_dx_caar.init(num_elems, true,PhysicalConstants::rearth0);
   elems_dx_caar.m_geometry = geo; // Use same views for geometry
 
   auto& elems_dx_dirk = c.create<ElementsST<DxFadTypeDirk>>();
-  elems_dx_dirk.init(num_elems,false,true,PhysicalConstants::rearth0);
+  elems_dx_dirk.init(num_elems, true,PhysicalConstants::rearth0);
   elems_dx_dirk.m_geometry = geo; // Use same views for geometry
 
   // Create auxiliary structures

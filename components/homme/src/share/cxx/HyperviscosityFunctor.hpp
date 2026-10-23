@@ -19,7 +19,7 @@ namespace Homme
 {
 
 struct FunctorsBuffersManager;
-class SimulationParams;
+struct SimulationParams;
 
 template<typename ST>
 class HyperviscosityFunctorST

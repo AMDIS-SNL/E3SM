@@ -38,6 +38,7 @@ set (SCREAM_LIBS
      eamxx_cosp
      cld_fraction
      spa
+     spc
      iop_forcing
      nudging
      tms
@@ -46,6 +47,11 @@ set (SCREAM_LIBS
 # ZM is not always on yet
 if (TARGET zm)
   list(APPEND SCREAM_LIBS zm)
+endif()
+
+# GW is not always on yet
+if (TARGET gw)
+  list(APPEND SCREAM_LIBS gw)
 endif()
 
 if (SCREAM_ENABLE_MAM)
