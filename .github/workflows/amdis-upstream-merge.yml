@@ -58,23 +58,26 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          if git ls-remote --exit-code --heads origin "${BRANCH}" >/dev/null; then
-            echo "::error::Branch ${BRANCH} already exists on origin. Delete it (and close any related PR) to re-run."
-            exit 1
-          fi
-
           git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
           git fetch upstream "${UPSTREAM_BRANCH}"
 
-          # Nothing to do if we already contain upstream's master
+          # The branch name can only come from a previous run of this workflow
+          # (same day), so if it exists, build on it rather than failing.
+          if git ls-remote --exit-code --heads origin "${BRANCH}" >/dev/null; then
+            echo "Branch ${BRANCH} already exists on origin; updating it"
+            git fetch origin "${BRANCH}"
+            git checkout -b "${BRANCH}" "origin/${BRANCH}"
+          else
+            git checkout -b "${BRANCH}"
+          fi
+
+          # Nothing to do if the branch already contains upstream's master
           if git merge-base --is-ancestor "upstream/${UPSTREAM_BRANCH}" HEAD; then
             echo "Already up to date with ${UPSTREAM_REPO}@${UPSTREAM_BRANCH}"
             echo "uptodate=true" >> "$GITHUB_OUTPUT"
           else
             echo "uptodate=false" >> "$GITHUB_OUTPUT"
           fi
-
-          git checkout -b "${BRANCH}"
 
       - name: Merge upstream
         id: merge
@@ -100,6 +103,10 @@ jobs:
 
           Please do **not** squash this PR; use a merge commit, to preserve upstream history.
           BODY
+          if [ -n "$(gh pr list --head "${BRANCH}" --state open --json number --jq '.[].number')" ]; then
+            echo "A PR for ${BRANCH} is already open; the push above updated it"
+            exit 0
+          fi
           gh pr create \
             --base "${BASE_BRANCH}" \
             --head "${BRANCH}" \
