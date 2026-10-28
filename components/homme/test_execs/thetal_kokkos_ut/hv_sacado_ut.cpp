@@ -280,7 +280,7 @@ TEST_CASE ("hyperviscosity_dp_and_jv_testing")
   // run_JV can be called.
   elems_0.m_state.import_values(elems_ref.m_state,np1);
 
-  hv_0.init_J(np1);
+  hv_0.init_J(np1,dt);
   hv_0.run(np1,dt,eta_ave_w);
   hv_0.run_JV(np1,x,y);
 
@@ -401,7 +401,7 @@ TEST_CASE ("hyperviscosity_jtv_testing") {
   hv.init_boundary_exchanges();
 
   // State at which J is evaluated.
-  hv.init_J(np1);
+  hv.init_J(np1,dt);
   hv.run(np1,dt,eta_ave_w);
 
   // J*xb -> yb

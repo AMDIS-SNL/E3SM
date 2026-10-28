@@ -454,7 +454,7 @@ void prim_advance_adj (const Real dt, StateSnapshot& adj_state,
 
     // Base point for the vtheta_dp<->theta linearization: pre-HV (dp,theta).
     scratch.state.import_snapshot(y5,slot);
-    hv.init_J(slot);
+    hv.init_J(slot,dt);
 
     // linearize_theta_out_adjoint needs the post-HV (dp,vtheta_dp) state.
     scratch.state.import_snapshot(y5_hv,slot);

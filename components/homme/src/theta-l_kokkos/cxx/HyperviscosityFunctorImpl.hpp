@@ -144,14 +144,15 @@ public:
 
   template<typename MyST = ST>
   std::enable_if_t<not std::is_same_v<MyST, Real>>
-  init_J (const int) = delete;
+  init_J (const int, const Real) = delete;
 
   // Snapshot dp0, theta0=vtheta0/dp0 at time level np1, BEFORE run() is
   // called: needed to linearize the vtheta_dp<->theta conversion. Must be
-  // called before run().
+  // called before run(). Also sets the HV time step (as run(np1,dt,...) does),
+  // since run_JV/run_JtV need it, and may be called without calling run().
   template<typename MyST = ST>
   std::enable_if_t<std::is_same_v<MyST, Real>>
-  init_J (const int np1);
+  init_J (const int np1, const Real dt);
 
   template<typename MyST = ST>
   std::enable_if_t<not std::is_same_v<MyST, Real>>
