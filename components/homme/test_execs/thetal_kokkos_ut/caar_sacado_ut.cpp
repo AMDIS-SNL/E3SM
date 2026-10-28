@@ -19,6 +19,15 @@
 
 using namespace Homme;
 
+static std::string adv_form_name (const AdvectionForm adv_form) {
+  switch (adv_form) {
+    case AdvectionForm::Conservative:    return "Conservative";
+    case AdvectionForm::NonConservative: return "Non-Conservative";
+    case AdvectionForm::Split:           return "Split";
+  }
+  return "Unknown";
+}
+
 TEST_CASE("caar_dp_check") {
 
   constexpr int ne = 2;
@@ -100,10 +109,10 @@ TEST_CASE("caar_dp_check") {
     params.theta_hydrostatic_mode = hydrostatic;
     limiter.m_theta_hydrostatic_mode = hydrostatic;
     limiter_dp.m_theta_hydrostatic_mode = hydrostatic;
-    auto adv_forms = {AdvectionForm::Conservative, AdvectionForm::NonConservative};
+    auto adv_forms = {AdvectionForm::Conservative, AdvectionForm::NonConservative, AdvectionForm::Split};
     for (const AdvectionForm adv_form : adv_forms) {
       if (comm.am_i_root()) {
-        std::cout << "  -> " << (adv_form==AdvectionForm::Conservative ? "Conservative" : "Non-Conservative") << " theta advection\n";
+        std::cout << "  -> " << adv_form_name(adv_form) << " theta advection\n";
       }
       for (int rsplit : {3,0}) {
         if (comm.am_i_root()) {
@@ -312,10 +321,10 @@ TEST_CASE("caar_dx_check") {
     params.theta_hydrostatic_mode = hydrostatic;
     limiter_dp.m_theta_hydrostatic_mode = hydrostatic;
     limiter_dx.m_theta_hydrostatic_mode = hydrostatic;
-    auto adv_forms = {AdvectionForm::Conservative, AdvectionForm::NonConservative};
+    auto adv_forms = {AdvectionForm::Conservative, AdvectionForm::NonConservative, AdvectionForm::Split};
     for (const AdvectionForm adv_form : adv_forms) {
       if (comm.am_i_root()) {
-        std::cout << "  -> " << (adv_form==AdvectionForm::Conservative ? "Conservative" : "Non-Conservative") << " theta advection\n";
+        std::cout << "  -> " << adv_form_name(adv_form) << " theta advection\n";
       }
       for (const int pgrad : {1,0}) {
         if (comm.am_i_root()) {
@@ -585,12 +594,11 @@ TEST_CASE("caar_jtv_check") {
       std::cout << " -> " << (hydrostatic ? "Hydrostatic\n" : "Non-Hydrostatic\n");
 
     for (const AdvectionForm adv_form : {AdvectionForm::Conservative,
-                                         AdvectionForm::NonConservative}) {
+                                         AdvectionForm::NonConservative,
+                                         AdvectionForm::Split}) {
       params.theta_adv_form = adv_form;
       if (comm.am_i_root())
-        std::cout << "  -> " << (adv_form==AdvectionForm::Conservative
-                                 ? "Conservative" : "Non-Conservative")
-                  << " theta advection\n";
+        std::cout << "  -> " << adv_form_name(adv_form) << " theta advection\n";
 
       for (const int pgrad : {1, 0}) {
         params.pgrad_correction = (pgrad != 0);
@@ -815,12 +823,11 @@ TEST_CASE("caar_adjoint") {
       std::cout << " -> " << (hydrostatic ? "Hydrostatic\n" : "Non-Hydrostatic\n");
 
     for (const AdvectionForm adv_form : {AdvectionForm::Conservative,
-                                         AdvectionForm::NonConservative}) {
+                                         AdvectionForm::NonConservative,
+                                         AdvectionForm::Split}) {
       params.theta_adv_form = adv_form;
       if (comm.am_i_root())
-        std::cout << "  -> " << (adv_form==AdvectionForm::Conservative
-                                 ? "Conservative" : "Non-Conservative")
-                  << " theta advection\n";
+        std::cout << "  -> " << adv_form_name(adv_form) << " theta advection\n";
 
       for (const int pgrad : {1, 0}) {
         params.pgrad_correction = (pgrad != 0);
