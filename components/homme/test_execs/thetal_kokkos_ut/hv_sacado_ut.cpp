@@ -104,10 +104,10 @@ TEST_CASE ("hyperviscosity_dp_and_jv_testing")
 
   ElementsST<Real> elems_ref, elems_0, elems_h;
   ElementsST<DpFadType> elems_dp;
-  elems_ref.init(num_elems,false,true,PhysicalConstants::rearth0,-1,true);
-  elems_0.init(num_elems,false,true,PhysicalConstants::rearth0,-1,true);
-  elems_h.init(num_elems,false,true,PhysicalConstants::rearth0,-1,true);
-  elems_dp.init(num_elems,false,true,PhysicalConstants::rearth0,-1,true);
+  elems_ref.init(num_elems, true,PhysicalConstants::rearth0,-1,true);
+  elems_0.init(num_elems, true,PhysicalConstants::rearth0,-1,true);
+  elems_h.init(num_elems, true,PhysicalConstants::rearth0,-1,true);
+  elems_dp.init(num_elems, true,PhysicalConstants::rearth0,-1,true);
 
   auto& geo = elems_ref.m_geometry = elems_0.m_geometry = elems_h.m_geometry
             = elems_dp.m_geometry;
@@ -377,7 +377,7 @@ TEST_CASE ("hyperviscosity_jtv_testing") {
   const int num_elems = session.num_elems();
 
   ElementsST<Real> elems;
-  elems.init(num_elems,false,true,PhysicalConstants::rearth0,-1,true);
+  elems.init(num_elems, true,PhysicalConstants::rearth0,-1,true);
   elems.m_geometry.randomize(seed, c.get_ptr<Connectivity>(), c.get<MpiBuffersManagerMap>()[MPI_EXCHANGE]);
   init_ref_and_derived(elems);
 
@@ -508,7 +508,7 @@ TEST_CASE ("hv_sphere_ops_discrete_self_adjoint") {
   const int num_elems = session.num_elems();
 
   auto& geo = c.create<ElementsGeometry>();
-  geo.init(num_elems,false,true,PhysicalConstants::rearth0,-1,true);
+  geo.init(num_elems, true,PhysicalConstants::rearth0,-1,true);
   geo.randomize(seed, c.get_ptr<Connectivity>(), c.get<MpiBuffersManagerMap>()[MPI_EXCHANGE]);
 
   auto& sphop = c.create<SphereOperatorsST<Real>>();

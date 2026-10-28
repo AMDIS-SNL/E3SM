@@ -84,13 +84,14 @@ struct ComposeTransportImpl {
   struct VelocityRecord;
 
   struct Data {
-    int nelemd, qsize, limiter_option, cdr_check, hv_q, hv_subcycle_q;
+    int nelemd, qsize, limiter_option, cdr_check, hv_q, hv_subcycle_q, hv_subcycle_q_sgs;
     int geometry_type; // 0: sphere, 1: plane
     int trajectory_nsubstep; // 0: original alg, >= 1: enhanced
     int trajectory_nvelocity;
     int diagnostics;
     Real nu_q, hv_scaling, dp_tol, deta_tol;
     bool independent_time_steps;
+    bool do_3d_turbulence;
 
     // buf1o and buf1e point to the same memory, sized to the larger of the
     // two. They are used in different parts of the code.
@@ -112,8 +113,8 @@ struct ComposeTransportImpl {
 
     Data ()
       : nelemd(-1), qsize(-1), limiter_option(9), cdr_check(0), hv_q(0),
-        hv_subcycle_q(0), geometry_type(0), nu_q(0), hv_scaling(0), dp_tol(-1),
-        independent_time_steps(false)
+        hv_subcycle_q(0), hv_subcycle_q_sgs(0), geometry_type(0), nu_q(0), hv_scaling(0), dp_tol(-1),
+        independent_time_steps(false), do_3d_turbulence(false)
     {}
   };
 
@@ -131,7 +132,8 @@ struct ComposeTransportImpl {
   TeamUtils<ExecSpace> m_tu_ne, m_tu_ne_qsize, m_tu_ne_hv_q;
 
   std::shared_ptr<BoundaryExchange>
-    m_qdp_dss_be[Q_NUM_TIME_LEVELS], m_v_dss_be[2], m_hv_dss_be[2];
+    m_qdp_dss_be[Q_NUM_TIME_LEVELS], m_v_dss_be[2], m_hv_dss_be[2],
+    m_horiz_turb_dss_be[2];
 
   ComposeTransportImpl();
   ComposeTransportImpl(const int num_elems);
@@ -161,10 +163,11 @@ struct ComposeTransportImpl {
                const ExecViewUnmanaged<Scalar*[2][NP][NP][NUM_LEV]>& v);
 
   void advance_hypervis_scalar(const Real dt);
+  void advance_horizontal_turbulent_diffusion_scalar(const Real dt);
 
   int run_trajectory_unit_tests();
   int run_enhanced_trajectory_unit_tests();
-  ComposeTransport::TestDepView::HostMirror
+  ComposeTransport::TestDepView::host_mirror_type
   test_trajectory(Real t0, Real t1, const bool independent_time_steps);
 
   // In test code, the bfb flag says to construct manufactured fields on host to
@@ -307,7 +310,7 @@ struct ComposeTransportImpl {
   KOKKOS_FUNCTION
   static void ugradv_sphere (
     const SphereOperators& sphere_ops, const KernelVariables& kv,
-    const typename ViewConst<ExecViewUnmanaged<Real[2][3][NP][NP]> >::type& vec_sphere2cart,
+    const typename ViewConst<ExecViewUnmanaged<Real[3][3][NP][NP]> >::type& vec_sphere2cart,
     // velocity, latlon
     const typename ViewConst<ExecViewUnmanaged<Scalar[2][NP][NP][NUM_LEV]> >::type& u,
     const typename ViewConst<ExecViewUnmanaged<Scalar[2][NP][NP][NUM_LEV]> >::type& v,

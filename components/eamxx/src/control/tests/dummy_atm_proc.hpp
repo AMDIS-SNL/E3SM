@@ -33,10 +33,10 @@ public:
   // Return some sort of name, linked to PType
   std::string name () const { return m_name; }
 
-  void set_grids (const std::shared_ptr<const GridsManager> grids_manager) {
+  void create_requests () {
     using namespace ShortFieldTagsNames;
 
-    m_grid = grids_manager->get_grid(m_params.get<std::string>("grid_name"));
+    m_grid = m_grids_manager->get_grid(m_params.get<std::string>("grid_name"));
 
     const auto num_cols = m_grid->get_num_local_dofs();
     const auto num_levs = m_grid->get_num_vertical_levels();
@@ -91,8 +91,8 @@ public:
       });
     } else if (m_name=="Group to Group") {
       const auto& g = get_group_out("The Group");
-      const auto view_B = g.m_individual_fields.at("B")->get_view<Real**>();
-      const auto view_C = g.m_individual_fields.at("C")->get_view<Real**>();
+      const auto view_B = g.individual_fields().at("B").get_view<Real**>();
+      const auto view_C = g.individual_fields().at("C").get_view<Real**>();
 
       Kokkos::parallel_for(policy,KOKKOS_LAMBDA(const int idx) {
         const int icol = idx / nlevs;
@@ -103,8 +103,8 @@ public:
       });
     } else {
       const auto& g = get_group_in("The Group");
-      const auto view_B = g.m_individual_fields.at("B")->get_view<const Real**>();
-      const auto view_C = g.m_individual_fields.at("C")->get_view<const Real**>();
+      const auto view_B = g.individual_fields().at("B").get_view<const Real**>();
+      const auto view_C = g.individual_fields().at("C").get_view<const Real**>();
       const auto view_A = get_field_out("A").get_view<Real**>();
 
       Kokkos::parallel_for(policy,KOKKOS_LAMBDA(const int idx) {

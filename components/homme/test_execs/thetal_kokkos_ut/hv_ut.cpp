@@ -152,7 +152,7 @@ TEST_CASE("hvf", "biharmonic") {
   const int num_elems = session.num_elems();
 
   auto& geo = c.create<ElementsGeometry>();
-  geo.init(num_elems,false,true,PhysicalConstants::rearth0);
+  geo.init(num_elems,true,PhysicalConstants::rearth0);
   geo.randomize(seed);
 
   auto& state = c.create<ElementsState>();

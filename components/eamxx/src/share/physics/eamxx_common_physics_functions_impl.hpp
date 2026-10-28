@@ -462,7 +462,7 @@ ScalarT PhysicsFunctions<DeviceT>::calculate_vmr_from_mmr(const Real& gas_mol_we
   using C = scream::physics::Constants<Real>;
   constexpr Real air_mol_weight   = C::MWdry.value;
 
-  return mmr / (1.0 - qv) * air_mol_weight/gas_mol_weight;
+  return mmr / (sp(1.0) - qv) * air_mol_weight/gas_mol_weight;
 
 }
 
@@ -490,7 +490,7 @@ ScalarT PhysicsFunctions<DeviceT>::calculate_mmr_from_vmr(const Real& gas_mol_we
   constexpr Real air_mol_weight   = C::MWdry.value;
   const Real mol_weight_ratio = gas_mol_weight/air_mol_weight;
 
-  return mol_weight_ratio * vmr * (1.0 - qv);
+  return mol_weight_ratio * vmr * (sp(1.0) - qv);
 
 }
 
@@ -634,6 +634,30 @@ void PhysicsFunctions<DeviceT>::apply_rayleigh_friction (const MemberType& team,
                        [&] (const int k) {
     apply_rayleigh_friction(dt, otau(k), u_wind(k), v_wind(k), T_mid(k));
   });
+}
+
+template<typename DeviceT>
+KOKKOS_INLINE_FUNCTION
+Real PhysicsFunctions<DeviceT>::calculate_gustiness_speed(const Real& tke)
+{
+  return Kokkos::sqrt((sp(2.)/sp(3.)) * tke);
+}
+
+template<typename DeviceT>
+KOKKOS_INLINE_FUNCTION
+Real PhysicsFunctions<DeviceT>::calculate_wind_speed_sensitivity(const Real& taux,
+                                                                 const Real& tauy,
+                                                                 const Real& um_pert_diff,
+                                                                 const Real& vm_pert_diff)
+{
+  using C = scream::physics::Constants<Real>;
+
+  if (Kokkos::abs(taux) < Real(1.e-12) && Kokkos::abs(tauy) < Real(1.e-12)) {
+    return ekat::impl::max(um_pert_diff / C::tau_pert_mag, Real(0));
+  } else {
+    const Real denominator = Kokkos::sqrt(taux*taux + tauy*tauy) * C::tau_pert_mag;
+    return ekat::impl::max((um_pert_diff * taux) + (vm_pert_diff * tauy), Real(0)) / denominator;
+  }
 }
 
 } // namespace scream

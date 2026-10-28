@@ -18,6 +18,7 @@
 #include "SimulationParams.hpp"
 #include "SphereOperators.hpp"
 
+#include <cmath>
 #include <memory>
 
 #include "profiling.hpp"
@@ -36,20 +37,31 @@ class HyperviscosityFunctorImplST
 
   // TODO: don't pass nu_ratio1/2. Instead, do like in F90: compute them from
   //       nu, nu_div, and hv_scaling
+public:
   struct HyperviscosityData {
     HyperviscosityData(const int hypervis_subcycle_in, 
+                       const int horiz_turb_subcycle_in,
                        const int hypervis_subcycle_tom_in, 
                        const Real nu_ratio1_in, const Real nu_ratio2_in, const Real nu_top_in,
                        const Real nu_in, const Real nu_p_in, const Real nu_s_in,
-                       const Real hypervis_scaling_in)
+                       const Real hypervis_scaling_in, bool do_3d_turbulence_in,
+                       const double tom_sponge_start_in, const Real laplace_scaling_in = 0.0)
                       : hypervis_subcycle(hypervis_subcycle_in) 
+                      , horiz_turb_subcycle(horiz_turb_subcycle_in)
                       , hypervis_subcycle_tom(hypervis_subcycle_tom_in)
+                      , do_3d_turbulence(do_3d_turbulence_in)
                       , nu_ratio1(nu_ratio1_in), nu_ratio2(nu_ratio2_in)
                       , nu_top(nu_top_in), nu(nu_in), nu_p(nu_p_in), nu_s(nu_s_in)
-                      , consthv(hypervis_scaling_in == 0) {}
+                      , dt_hvs(-1.0), dt_hvs_sgs(-1.0), dt_hvs_tom(-1.0)
+                      , consthv(hypervis_scaling_in == 0)
+                      , constsponge(laplace_scaling_in == 0)
+                      , tom_sponge_start(tom_sponge_start_in) {}
 
     const int   hypervis_subcycle;
+    const int   horiz_turb_subcycle;
     const int   hypervis_subcycle_tom;
+
+    bool do_3d_turbulence;
 
     Real  nu_ratio1;
     Real  nu_ratio2;
@@ -67,11 +79,14 @@ class HyperviscosityFunctorImplST
     int         np1; // The time-level on which to apply hv
     Real        dt;
     Real        dt_hvs;
+    Real        dt_hvs_sgs;
     Real        dt_hvs_tom;
 
     Real        eta_ave_w;
 
     bool consthv;
+    bool constsponge;
+    double tom_sponge_start;
   };//hyperviscosityData
 
   struct Buffers {
@@ -80,6 +95,7 @@ class HyperviscosityFunctorImplST
     ExecViewManaged<PT * [NP][NP][NUM_LEV]>    wtens;
     ExecViewManaged<PT * [NP][NP][NUM_LEV]>    phitens;
     ExecViewManaged<PT * [2][NP][NP][NUM_LEV]> vtens;
+    ExecViewManaged<PT * [NP][NP][NUM_LEV_P]>  turb_diff_mom_i;
   };//buffers
 
 public:
@@ -91,7 +107,10 @@ public:
   struct TagApplyInvMass {};
   struct TagHyperPreExchange {};
   struct TagNutopUpdateStates {};
-  struct TagNutopLaplace {};
+  struct TagNutopLaplaceConst {};
+  struct TagNutopLaplaceTensor {};
+  struct TagSGSTurbUpdateStates {};
+  struct TagSGSTurbLaplace {};
 
   HyperviscosityFunctorImplST (const SimulationParams&           params,
                                const ElementsGeometry&           geometry,
@@ -136,11 +155,14 @@ public:
   // init_J) and the w-surface fix (already exactly linear in u,v -- no
   // linearization needed, just reused/adjointed directly).
   //
-  // Only the const-viscosity (hypervis_scaling==0) path and nu_top==0 are
-  // supported for now. Tensor viscosity (laplace_tensor/
-  // vlaplace_sphere_wk_cartesian) and the sponge layer are not exercised by
-  // any test yet, so their self-adjointness hasn't been verified; extending
-  // support means checking that first, then mirroring the same pattern below.
+  // Only the const-viscosity (hypervis_scaling==0) path, nu_top==0 and
+  // do_3d_turbulence=false are supported for now. Tensor viscosity
+  // (laplace_tensor/vlaplace_sphere_wk_cartesian) and the sponge layer are not
+  // exercised by any test yet, so their self-adjointness hasn't been verified;
+  // extending support means checking that first, then mirroring the same
+  // pattern below. The SGS horizontal turbulent diffusion is not self-adjoint
+  // (its diffusivities are state-dependent, and get clipped), so it would need
+  // a different treatment altogether.
 
   template<typename MyST = ST>
   std::enable_if_t<not std::is_same_v<MyST, Real>>
@@ -351,10 +373,20 @@ public:
 
   // Laplace for nu_top
   KOKKOS_INLINE_FUNCTION
-  void operator()(const TagNutopLaplace&, const TeamMember& team) const;
+  void operator()(const TagNutopLaplaceConst&, const TeamMember& team) const;
+
+  KOKKOS_INLINE_FUNCTION
+  void operator()(const TagNutopLaplaceTensor&, const TeamMember& team) const;
 
   KOKKOS_INLINE_FUNCTION
   void operator()(const TagNutopUpdateStates&, const TeamMember& team) const;
+
+  // Laplace for SGS Horizontal Turbulence
+  KOKKOS_INLINE_FUNCTION
+  void operator()(const TagSGSTurbLaplace&, const TeamMember& team) const;
+
+  KOKKOS_INLINE_FUNCTION
+  void operator()(const TagSGSTurbUpdateStates&, const TeamMember& team) const;
 
   //second iter of laplace, const hv
   KOKKOS_INLINE_FUNCTION
@@ -572,12 +604,14 @@ protected:
   Kokkos::TeamPolicy<ExecSpace,TagFirstLaplaceHV>   m_policy_first_laplace;
   Kokkos::TeamPolicy<ExecSpace,TagHyperPreExchange> m_policy_pre_exchange;
 
-  Kokkos::TeamPolicy<ExecSpace,TagNutopLaplace>      m_policy_nutop_laplace;
   Kokkos::TeamPolicy<ExecSpace,TagNutopUpdateStates> m_policy_nutop_update_states;
+
+  Kokkos::TeamPolicy<ExecSpace,TagSGSTurbLaplace>      m_policy_sgsturb_laplace;
+  Kokkos::TeamPolicy<ExecSpace,TagSGSTurbUpdateStates> m_policy_sgsturb_update_states;
 
   TeamUtils<ExecSpace> m_tu; // If the policies only differ by tag, just need one tu
 
-  std::shared_ptr<BoundaryExchangeST<ST>> m_be, m_be_tom;
+  std::shared_ptr<BoundaryExchangeST<ST>> m_be, m_be_tom, m_be_sgs;
 
   ExecViewManaged<PT[NUM_LEV]> m_nu_scale_top;
   int m_nu_scale_top_ilev_pack_lim;

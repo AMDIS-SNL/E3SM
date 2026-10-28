@@ -24,7 +24,7 @@ class MAMMicrophysics final : public MAMGenericInterface {
   using const_view_1d = typename KT::template view_1d<const Real>;
   using const_view_2d = typename KT::template view_2d<const Real>;
 
-  using view_1d_host = typename KT::view_1d<Real>::HostMirror;
+  using view_1d_host = typename KT::view_1d<Real>::host_mirror_type;
 
   using view_int_2d = typename KT::template view_2d<int>;
 
@@ -40,11 +40,10 @@ class MAMMicrophysics final : public MAMGenericInterface {
   // --------------------------------------------------------------------------
 
   // The name of the subcomponent
-  std::string name() const { return "mam_aero_microphysics"; }
+  std::string name() const override { return "mam_aero_microphysics"; }
 
   // grid
-  void set_grids(
-      const std::shared_ptr<const GridsManager> grids_manager) override;
+  void create_requests() override;
 
   // management of common atm process memory
   size_t requested_buffer_size_in_bytes() const override;
@@ -57,9 +56,10 @@ class MAMMicrophysics final : public MAMGenericInterface {
   void run_impl(const double dt) override;
 
   // Finalize
-  void finalize_impl(){/*Do nothing*/};
+  void finalize_impl() override {/*Do nothing*/};
 
  private:
+  void run_microphysics_kernels(const double dt, const double eccf);
   // Output extra mam4xx diagnostics.
   bool extra_mam4_aero_microphys_diags_ = false;
 
@@ -77,6 +77,17 @@ class MAMMicrophysics final : public MAMGenericInterface {
   double m_orbital_mvelp;  // Vernal Equinox Mean Longitude of Perihelion
 
   struct Config {
+    // Number of so4(+nh4) monolayers needed to "age" a carbon particle.
+    // In E3SM this is read in from an input file and is 8 by default.
+    // From input parameter mam4_number_so4_monolayers_to_age_carbon_particle
+    unsigned n_so4_monolayers_pcage = 8;
+
+    // turn on/off gas phase chemistry (namelist: mam4_do_gas_phase_chemistry)
+    bool compute_gas_phase_chemistry = true;
+
+    // turn on/off aqueous chemistry / setsox (namelist: mam4_do_aqueous_phase_chemistry)
+    bool compute_aqueous_phase_chemistry = true;
+
     // stratospheric chemistry parameters
     mam4::microphysics::LinozConf linoz;
 
@@ -116,6 +127,9 @@ class MAMMicrophysics final : public MAMGenericInterface {
   std::shared_ptr<DataInterpolation>    data_interp_linoz_;
   void set_linoz_reader();
   view_3d invariants_;
+  std::shared_ptr<DataInterpolation>    data_interp_exo_coldens_;
+  std::vector<Field> exo_coldens_fields_;
+  void set_exo_coldens_reader();
   // Vertical emission uses 9 files, here I am using std::vector to stote
   // instance of each file.
   std::map<std::string, std::vector<std::string>> elevated_emis_var_names_;
@@ -151,6 +165,13 @@ class MAMMicrophysics final : public MAMGenericInterface {
   int get_len_temporary_views();
   void init_temporary_views();
   int len_temporary_views_{0};
+
+  view_3d state_q_, qqcw_pcnst_, qq_, qqcw_, vmr_,vmr0_, vmrcw_;
+  view_3d het_rates_, vmr_pregas_, vmr_precld_;
+
+  view_3d dqdt_aqso4_,dqdt_aqh2so4_;
+
+  view_3d dgncur_awet_, dgncur_a_, wetdens_;
 
   void add_io_docstring_to_fields_with_mixed_units(const std::map<std::string, std::string> &flds) {
     using str_atts_t = std::map<std::string,std::string>;

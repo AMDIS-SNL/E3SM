@@ -37,7 +37,7 @@ void run_phys()
   using ekat::repack;
   using TPF = ekat::TeamPolicyFactory<ExeSpace>;
 
-  constexpr auto SPS = SCREAM_SMALL_PACK_SIZE;
+  constexpr auto PS = SCREAM_PACK_SIZE;
 
   static const Int nfield = 2;
 
@@ -50,14 +50,14 @@ void run_phys()
     const Real dt = min_dz/max_speed;
 
     view_1d<Pack> rho("rho", npack), inv_rho("inv_rho", npack), inv_dz("inv_dz", npack);
-    const auto lrho = repack<SPS>(rho), linv_rho = repack<SPS>(inv_rho), linv_dz = repack<SPS>(inv_dz);
+    const auto lrho = repack<PS>(rho), linv_rho = repack<PS>(inv_rho), linv_dz = repack<PS>(inv_dz);
 
     Kokkos::Array<view_1d<Pack>, nfield> flux, V, r;
-    Kokkos::Array<uview_1d<Spack>, nfield> lflux, lV, lr;
+    Kokkos::Array<uview_1d<Pack>, nfield> lflux, lV, lr;
     const auto init_array = [&] (const std::string& /* name */, const Int& i, decltype(flux)& f,
                                  decltype(lflux)& lf) {
       f[i] = view_1d<Pack>("f", npack);
-      lf[i] = repack<SPS>(f[i]);
+      lf[i] = repack<PS>(f[i]);
     };
     for (int i = 0; i < nfield; ++i) {
       init_array("flux", i, flux, lflux);
@@ -368,21 +368,35 @@ void run_bfb()
 
 namespace {
 
-TEST_CASE("p3_upwind", "[p3_functions]")
+TEST_CASE("p3_upwind_prop", "[p3_functions]")
 {
   using T = scream::p3::unit_test::UnitWrap::UnitTest<scream::DefaultDevice>::TestUpwind;
 
   T t;
   t.run_phys();
+}
+
+TEST_CASE("p3_upwind_bfb", "[p3_functions]")
+{
+  using T = scream::p3::unit_test::UnitWrap::UnitTest<scream::DefaultDevice>::TestUpwind;
+
+  T t;
   t.run_bfb();
 }
 
-TEST_CASE("p3_gen_sed", "[p3_functions]")
+TEST_CASE("p3_gen_sed_prop", "[p3_functions]")
 {
   using T = scream::p3::unit_test::UnitWrap::UnitTest<scream::DefaultDevice>::TestGenSed;
 
   T t;
   t.run_phys();
+}
+
+TEST_CASE("p3_gen_sed_bfb", "[p3_functions]")
+{
+  using T = scream::p3::unit_test::UnitWrap::UnitTest<scream::DefaultDevice>::TestGenSed;
+
+  T t;
   t.run_bfb();
 }
 

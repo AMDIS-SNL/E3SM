@@ -19,6 +19,15 @@
 
 using namespace Homme;
 
+static std::string adv_form_name (const AdvectionForm adv_form) {
+  switch (adv_form) {
+    case AdvectionForm::Conservative:    return "Conservative";
+    case AdvectionForm::NonConservative: return "Non-Conservative";
+    case AdvectionForm::Split:           return "Split";
+  }
+  return "Unknown";
+}
+
 TEST_CASE("caar_dp_check") {
 
   constexpr int ne = 2;
@@ -54,13 +63,13 @@ TEST_CASE("caar_dp_check") {
 
   // Create elements with Real scalar type
   auto& elems = c.create<ElementsST<Real>>();
-  elems.init(num_elems,false,true,PhysicalConstants::rearth0);
+  elems.init(num_elems, true,PhysicalConstants::rearth0);
   auto& geo = elems.m_geometry;
   geo.randomize(seed);
 
   // Create elements with DpFadType scalar type
   auto& elems_dp = c.create<ElementsST<DpFadType>>();
-  elems_dp.init(num_elems,false,true,PhysicalConstants::rearth0);
+  elems_dp.init(num_elems, true,PhysicalConstants::rearth0);
   elems_dp.m_geometry = geo; // Use same views for geometry
 
   // Get or create and init other structures needed
@@ -100,10 +109,10 @@ TEST_CASE("caar_dp_check") {
     params.theta_hydrostatic_mode = hydrostatic;
     limiter.m_theta_hydrostatic_mode = hydrostatic;
     limiter_dp.m_theta_hydrostatic_mode = hydrostatic;
-    auto adv_forms = {AdvectionForm::Conservative, AdvectionForm::NonConservative};
+    auto adv_forms = {AdvectionForm::Conservative, AdvectionForm::NonConservative, AdvectionForm::Split};
     for (const AdvectionForm adv_form : adv_forms) {
       if (comm.am_i_root()) {
-        std::cout << "  -> " << (adv_form==AdvectionForm::Conservative ? "Conservative" : "Non-Conservative") << " theta advection\n";
+        std::cout << "  -> " << adv_form_name(adv_form) << " theta advection\n";
       }
       for (int rsplit : {3,0}) {
         if (comm.am_i_root()) {
@@ -264,17 +273,17 @@ TEST_CASE("caar_dx_check") {
 
   // Create elements geometry
   auto& geo = c.create<ElementsGeometry>();
-  geo.init(num_elems,false,true,PhysicalConstants::rearth0);
+  geo.init(num_elems, true,PhysicalConstants::rearth0);
   geo.randomize(seed);
 
   // Create elements with DpFadType scalar type
   auto& elems_dp = c.create<ElementsST<DpFadType>>();
-  elems_dp.init(num_elems,false,true,PhysicalConstants::rearth0);
+  elems_dp.init(num_elems, true,PhysicalConstants::rearth0);
   elems_dp.m_geometry = geo; // Use same views for geometry
 
   // Create elements with DxFadType scalar type
   auto& elems_dx = c.create<ElementsST<DxFadType>>();
-  elems_dx.init(num_elems,false,true,PhysicalConstants::rearth0);
+  elems_dx.init(num_elems, true,PhysicalConstants::rearth0);
   elems_dx.m_geometry = geo; // Use same views for geometry
 
   // Get or create and init other structures needed
@@ -312,10 +321,10 @@ TEST_CASE("caar_dx_check") {
     params.theta_hydrostatic_mode = hydrostatic;
     limiter_dp.m_theta_hydrostatic_mode = hydrostatic;
     limiter_dx.m_theta_hydrostatic_mode = hydrostatic;
-    auto adv_forms = {AdvectionForm::Conservative, AdvectionForm::NonConservative};
+    auto adv_forms = {AdvectionForm::Conservative, AdvectionForm::NonConservative, AdvectionForm::Split};
     for (const AdvectionForm adv_form : adv_forms) {
       if (comm.am_i_root()) {
-        std::cout << "  -> " << (adv_form==AdvectionForm::Conservative ? "Conservative" : "Non-Conservative") << " theta advection\n";
+        std::cout << "  -> " << adv_form_name(adv_form) << " theta advection\n";
       }
       for (const int pgrad : {1,0}) {
         if (comm.am_i_root()) {
@@ -507,12 +516,12 @@ TEST_CASE("caar_jtv_check") {
   const Real max_pressure = 1000.0 + hvcoord.ps0;
 
   auto& elems = c.create<ElementsST<Real>>();
-  elems.init(num_elems, false, true, PhysicalConstants::rearth0);
+  elems.init(num_elems, true, PhysicalConstants::rearth0);
   auto& geo = elems.m_geometry;
   geo.randomize(seed);
 
   auto& elems_dx = c.create<ElementsST<DxFadType>>();
-  elems_dx.init(num_elems, false, true, PhysicalConstants::rearth0);
+  elems_dx.init(num_elems, true, PhysicalConstants::rearth0);
   elems_dx.m_geometry = geo;
   Kokkos::deep_copy(elems_dx.m_derived.m_vn0,DxFadType(0));
   Kokkos::deep_copy(elems_dx.m_derived.m_vn0,DxFadType(0));
@@ -585,12 +594,11 @@ TEST_CASE("caar_jtv_check") {
       std::cout << " -> " << (hydrostatic ? "Hydrostatic\n" : "Non-Hydrostatic\n");
 
     for (const AdvectionForm adv_form : {AdvectionForm::Conservative,
-                                         AdvectionForm::NonConservative}) {
+                                         AdvectionForm::NonConservative,
+                                         AdvectionForm::Split}) {
       params.theta_adv_form = adv_form;
       if (comm.am_i_root())
-        std::cout << "  -> " << (adv_form==AdvectionForm::Conservative
-                                 ? "Conservative" : "Non-Conservative")
-                  << " theta advection\n";
+        std::cout << "  -> " << adv_form_name(adv_form) << " theta advection\n";
 
       for (const int pgrad : {1, 0}) {
         params.pgrad_correction = (pgrad != 0);
@@ -730,12 +738,12 @@ TEST_CASE("caar_adjoint") {
   const Real max_pressure = 1000.0 + hvcoord.ps0;
 
   auto& geo = c.create<ElementsGeometry>();
-  geo.init(num_elems,false,true,rearth0,1/rearth0,true);
+  geo.init(num_elems, true,rearth0,1/rearth0,true);
 
   auto& elems_dp = c.create<ElementsST<DpFadType>>();
   auto& elems_dx = c.create<ElementsST<DxFadType>>();
-  elems_dp.init(num_elems, false, true, PhysicalConstants::rearth0);
-  elems_dx.init(num_elems, false, true, PhysicalConstants::rearth0);
+  elems_dp.init(num_elems, true, PhysicalConstants::rearth0);
+  elems_dx.init(num_elems, true, PhysicalConstants::rearth0);
   elems_dx.m_geometry = elems_dp.m_geometry = geo;
   Kokkos::deep_copy(elems_dp.m_derived.m_vn0,DpFadType(0));
   Kokkos::deep_copy(elems_dp.m_derived.m_omega_p,DpFadType(0));
@@ -815,12 +823,11 @@ TEST_CASE("caar_adjoint") {
       std::cout << " -> " << (hydrostatic ? "Hydrostatic\n" : "Non-Hydrostatic\n");
 
     for (const AdvectionForm adv_form : {AdvectionForm::Conservative,
-                                         AdvectionForm::NonConservative}) {
+                                         AdvectionForm::NonConservative,
+                                         AdvectionForm::Split}) {
       params.theta_adv_form = adv_form;
       if (comm.am_i_root())
-        std::cout << "  -> " << (adv_form==AdvectionForm::Conservative
-                                 ? "Conservative" : "Non-Conservative")
-                  << " theta advection\n";
+        std::cout << "  -> " << adv_form_name(adv_form) << " theta advection\n";
 
       for (const int pgrad : {1, 0}) {
         params.pgrad_correction = (pgrad != 0);

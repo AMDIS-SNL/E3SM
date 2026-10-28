@@ -29,7 +29,6 @@ public:
   using view_1d = view_Nd<T,1>;
 
   using pack_type = ekat::Pack<Real,SCREAM_PACK_SIZE>;
-  using small_pack_type = ekat::Pack<Real,SCREAM_SMALL_PACK_SIZE>;
 
   PhysicsDynamicsRemapper (const grid_ptr_type& phys_grid,
                            const grid_ptr_type& dyn_grid);
@@ -73,7 +72,6 @@ public:
 
   enum AllocPropType : int {
     PackAlloc      = 0,
-    SmallPackAlloc = 1,
     RealAlloc      = 2
   };
 
@@ -93,8 +91,8 @@ public:
   struct ViewsRepo {
     using views_t  = view_1d<ViewsContainer<Real>>;
     using cviews_t = view_1d<ViewsContainer<const Real>>;
-    using hviews_t = typename views_t::HostMirror;
-    using hcviews_t = typename cviews_t::HostMirror;
+    using hviews_t = typename views_t::host_mirror_type;
+    using hcviews_t = typename cviews_t::host_mirror_type;
 
     views_t   views;
     cviews_t  cviews;

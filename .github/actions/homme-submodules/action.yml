@@ -12,6 +12,6 @@ runs:
         git submodule update --init --recursive cime
         git submodule update --init externals/ekat
         git submodule update --init externals/scorpio
+        # Note: Catch2 is no longer a submodule of ekat (it is fetched via FetchContent)
         cd externals/ekat
         git submodule update --init extern/kokkos
-        git submodule update --init extern/Catch2

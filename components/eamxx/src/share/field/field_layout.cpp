@@ -214,6 +214,21 @@ FieldLayout FieldLayout::transpose() const
   return flt;
 }
 
+std::optional<std::vector<int>> FieldLayout::broadcast_map (const FieldLayout& tgt) const
+{
+  // Greedily match the dims of *this (in order) with those of tgt
+  std::vector<int> dim_map(tgt.rank(),-1);
+  int isrc = 0;
+  for (int itgt=0; itgt<tgt.rank() and isrc<rank(); ++itgt) {
+    if (tgt.tag(itgt)==m_tags[isrc] and tgt.dim(itgt)==m_dims[isrc]) {
+      dim_map[itgt] = isrc++;
+    }
+  }
+  if (isrc!=rank())
+    return std::nullopt;
+  return dim_map;
+}
+
 FieldLayout& FieldLayout::rename_dim (const int idim, const std::string& n)
 {
   EKAT_REQUIRE_MSG(idim>=0 && idim<m_rank, "Error! Index out of bounds.");
@@ -254,6 +269,16 @@ FieldLayout& FieldLayout::rename_dims (const std::map<FieldTag,std::string>& new
 {
   for (const auto& it : new_names) {
     rename_dim(it.first,it.second,false);
+  }
+
+  return *this;
+}
+
+FieldLayout& FieldLayout::rename_dims (const std::map<std::string,std::string>& new_names)
+{
+  for (int i=0; i<m_rank; ++i) {
+    if (new_names.count(m_names[i]))
+      m_names[i] = new_names.at(m_names[i]);
   }
 
   return *this;
@@ -313,7 +338,7 @@ void FieldLayout::compute_type () {
   const int n_element = count(tags,EL);
   const int n_column  = count(tags,COL);
   const int ngp       = count(tags,GP);
-  const int nvlevs    = count(tags,LEV) + count(tags,ILEV);
+  const int nvlevs    = count(tags,LEV) + count(tags,ILEV) + count(tags,LEVP);
   const int ncomps    = count(tags,CMP);
 
   // We don't care about TimeLevel
@@ -349,14 +374,14 @@ void FieldLayout::compute_type () {
   // Get the size of what's left
   const auto size = tags.size();
   auto is_lev_tag = [](const FieldTag t) {
-    return t==LEV or t==ILEV;
+    return t==LEV or t==ILEV or t==LEVP;
   };
   switch (size) {
     case 0:
       m_type = LayoutType::Scalar2D;
       break;
     case 1:
-      // The only tag left should be 'CMP', 'TL', or 'LEV'/'ILEV'
+      // The only tag left should be 'CMP', 'TL', or 'LEV'/'ILEV'/'LEVP'
       if (tags[0]==CMP || tags[0]==TL) {
         m_type = LayoutType::Vector2D;
       } else if (is_lev_tag(tags[0])) {
@@ -365,7 +390,7 @@ void FieldLayout::compute_type () {
       break;
     case 2:
       // Possible supported scenarios:
-      //  1) <CMP|TL,LEV|ILEV>
+      //  1) <CMP|TL,LEV|ILEV|LEVP>
       //  2) <TL,CMP>
       //  3) <CMP,CMP>
       if ( is_lev_tag(tags[1]) && (tags[0]==CMP || tags[0]==TL)) {
@@ -378,8 +403,8 @@ void FieldLayout::compute_type () {
       break;
     case 3:
       // The only supported scenarios are:
-      //  1) <TL,  CMP, LEV|ILEV>
-      //  2) <CMP, CMP, LEV|ILEV>
+      //  1) <TL,  CMP, LEV|ILEV|LEVP>
+      //  2) <CMP, CMP, LEV|ILEV|LEVP>
       if ( tags[0]==TL && tags[1]==CMP && is_lev_tag(tags[2])) {
         m_type = LayoutType::Tensor3D;
       } else if ( tags[0]==CMP && tags[1]==CMP && is_lev_tag(tags[2])) {

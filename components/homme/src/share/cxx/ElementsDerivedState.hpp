@@ -32,6 +32,9 @@ public:
   ExecViewManaged<PT * [NP][NP][NUM_LEV]>     m_dpdiss_biharmonic; // mean dp dissipation tendency, if nu_p>0
   ExecViewManaged<PT * [NP][NP][NUM_LEV]>     m_dpdiss_ave;        // mean dp used to compute psdiss_tens
 
+  ExecViewManaged<PT * [NP][NP][NUM_LEV]>     m_turb_diff_mom;     // SGS eddy diffusivity for momentum
+  ExecViewManaged<PT * [NP][NP][NUM_LEV]>     m_turb_diff_heat;    // SGS eddy diffusivity for heat
+
   ElementsDerivedStateST() : m_num_elems(0) {}
 
   void init (const int num_elems);
@@ -71,6 +74,8 @@ void ElementsDerivedStateST<ST>::import_values (const ElementsDerivedStateST<RST
   auto lhs_pro = ekat::scalarize(m_divdp_proj);
   auto lhs_bih = ekat::scalarize(m_dpdiss_biharmonic);
   auto lhs_ave = ekat::scalarize(m_dpdiss_ave);
+  auto lhs_tdm = ekat::scalarize(m_turb_diff_mom);
+  auto lhs_tdh = ekat::scalarize(m_turb_diff_heat);
 
   auto rhs_ome = ekat::scalarize(rhs.m_omega_p);
   auto rhs_vn0 = ekat::scalarize(rhs.m_vn0);
@@ -81,6 +86,8 @@ void ElementsDerivedStateST<ST>::import_values (const ElementsDerivedStateST<RST
   auto rhs_pro = ekat::scalarize(rhs.m_divdp_proj);
   auto rhs_bih = ekat::scalarize(rhs.m_dpdiss_biharmonic);
   auto rhs_ave = ekat::scalarize(rhs.m_dpdiss_ave);
+  auto rhs_tdm = ekat::scalarize(rhs.m_turb_diff_mom);
+  auto rhs_tdh = ekat::scalarize(rhs.m_turb_diff_heat);
 
   int nlev = NUM_PHYSICAL_LEV;
   auto copy = KOKKOS_LAMBDA(int ie, int ip, int jp, int k) {
@@ -95,6 +102,8 @@ void ElementsDerivedStateST<ST>::import_values (const ElementsDerivedStateST<RST
     lhs_pro(ie,ip,jp,k)   = ADValue(rhs_pro(ie,ip,jp,k));
     lhs_bih(ie,ip,jp,k)   = ADValue(rhs_bih(ie,ip,jp,k));
     lhs_ave(ie,ip,jp,k)   = ADValue(rhs_ave(ie,ip,jp,k));
+    lhs_tdm(ie,ip,jp,k)   = ADValue(rhs_tdm(ie,ip,jp,k));
+    lhs_tdh(ie,ip,jp,k)   = ADValue(rhs_tdh(ie,ip,jp,k));
 
     if (k==0) {
       lhs_eta(ie,ip,jp,nlev) = ADValue(rhs_eta(ie,ip,jp,nlev));

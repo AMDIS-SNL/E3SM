@@ -43,8 +43,8 @@ struct TestData {
 struct ColData {
   int npack;
   ExecView<Scalar*> d;
-  ExecView<Scalar*>::HostMirror h;
-  ExecView<ScalarValue*>::HostMirror r;
+  ExecView<Scalar*>::host_mirror_type h;
+  ExecView<ScalarValue*>::host_mirror_type r;
 
   ColData (const std::string& name, const int nlev) {
     npack = calc_npack(nlev);
@@ -59,8 +59,8 @@ struct ColData {
 struct ElData {
   int npack;
   ExecView<Scalar***> d;
-  ExecView<Scalar***>::HostMirror h;
-  ExecView<ScalarValue***>::HostMirror r;
+  ExecView<Scalar***>::host_mirror_type h;
+  ExecView<ScalarValue***>::host_mirror_type r;
 
   ElData (const std::string& name, const int nlev) {
     npack = calc_npack(nlev);
@@ -314,7 +314,7 @@ int test_deta_caas (TestData& td) {
 
     { // Test that if all is OK, the input is not altered.
       nerr += make_random_deta(td, deta_tol, deta);
-      ExecView<Real***>::HostMirror copy("copy",NP,NP,nlev+1);
+      ExecView<Real***>::host_mirror_type copy("copy",NP,NP,nlev+1);
       Kokkos::deep_copy(copy, deta);
       run(deta);
       const auto m = cti::cmvdc(deta);

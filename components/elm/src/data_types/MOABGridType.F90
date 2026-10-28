@@ -1,4 +1,4 @@
-#ifdef HAVE_MOAB
+#ifdef MOAB_LATERAL
 ! Only build the module if MOAB is enabled
 module MOABGridType
 
@@ -137,9 +137,9 @@ contains
 
     ! next define MOAB app for the ghosted one
     ! We do this so that coupling does not have to deal with halos
-    appname="MOAB_ELM_GHOSTED"//C_NULL_CHAR
+    appname="MOAB_ELM_GHOSTED"
     LNDGHOSTID = 55120 ! this is arbitrary (but needs to be unique)
-    ierr = iMOAB_RegisterApplication(appname, mpicom, LNDGHOSTID, mlndghostid)
+    ierr = iMOAB_RegisterApplication(trim(appname)//C_NULL_CHAR, mpicom, LNDGHOSTID, mlndghostid)
     if (ierr > 0 )  &
          call endrun('Error: cannot register ELM-MOAB halo application')
     if(masterproc) then
@@ -603,7 +603,7 @@ contains
     ! mark vertices that are duplicate
     do g = 1, moab_gcell%num_ghosted
        do v1 = 1, moab_gcell%nv - 1
-          do v2 = 2, moab_gcell%nv
+          do v2 = v1 + 1, moab_gcell%nv
              dist = (moab_gcell%lonv(g, v1) - moab_gcell%lonv(g, v2))**2._r8 + &
                   (moab_gcell%latv(g, v1) - moab_gcell%latv(g, v2))**2._r8
              if (dist < dist_threshold) then
@@ -641,6 +641,7 @@ contains
           ! if the vertex is duplicate, skip it
           if (moab_gcell%is_vert_duplicate(gup, v1)) cycle
 
+          min_dist = 1.e10_r8
           latv_up = moab_gcell%latv(gup, v1)
           lonv_up = moab_gcell%lonv(gup, v1)
 
@@ -651,11 +652,8 @@ contains
              latv_dn = moab_gcell%latv(gdn, v2)
              lonv_dn = moab_gcell%lonv(gdn, v2)
 
-             dist = (latv_dn - latv_up)**2._r8 + (lonv_dn - lonv_up)**2._r8
-             if (v2 == 1) then
-                min_dist = dist;
-                min_v2   = v2;
-             else if (dist < min_dist) then
+             dist = ((latv_dn - latv_up)**2._r8 + (lonv_dn - lonv_up)**2._r8)**0.5_r8
+             if (dist < min_dist) then
                 min_dist = dist;
                 min_v2   = v2;
              end if
