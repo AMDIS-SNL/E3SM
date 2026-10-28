@@ -86,11 +86,14 @@ TEST_CASE("prim_advance_adj")
   params.hypervis_subcycle = 1;
   params.hypervis_subcycle_tom = 0;
   params.hypervis_scaling = 0.0;
-  params.nu = 1e-3;
-  params.nu_div = 1e-3;
+  // Note: nu must be large enough for HV to contribute to the gradient above the
+  // dot-product tolerance below (on the ne=2 sphere, nu*dt/dx^4 is O(1e-5) with
+  // nu=1e19), but small enough for the explicit HV step to stay well within stability.
+  params.nu = 1e19;
+  params.nu_div = 1e19;
   params.nu_top = 0.0;
   params.nu_p = 0.0;
-  params.nu_s = 1e-3;
+  params.nu_s = 1e19;
   params.nu_ratio1 = 1.0;
   params.nu_ratio2 = 1.0;
   params.dt_tracer_factor = 4;

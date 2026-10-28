@@ -512,7 +512,11 @@ template<typename ST>
 template<typename MyST>
 std::enable_if_t<std::is_same_v<MyST, Real>>
 HyperviscosityFunctorImplST<ST>::
-init_J (const int np1) {
+init_J (const int np1, const Real dt) {
+  // Same as in run(): run_JV/run_JtV use dt_hvs to scale the tendencies
+  m_data.dt = dt;
+  m_data.dt_hvs = m_data.hypervis_subcycle>0 ? dt/m_data.hypervis_subcycle : -1.0;
+
   if (m_adj_dp0.size() == 0) {
     m_adj_dp0    = decltype(m_adj_dp0)   ("HV adjoint dp0",    m_num_elems);
     m_adj_theta0 = decltype(m_adj_theta0)("HV adjoint theta0", m_num_elems);
