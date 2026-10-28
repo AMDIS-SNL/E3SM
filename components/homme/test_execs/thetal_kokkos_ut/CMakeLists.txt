@@ -23,6 +23,23 @@ SET (PIO_INTERP TRUE)
 
 HommeConfigFile (${THIS_CONFIG_IN} ${THIS_CONFIG_HC} ${THIS_CONFIG_H} )
 
+IF (Kokkos_ENABLE_CUDA)
+  IF (Kokkos_ENABLE_COMPILE_AS_CMAKE_LANGUAGE)
+    SET (THETAL_UT_CUDA_FLAGS "$<$<COMPILE_LANGUAGE:CUDA>:--fmad=false>")
+  ELSE ()
+    SET (THETAL_UT_CUDA_FLAGS "$<$<COMPILE_LANGUAGE:CXX>:--fmad=false>")
+  ENDIF ()
+ENDIF ()
+
+# All unit tests here use ne=2, giving 6*ne*ne=24 elements max.
+# Cap the number of MPI tasks to avoid "too many MPI tasks" aborts.
+# THETAL_UT_NE is only used in the MATH() expression below; it is defined as a
+# named variable (rather than inlining the literal 2) to document which ne value
+# the unit tests are configured for and to make it easy to find if it ever needs
+# to change.  It is not referenced anywhere else in the build.
+SET (THETAL_UT_NE 2)
+MATH (EXPR MPI_MAX_PROCS "6 * ${THETAL_UT_NE} * ${THETAL_UT_NE}")
+
 ADD_LIBRARY(thetal_kokkos_ut_lib
   ${THETAL_DEPS}
   ${TEST_SRC_F90}
@@ -52,6 +69,9 @@ TARGET_INCLUDE_DIRECTORIES(thetal_kokkos_ut_lib PUBLIC
   ${THETA_LIB_MODULE_DIR}
   )
 TARGET_COMPILE_DEFINITIONS(thetal_kokkos_ut_lib PUBLIC "HAVE_CONFIG_H")
+IF (Kokkos_ENABLE_CUDA)
+  TARGET_COMPILE_OPTIONS(thetal_kokkos_ut_lib PRIVATE "${THETAL_UT_CUDA_FLAGS}")
+ENDIF ()
 TARGET_LINK_LIBRARIES(thetal_kokkos_ut_lib ekat::AllLibs)
 TARGET_LINK_LIBRARIES(thetal_kokkos_ut_lib timing csm_share ${COMPOSE_LIBRARY_CPP} ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES})
 if (HOMMEXX_ENABLE_FAD_TYPES)
@@ -106,12 +126,18 @@ SET (THETAL_UT_INCLUDE_DIRS
 #  - CXX_SRCS:     the C++ sources of the test
 #  - F90_SRCS:     the test-specific F90 sources (if any)
 #  - INCLUDE_DIRS: additional include dirs (on top of THETAL_UT_INCLUDE_DIRS)
-#  - NUM_CPUS:     number of MPI ranks (defaults to USE_NUM_PROCS, or 1 if not set)
+#  - NUM_CPUS:     number of MPI ranks (defaults to USE_NUM_PROCS, capped at
+#                  MPI_MAX_PROCS, or 1 if USE_NUM_PROCS is not set)
 FUNCTION (thetal_cxx_unit_test test_name)
   CMAKE_PARSE_ARGUMENTS (TUT "" "NUM_CPUS" "CXX_SRCS;F90_SRCS;INCLUDE_DIRS" ${ARGN})
   IF (NOT TUT_NUM_CPUS)
     IF (USE_NUM_PROCS)
-      SET (TUT_NUM_CPUS ${USE_NUM_PROCS})
+      IF (${USE_NUM_PROCS} GREATER ${MPI_MAX_PROCS})
+        MESSAGE(STATUS "Test ${test_name}: lowering NUM_CPUS from ${USE_NUM_PROCS} to ${MPI_MAX_PROCS} (MPI_MAX_PROCS=${MPI_MAX_PROCS})")
+        SET (TUT_NUM_CPUS ${MPI_MAX_PROCS})
+      ELSE ()
+        SET (TUT_NUM_CPUS ${USE_NUM_PROCS})
+      ENDIF ()
     ELSE ()
       SET (TUT_NUM_CPUS 1)
     ENDIF ()
@@ -119,6 +145,9 @@ FUNCTION (thetal_cxx_unit_test test_name)
   cxx_unit_test (${test_name} "${TUT_F90_SRCS}" "${TUT_CXX_SRCS}"
                  "${THETAL_UT_INCLUDE_DIRS};${TUT_INCLUDE_DIRS}" "${CONFIG_DEFINES}" ${TUT_NUM_CPUS})
   TARGET_LINK_LIBRARIES (${test_name} thetal_kokkos_ut_lib)
+  IF (Kokkos_ENABLE_CUDA)
+    TARGET_COMPILE_OPTIONS(${test_name} PRIVATE "${THETAL_UT_CUDA_FLAGS}")
+  ENDIF ()
 ENDFUNCTION ()
 
 IF (HOMMEXX_BFB_TESTING)
@@ -159,7 +188,7 @@ IF (HOMMEXX_BFB_TESTING)
     # ScalarValue is a Fad type. Purely local (no MPI/connectivity), so
     # unlike most other thetal_kokkos_ut tests it needs no F90 sources.
     EkatCreateUnitTest ("forcing_adjoint_ut"
-      "forcing_adjoint_ut.cpp"
+      SOURCES "forcing_adjoint_ut.cpp"
       LIBS thetal_kokkos_ut_lib
       LABELS AMDIS
     )
@@ -175,7 +204,7 @@ IF (HOMMEXX_BFB_TESTING)
     # share one file per NN call -- this just happens to run single-rank
     # here, so the collectives degenerate to the trivial case.
     EkatCreateUnitTest ("checkpoint_io_ut"
-      "checkpoint_io_ut.cpp"
+      SOURCES "checkpoint_io_ut.cpp"
       LIBS thetal_kokkos_ut_lib
       LABELS AMDIS
     )
@@ -199,7 +228,7 @@ IF (HOMMEXX_BFB_TESTING)
     euler_step_adjoint_ut.cpp
   )
   EkatCreateUnitTest ("euler_step_adjoint_ut"
-    "${EULER_STEP_ADJOINT_SOURCES}"
+    SOURCES "${EULER_STEP_ADJOINT_SOURCES}"
     LIBS thetal_kokkos_ut_lib
     LABELS AMDIS
   )
@@ -245,7 +274,7 @@ endif()
 # forcing_adjoint_ut/checkpoint_io_ut).
 # State generic tests
 EkatCreateUnitTest (state_ut
-  state_ut.cpp
+  SOURCES state_ut.cpp
   LIBS thetal_kokkos_ut_lib
   LABELS AMDIS
 )
@@ -254,7 +283,7 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
 
   # Caar sacado derivatives tests
   EkatCreateUnitTest (caar_sacado_ut
-    caar_sacado_ut.cpp
+    SOURCES caar_sacado_ut.cpp
     COMPILER_CXX_DEFS HOMMEXX_SPHERE_OP_ST_FACTORS
     LIBS thetal_kokkos_ut_lib
     LABELS AMDIS
@@ -264,35 +293,35 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
   # Note: the F90 interface sources (geometry_interface.F90, thetal_test_interface.F90)
   #       are already part of thetal_kokkos_ut_lib; the test has no F90 sources of its own.
   EkatCreateUnitTest (remap_sacado_ut
-    remap_sacado_ut.cpp
+    SOURCES remap_sacado_ut.cpp
     LIBS thetal_kokkos_ut_lib
     LABELS AMDIS
   )
 
   # Eqn of state sacado derivatives tests
   EkatCreateUnitTest (eos_sacado_ut
-    eos_sacado_ut.cpp
+    SOURCES eos_sacado_ut.cpp
     LIBS thetal_kokkos_ut_lib
     LABELS AMDIS
   )
 
   # Dirk sacado derivatives tests
   EkatCreateUnitTest ("dirk_sacado_ut"
-    dirk_sacado_ut.cpp
+    SOURCES dirk_sacado_ut.cpp
     LIBS thetal_kokkos_ut_lib
     LABELS AMDIS
   )
 
   # Hyperviscosity sacado derivatives tests
   EkatCreateUnitTest ("hv_sacado_ut"
-    "hv_sacado_ut.cpp;hv_interface.F90"
+    SOURCES "hv_sacado_ut.cpp;hv_interface.F90"
     LIBS thetal_kokkos_ut_lib
     LABELS AMDIS
   )
 
   # Tridiag sacado derivatives tests
   EkatCreateUnitTest ("tridiag_sacado_ut"
-    tridiag_sacado_ut.cpp
+    SOURCES tridiag_sacado_ut.cpp
     LIBS thetal_kokkos_ut_lib
     LABELS AMDIS
   )
@@ -303,7 +332,7 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
     ${SRC_THETA_DIR}/cxx/prim_advance_adj.cpp
   )
   EkatCreateUnitTest ("imex_adjoint_ut"
-    "${IMEX_ADJOINT_SOURCES}"
+    SOURCES "${IMEX_ADJOINT_SOURCES}"
     LIBS thetal_kokkos_ut_lib
     LABELS AMDIS
   )
@@ -315,7 +344,7 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
     ${SRC_THETA_DIR}/cxx/prim_advance_adj.cpp
   )
   EkatCreateUnitTest ("prim_advance_sacado_ut"
-    "${PRIM_ADVANCE_SACADO_SOURCES}"
+    SOURCES "${PRIM_ADVANCE_SACADO_SOURCES}"
     LIBS thetal_kokkos_ut_lib
     LABELS AMDIS
   )
@@ -330,7 +359,7 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
     ${SRC_SHARE_DIR}/cxx/prim_advec_tracers_remap_adj.cpp
   )
   EkatCreateUnitTest ("prim_advec_tracers_remap_adjoint_ut"
-    "${PRIM_ADVEC_TRACERS_REMAP_ADJOINT_SOURCES}"
+    SOURCES "${PRIM_ADVEC_TRACERS_REMAP_ADJOINT_SOURCES}"
     LIBS thetal_kokkos_ut_lib
     LABELS AMDIS
   )
@@ -348,7 +377,7 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
       ${SRC_SHARE_DIR}/cxx/prim_advec_tracers_remap_adj.cpp
     )
     EkatCreateUnitTest ("prim_step_adjoint_ut"
-      "${PRIM_STEP_ADJOINT_SOURCES}"
+      SOURCES "${PRIM_STEP_ADJOINT_SOURCES}"
       LIBS thetal_kokkos_ut_lib
       LABELS AMDIS
     )

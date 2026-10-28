@@ -7,7 +7,6 @@
 #include "share/util/eamxx_time_stamp.hpp"
 #include "share/core/eamxx_types.hpp"
 #include "share/io/eamxx_output_manager.hpp"
-#include "share/io/scorpio_input.hpp"
 #include "share/atm_process/ATMBufferManager.hpp"
 #include "share/data_managers/IOPDataManager.hpp"
 #include "share/data_managers/SCDataManager.hpp"
@@ -88,9 +87,6 @@ public:
   void setup_surface_coupling_data_manager(SurfaceCouplingTransferType transfer_type,
                                            const int num_cpl_fields, const int num_scream_fields,
                                            const int field_size, Real* data_ptr,
-#ifdef HAVE_MOAB
-                                           Real* data_ptr_moab,
-#endif
                                            char* names_ptr, int* cpl_indices_ptr, int* vec_comps_ptr,
                                            Real* constant_multiple_ptr, bool* do_transfer_during_init_ptr);
 
@@ -108,6 +104,9 @@ public:
   // If TMS process exists, creates link to SHOC for applying
   // tms' surface drag coefficient.
   void setup_shoc_tms_links();
+
+  // Propagate HOMME's parsed 3D turbulence flag to SHOC's internal runtime option.
+  void setup_shoc_3d_turbulence_link();
 
   // Add column data to all pre/postcondition property checks
   // for use in output.
@@ -172,12 +171,9 @@ public:
 
   const std::shared_ptr<AtmosphereProcessGroup>& get_atm_processes () const { return m_atm_process_group; }
 
-#ifndef KOKKOS_ENABLE_CUDA
-  // Cuda requires methods enclosing __device__ lambda's to be public
 protected:
-#endif
-  void initialize_constant_field(const FieldIdentifier& fid, const ekat::ParameterList& ic_pl);
-protected:
+
+  void initialize_constant_field(const FieldIdentifier& fid, const ekat::ParameterList& constants_pl);
 
   void report_res_dep_memory_footprint () const;
 
@@ -185,11 +181,8 @@ protected:
   void set_initial_conditions ();
   void restart_model ();
 
-  // Read fields from a file
-  void read_fields_from_file (const std::vector<Field>& fields,
-                              const std::shared_ptr<const AbstractGrid>& grid,
-                              const std::string& file_name);
-  void register_groups ();
+  void initialize_time_stamps ();
+  void set_initialization_groups (const Field& f);
 
   template<typename T>
   using strmap_t = std::map<std::string,T>;
@@ -259,7 +252,7 @@ protected:
   // Current simulation casename
   std::string m_casename;
   // maps grid name to a vector of its initialized fields
-  strmap_t<strvec_t> m_fields_inited;
+  strmap_t<std::set<std::string>> m_fields_inited;
 };
 
 }  // namespace control

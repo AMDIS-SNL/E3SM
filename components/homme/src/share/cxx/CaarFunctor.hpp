@@ -19,7 +19,7 @@
 namespace Homme {
 
 class ReferenceElement;
-class SimulationParams;
+struct SimulationParams;
 class HybridVCoord;
 
 class MpiBuffersManager;

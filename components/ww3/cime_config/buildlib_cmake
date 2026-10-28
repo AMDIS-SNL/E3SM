@@ -4,7 +4,6 @@
 build ww3 library
 """
 import sys, os, shutil
-from distutils.spawn import find_executable
 
 _CIMEROOT = os.environ.get("CIMEROOT")
 if _CIMEROOT is None:
@@ -25,6 +24,7 @@ def buildlib(bldroot, installpath, case):
     srcroot = case.get_value("SRCROOT")
     caseroot = case.get_value("CASEROOT")
     casebuild = case.get_value("CASEBUILD")
+    compset   = case.get_value("COMPSET")
 
     with open(os.path.join(casebuild, "ww3conf", "Filepath"), "w") as fd:
         fd.write(f"{caseroot}/SourceMods/src.ww3\n")
@@ -32,7 +32,10 @@ def buildlib(bldroot, installpath, case):
         fd.write(f"{srcroot}/components/ww3/src/WW3/model/src/SCRIP\n")
         fd.write(f"{srcroot}/components/ww3/src/cpl\n")
 
-    cmake_args = " -DSWITCH=E3SM"
+    if "MPASSI" in compset:
+        cmake_args = " -DSWITCH=E3SM_wavice"
+    else:
+        cmake_args = " -DSWITCH=E3SM"
 
     return cmake_args
 

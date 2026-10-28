@@ -19,10 +19,13 @@ class ZMDeepConvection : public AtmosphereProcess
   using ZMF = zm::Functions<Real, DefaultDevice>;
   using PF  = scream::PhysicsFunctions<DefaultDevice>;
   using PC  = scream::physics::Constants<Real>;
+  using WSM = typename ZMF::WorkspaceManager;
 
-  using Scalar               = typename ZMF::Scalar;
-  using Spack                = typename ZMF::Spack;
-  using SPackInt             = typename ZMF::SPackInt;
+  using Scalar  = typename ZMF::Scalar;
+  using Pack    = typename ZMF::Pack;
+  using IntPack = typename ZMF::IntPack;
+
+  static constexpr int nwind = ZMF::ZMC::nwind;
 
   public:
 
@@ -33,39 +36,37 @@ class ZMDeepConvection : public AtmosphereProcess
     AtmosphereProcessType type() const override { return AtmosphereProcessType::Physics; }
 
     // The name of the subcomponent
-    std::string name() const override { return "ZM"; }
+    std::string name() const override { return "zm"; }
 
-    // Set the grid
-    void set_grids(const std::shared_ptr<const GridsManager> grids_manager) override;
+    // Create grid-dependent field requests
+    void create_requests() override;
 
 #ifndef KOKKOS_ENABLE_CUDA
   // Cuda requires methods enclosing __device__ lambda's to be public
   protected:
 #endif
 
-    void initialize_impl (const RunType run_type);
-    void run_impl        (const double dt);
+    void initialize_impl (const RunType run_type) override;
+    void run_impl        (const double dt) override;
 
   protected:
 
-    void finalize_impl   ();
+    void finalize_impl   () override;
 
     // Computes total number of bytes needed for local variables
-    size_t requested_buffer_size_in_bytes() const;
+    size_t requested_buffer_size_in_bytes() const override;
 
     // Set local variables using memory provided by the ATMBufferManager
-    void init_buffers(const ATMBufferManager &buffer_manager);
+    void init_buffers(const ATMBufferManager &buffer_manager) override;
 
     // define ZM process variables
     std::shared_ptr<const AbstractGrid> m_grid;
     int m_ncol;
     int m_nlev;
 
-    // Structures for arguments to ZM
-    ZMF::ZmRuntimeOpt zm_opts;
+    // structs to organize ZM data
     ZMF::ZmInputState zm_input;
     ZMF::ZmOutputTend zm_output;
-    ZMF::ZmOutputDiag zm_diag;
 
 }; // class ZMDeepConvection
 

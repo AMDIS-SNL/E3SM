@@ -1,3 +1,5 @@
+#include "bfb_math.inc"
+
 module zm_transport
    !----------------------------------------------------------------------------
    !
@@ -5,7 +7,8 @@ module zm_transport
    !
    !----------------------------------------------------------------------------
 #ifdef SCREAM_CONFIG_IS_CMAKE
-   use zm_eamxx_bridge_params, only: r8
+  use zm_eamxx_bridge_params, only: r8, btype
+  use physics_share_f2c, only: scream_log
 #else
    use shr_kind_mod,     only: r8=>shr_kind_r8
 #endif
@@ -13,12 +16,14 @@ module zm_transport
    implicit none
 
    ! public methods
-#ifndef SCREAM_CONFIG_IS_CMAKE
    public :: zm_transport_tracer    ! convective tracer transport
-#endif
    public :: zm_transport_momentum  ! convective momentum transport
 
    private
+
+#ifndef SCREAM_CONFIG_IS_CMAKE
+   integer,parameter,public :: btype = kind(.true.)
+#endif
 
    real(r8), parameter :: mbsth = 1.e-15_r8  ! threshold below which we treat the mass fluxes as zero (in mb/s)
 
@@ -26,8 +31,7 @@ contains
 
 !===================================================================================================
 
-! We need to avoid building this for now when bridging from EAMxx
-subroutine zm_transport_tracer( pcols, ncol, pver, &
+subroutine zm_transport_tracer( pcols, pver, &
                                 doconvtran, q, ncnst, &
                                 mu, md, du, eu, ed, dp, &
                                 jt, mx, ideep, il1g, il2g, &
@@ -42,10 +46,9 @@ subroutine zm_transport_tracer( pcols, ncol, pver, &
    !----------------------------------------------------------------------------
    ! Arguments
    integer,                               intent(in)  :: pcols       ! maximum number of columns
-   integer,                               intent(in)  :: ncol        ! actual number of columns
    integer,                               intent(in)  :: pver        ! number of mid-point levels
    integer,                               intent(in)  :: ncnst       ! number of tracers to transport
-   logical,  dimension(ncnst),            intent(in)  :: doconvtran  ! flag for doing convective transport
+   logical(btype),   dimension(ncnst),    intent(in)  :: doconvtran  ! flag for doing convective transport
    real(r8), dimension(pcols,pver,ncnst), intent(in)  :: q           ! tracer array (including water vapor)
    real(r8), dimension(pcols,pver),       intent(in)  :: mu          ! mass flux up
    real(r8), dimension(pcols,pver),       intent(in)  :: md          ! mass flux down
@@ -55,7 +58,7 @@ subroutine zm_transport_tracer( pcols, ncol, pver, &
    real(r8), dimension(pcols,pver),       intent(in)  :: dp          ! delta pressure between interfaces
    real(r8), dimension(pcols,pver,ncnst), intent(in)  :: fracis      ! fraction of tracer that is insoluble
    integer,  dimension(pcols),            intent(in)  :: jt          ! index of cloud top for each column
-   integer,  dimension(pcols),            intent(in)  :: mx          ! index of cloud top for each column
+   integer,  dimension(pcols),            intent(in)  :: mx          ! index of cloud bottom for each column
    integer,  dimension(pcols),            intent(in)  :: ideep       ! gathering array
    integer,                               intent(in)  :: il1g        ! gathered min ncol index
    integer,                               intent(in)  :: il2g        ! gathered max ncol index
@@ -162,7 +165,7 @@ subroutine zm_transport_tracer( pcols, ncol, pver, &
                if (cdifr > cdifr_min) then
                   cabv = max(const(i,km1),maxc*maxc_factor)
                   cbel = max(const(i,k  ),maxc*maxc_factor)
-                  chat(i,k) = log(cabv/cbel)/(cabv-cbel)*cabv*cbel
+                  chat(i,k) = bfb_log(cabv/cbel)/(cabv-cbel)*cabv*cbel
                else ! Small diff, so just arithmetic mean
                   chat(i,k) = 0.5_r8*( const(i,k) + const(i,km1) )
                end if
@@ -292,7 +295,6 @@ subroutine zm_transport_tracer( pcols, ncol, pver, &
          ! Initialize output tendency to zero, then scatter tendency back to full array
          dqdt(:,:,m) = 0._r8
          do k = 1,pver
-            kp1 = min(pver,k+1)
 #ifdef CPRCRAY
 !DIR$ CONCURRENT
 #endif
@@ -318,7 +320,6 @@ subroutine zm_transport_momentum( pcols, ncol, pver, pverp, wind_in, nwind, &
    !----------------------------------------------------------------------------
    ! Purpose: Convective transport of momentum
    !----------------------------------------------------------------------------
-   use zm_conv,         only: zm_param
    !----------------------------------------------------------------------------
    ! Arguments
    integer,                               intent(in)  :: pcols       ! maximum number of columns
@@ -351,7 +352,6 @@ subroutine zm_transport_momentum( pcols, ncol, pver, pverp, wind_in, nwind, &
    integer  :: kbm                        ! Highest altitude index of cloud base
    integer  :: kk                         ! Work index
    integer  :: kkp1                       ! Work index
-   integer  :: kkm1                       ! Work index
    integer  :: km1                        ! Work index
    integer  :: kp1                        ! Work index
    integer  :: ktm                        ! Highest altitude index of cloud top
@@ -466,7 +466,6 @@ subroutine zm_transport_momentum( pcols, ncol, pver, pverp, wind_in, nwind, &
       k = 2
       km1 = 1
       kk = pver
-      kkm1 = max(1,kk-1)
       do i = il1g,il2g
          mupdudp = mu(i,kk) + du(i,kk)*dp(i,kk)
          if (mupdudp > mbsth) then
@@ -479,7 +478,6 @@ subroutine zm_transport_momentum( pcols, ncol, pver, pverp, wind_in, nwind, &
 
       ! Updraft from bottom to top
       do kk = pver-1,1,-1
-         kkm1 = max(1,kk-1)
          kkp1 = min(pver,kk+1)
          do i = il1g,il2g
             mupdudp = mu(i,kk) + du(i,kk)*dp(i,kk)
@@ -503,7 +501,6 @@ subroutine zm_transport_momentum( pcols, ncol, pver, pverp, wind_in, nwind, &
       ! Calculate momentum tendency
 
       do k = ktm,pver
-         km1 = max(1,k-1)
          kp1 = min(pver,k+1)
          do i = il1g,il2g
             wind_tend_tmp(i,k) = ( mu(i,kp1)* (wind_int_u(i,kp1)-wind_int(i,kp1)) &
@@ -519,7 +516,6 @@ subroutine zm_transport_momentum( pcols, ncol, pver, pverp, wind_in, nwind, &
 
       ! dcont for bottom layer
       do k = kbm,pver
-         km1 = max(1,k-1)
          do i = il1g,il2g
             if (k==mx(i)) then
                wind_tend_tmp(i,k) = (-mu(i,k)*(wind_int_u(i,k)-wind_int(i,k)) &
@@ -553,7 +549,6 @@ subroutine zm_transport_momentum( pcols, ncol, pver, pverp, wind_in, nwind, &
       ! Calculate winds at the end of the time step
       do k = ktm,pver
          do i = il1g,il2g
-            km1 = max(1,k-1)
             kp1 = k+1
             windf(i,k,m) = wind_mid(i,k) - ( mflux(i,kp1,m) - mflux(i,k,m) ) * dt/dp(i,k)
          end do

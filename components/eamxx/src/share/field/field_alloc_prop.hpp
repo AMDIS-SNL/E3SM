@@ -115,6 +115,10 @@ public:
   // multi-slice subview over contiguous indices
   FieldAllocProp subview (const int idim, const int k_beg, const int k_end) const;
 
+  // Return allocation props of a field that is a read-only broadcast of this one,
+  // to a larger layout (tgt). The data can only be accessed via strided views.
+  FieldAllocProp broadcast (const layout_type& tgt) const;
+
   // Request allocation able to accommodate a pack of ScalarType of the given pack size
   void request_allocation (const int pack_size = 1);
 
@@ -150,6 +154,14 @@ public:
 
   // Wether this allocation is contiguous
   bool contiguous () const { return m_contiguous; }
+
+  // Whether this allocation can be accessed via a LayoutRight view (get_view).
+  // This is true for freshly allocated fields, and remains true after a
+  // single-slice subview along dim 0 (any rank) or dim 1 (parent rank >= 3,
+  // i.e., result rank >= 2). It becomes false for multi-slice subviews, or
+  // for a dim-1 single-slice subview of a rank-2 field (which would yield a
+  // LayoutStride rank-1 result that get_ND_view explicitly rejects).
+  bool allows_layout_right () const { return m_allows_layout_right; }
 
   // Size of the last extent in the alloction (i.e., number of scalars in it)
   int  get_last_extent () const;
@@ -188,6 +200,9 @@ protected:
 
   // Whether the allocation is contiguous
   bool  m_contiguous;
+
+  // Whether the allocation can be accessed via a LayoutRight view (get_view).
+  bool  m_allows_layout_right = false;
 
   // Whether commit was called (i.e., no more value type requests allowed)
   bool  m_committed;

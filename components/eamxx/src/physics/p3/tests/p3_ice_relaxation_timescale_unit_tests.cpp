@@ -62,12 +62,12 @@ struct UnitWrap::UnitTest<D>::TestIceRelaxationTimescale : public UnitWrap::Unit
 
     // Run the lookup from a kernel and copy results back to host
     Kokkos::parallel_for(num_test_itrs, KOKKOS_LAMBDA(const Int& i) {
-      const Int offset = i * Spack::n;
+      const Int offset = i * Pack::n;
 
       // Init pack inputs
-      Spack rho, temp, rhofaci, table_val_qi2qr_melting, table_val_qi2qr_vent_melt, dv, mu, sc, qi_incld, ni_incld;
+      Pack rho, temp, rhofaci, table_val_qi2qr_melting, table_val_qi2qr_vent_melt, dv, mu, sc, qi_incld, ni_incld;
 
-      for (Int s = 0, vs = offset; s < Spack::n; ++s, ++vs) {
+      for (Int s = 0, vs = offset; s < Pack::n; ++s, ++vs) {
         rho[s]                        = self_device(vs).rho;
         temp[s]                       = self_device(vs).temp;
         rhofaci[s]                    = self_device(vs).rhofaci;
@@ -80,12 +80,12 @@ struct UnitWrap::UnitTest<D>::TestIceRelaxationTimescale : public UnitWrap::Unit
         ni_incld[s]                   = self_device(vs).ni_incld;
       }
 
-      Spack epsi{0.0};
-      Spack epsi_tot{0.0};
+      Pack epsi{0.0};
+      Pack epsi_tot{0.0};
       Functions::ice_relaxation_timescale(rho, temp, rhofaci, table_val_qi2qr_melting, table_val_qi2qr_vent_melt, dv, mu, sc, qi_incld, ni_incld,
                                           epsi, epsi_tot);
 
-      for (Int s = 0, vs = offset; s < Spack::n; ++s, ++vs) {
+      for (Int s = 0, vs = offset; s < Pack::n; ++s, ++vs) {
         self_device(vs).epsi     = epsi[s];
         self_device(vs).epsi_tot = epsi_tot[s];
       }
@@ -118,13 +118,18 @@ struct UnitWrap::UnitTest<D>::TestIceRelaxationTimescale : public UnitWrap::Unit
 
 namespace {
 
-TEST_CASE("p3_ice_relaxation_timescale", "[p3_functions]")
+TEST_CASE("p3_ice_relaxation_timescale_prop", "[p3_functions]")
 {
   using T = scream::p3::unit_test::UnitWrap::UnitTest<scream::DefaultDevice>::TestIceRelaxationTimescale;
 
-  T t;
-  t.run_ice_relaxation_timescale_phys();
-  t.run_ice_relaxation_timescale_bfb();
+  T t;  t.run_ice_relaxation_timescale_phys();
+}
+
+TEST_CASE("p3_ice_relaxation_timescale_bfb", "[p3_functions]")
+{
+  using T = scream::p3::unit_test::UnitWrap::UnitTest<scream::DefaultDevice>::TestIceRelaxationTimescale;
+
+  T t;  t.run_ice_relaxation_timescale_bfb();
 }
 
 }

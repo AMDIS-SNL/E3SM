@@ -32,6 +32,7 @@ module RtmMod
                                rtmhist_avgflag_pertape, rtmhist_avgflag_pertape, & 
                                rtmhist_fincl1, rtmhist_fincl2, rtmhist_fincl3,   &
                                rtmhist_fexcl1, rtmhist_fexcl2, rtmhist_fexcl3,   &
+                               rtmhist_empty_htapes,                             &
                                max_tapes, max_namlen
   use RtmRestFile     , only : RtmRestTimeManager, RtmRestGetFile, RtmRestFileRead, &
                                RtmRestFileWrite, RtmRestFileName
@@ -281,7 +282,7 @@ contains
          rtmhist_ndens, rtmhist_mfilt, rtmhist_nhtfrq, &
          rtmhist_fincl1,  rtmhist_fincl2, rtmhist_fincl3, &
          rtmhist_fexcl1,  rtmhist_fexcl2, rtmhist_fexcl3, &
-         rtmhist_avgflag_pertape, decomp_option, wrmflag,rstraflag,ngeom,nlayers,rinittemp, &
+         rtmhist_avgflag_pertape, rtmhist_empty_htapes, decomp_option, wrmflag,rstraflag,ngeom,nlayers,rinittemp, &
          inundflag, smat_option, delt_mosart, barrier_timers, do_budget, &
          RoutingMethod, DLevelH2R, DLevelR, sediflag, heatflag, data_bgc_fluxes_to_ocean_flag,redirect_negative_qgwl
 
@@ -412,6 +413,7 @@ contains
     call mpi_bcast (rtmhist_nhtfrq, size(rtmhist_nhtfrq), MPI_INTEGER,   0, mpicom_rof, ier)
     call mpi_bcast (rtmhist_mfilt , size(rtmhist_mfilt) , MPI_INTEGER,   0, mpicom_rof, ier)
     call mpi_bcast (rtmhist_ndens , size(rtmhist_ndens) , MPI_INTEGER,   0, mpicom_rof, ier)
+    call mpi_bcast (rtmhist_empty_htapes, 1, MPI_LOGICAL, 0, mpicom_rof, ier)
 
     call mpi_bcast (rtmhist_fexcl1, (max_namlen+2)*size(rtmhist_fexcl1), MPI_CHARACTER, 0, mpicom_rof, ier)
     call mpi_bcast (rtmhist_fexcl2, (max_namlen+2)*size(rtmhist_fexcl2), MPI_CHARACTER, 0, mpicom_rof, ier)
@@ -1896,7 +1898,7 @@ contains
              TRunoff%ffunit_ini(:) = rtmCTL%inundffunit(:)
           end if
        end if
-       if (wrmflag) then 
+       if (wrmflag .and. nsrest == nsrStartup) then
            call WRM_computeRelease()
         endif
 
@@ -3121,30 +3123,32 @@ contains
    enddo ! nt
 
    ! Conservation check: verify that corrections were applied correctly
-   if (redirect_negative_qgwl_flag .and. abs(qgwl_to_redistribute) > 1.0e-15_r8) then
-       ! Sum up all the corrections that were applied
-       local_correction_sum = 0.0_r8
-       do nr = rtmCTL%begr, rtmCTL%endr
-           local_correction_sum = local_correction_sum + qgwl_correction_local(nr)
-       enddo
+   if (redirect_negative_qgwl_flag) then
+      if (abs(qgwl_to_redistribute) > 1.0e-15_r8) then
+          ! Sum up all the corrections that were applied
+          local_correction_sum = 0.0_r8
+          do nr = rtmCTL%begr, rtmCTL%endr
+              local_correction_sum = local_correction_sum + qgwl_correction_local(nr)
+          enddo
 
-       ! Use reprosum for bit-for-bit reproducibility
-       correction_local(1,1) = local_correction_sum
-       call shr_reprosum_calc(correction_local, correction_global, 1, 1, 1, commid=mpicom_rof)
-       global_correction_sum = correction_global(1)
+          ! Use reprosum for bit-for-bit reproducibility
+          correction_local(1,1) = local_correction_sum
+          call shr_reprosum_calc(correction_local, correction_global, 1, 1, 1, commid=mpicom_rof)
+          global_correction_sum = correction_global(1)
 
-       ! Check if total corrections match what we intended to redistribute
-       if (masterproc) then
-           conservation_error = abs(global_correction_sum - qgwl_to_redistribute)
-           if (conservation_error > 1.0e-10_r8) then
-               call shr_sys_flush(iulog)
-               write(iulog, '(A)') trim(subname)//' WARNING: QGWL redistribution error detected!'
-               write(iulog, '(A,ES24.16)') trim(subname)//'   Intended to redistribute = ', qgwl_to_redistribute
-               write(iulog, '(A,ES24.16)') trim(subname)//'   Actually redistributed   = ', global_correction_sum
-               write(iulog, '(A,ES24.16)') trim(subname)//'   Difference               = ', conservation_error
-               call shr_sys_flush(iulog)
-           endif
-       endif
+          ! Check if total corrections match what we intended to redistribute
+          if (masterproc) then
+              conservation_error = abs(global_correction_sum - qgwl_to_redistribute)
+              if (conservation_error > 1.0e-10_r8) then
+                  call shr_sys_flush(iulog)
+                  write(iulog, '(A)') trim(subname)//' WARNING: QGWL redistribution error detected!'
+                  write(iulog, '(A,ES24.16)') trim(subname)//'   Intended to redistribute = ', qgwl_to_redistribute
+                  write(iulog, '(A,ES24.16)') trim(subname)//'   Actually redistributed   = ', global_correction_sum
+                  write(iulog, '(A,ES24.16)') trim(subname)//'   Difference               = ', conservation_error
+                  call shr_sys_flush(iulog)
+              endif
+          endif
+      endif
    endif
 
    ! Deallocate qgwl_correction_local after use

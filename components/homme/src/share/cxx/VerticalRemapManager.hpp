@@ -13,7 +13,7 @@
 
 namespace Homme {
 
-class FunctorsBuffersManager;
+struct FunctorsBuffersManager;
 
 namespace Remap {
 template <typename ST> struct RemapperST;

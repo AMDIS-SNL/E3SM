@@ -76,10 +76,10 @@ TEST_CASE ("dirk_dp_testing")
 
   ElementsST<Real> elems_h0, elems_h, elems_ref;
   ElementsST<DpFadType> elems_dp;
-  elems_h0.init(num_elems,false,true,PhysicalConstants::rearth0,-1,true);
-  elems_h.init(num_elems,false,true,PhysicalConstants::rearth0,-1,true);
-  elems_dp.init(num_elems,false,true,PhysicalConstants::rearth0,-1,true);
-  elems_ref.init(num_elems,false,true,PhysicalConstants::rearth0,-1,true);
+  elems_h0.init(num_elems, true,PhysicalConstants::rearth0,-1,true);
+  elems_h.init(num_elems, true,PhysicalConstants::rearth0,-1,true);
+  elems_dp.init(num_elems, true,PhysicalConstants::rearth0,-1,true);
+  elems_ref.init(num_elems, true,PhysicalConstants::rearth0,-1,true);
 
   auto& geometry = elems_h0.m_geometry = elems_h.m_geometry = elems_dp.m_geometry = elems_ref.m_geometry;
   Context::singleton().create_ref(elems_h0.m_geometry);
@@ -249,8 +249,8 @@ TEST_CASE ("dirk_jv_testing") {
   // elems_dx: DxFadTypeDirk, used to compute J via init_J + run
   ElementsST<DpFadType> elems_dp;
   ElementsST<DxFadType> elems_dx;
-  elems_dp.init(num_elems, false, true, PhysicalConstants::rearth0, -1, true);
-  elems_dx.init(num_elems, false, true, PhysicalConstants::rearth0, -1, true);
+  elems_dp.init(num_elems, true, PhysicalConstants::rearth0, -1, true);
+  elems_dx.init(num_elems, true, PhysicalConstants::rearth0, -1, true);
 
   auto& geometry = elems_dp.m_geometry = elems_dx.m_geometry;
   Context::singleton().create_ref(geometry);
@@ -370,7 +370,7 @@ TEST_CASE ("dirk_jtv_testing") {
   using DirkDx = DirkFunctorImplST<DxFadType>;
 
   ElementsST<DxFadType> elems_dx;
-  elems_dx.init(num_elems, false, true, PhysicalConstants::rearth0, -1, true);
+  elems_dx.init(num_elems, true, PhysicalConstants::rearth0, -1, true);
 
   auto& geometry = elems_dx.m_geometry;
   Context::singleton().create_ref(geometry);

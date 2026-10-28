@@ -70,23 +70,23 @@ TEST_CASE("remap_dp_testing") {
 
   // Create elements geometry
   auto& geo = c.create<ElementsGeometry>();
-  geo.init(num_elems,false,true,PhysicalConstants::rearth0);
+  geo.init(num_elems, true,PhysicalConstants::rearth0);
   geo.randomize(seed);
 
   // Create elements with Real scalar type with original values since remap overwrites them
   // Can't use Context because it allows creating only one of each type
   ElementsST<Real> elems_orig;
-  elems_orig.init(num_elems,false,true,PhysicalConstants::rearth0);
+  elems_orig.init(num_elems, true,PhysicalConstants::rearth0);
   elems_orig.m_geometry = geo; // Use same views for geometry
 
   // Create elements with Real scalar type -- what is computed by remap
   auto& elems = c.create<ElementsST<Real>>();
-  elems.init(num_elems,false,true,PhysicalConstants::rearth0);
+  elems.init(num_elems, true,PhysicalConstants::rearth0);
   elems.m_geometry = geo; // Use same views for geometry
 
   // Create elements with DpFadType scalar type -- what is computed by remap with Fad type
   auto& elems_dp = c.create<ElementsST<DpFadType>>();
-  elems_dp.init(num_elems, false, true, PhysicalConstants::rearth0);
+  elems_dp.init(num_elems, true, PhysicalConstants::rearth0);
   elems_dp.m_geometry = geo; // Use same views for geometry
 
   // Create tracers
@@ -305,17 +305,17 @@ TEST_CASE("remap_jv_testing") {
 
   // Create elements geometry
   auto& geo = c.create<ElementsGeometry>();
-  geo.init(num_elems,false,true,PhysicalConstants::rearth0);
+  geo.init(num_elems, true,PhysicalConstants::rearth0);
   geo.randomize(seed);
 
   // Create elements with DpFadType scalar type
   auto& elems_dp = c.create<ElementsST<DpFadType>>();
-  elems_dp.init(num_elems,false,true,PhysicalConstants::rearth0);
+  elems_dp.init(num_elems, true,PhysicalConstants::rearth0);
   elems_dp.m_geometry = geo; // Use same views for geometry
 
   // Create elements with DxFadType scalar type
   auto& elems_dx = c.create<ElementsST<DxFadType>>();
-  elems_dx.init(num_elems,false,true,PhysicalConstants::rearth0);
+  elems_dx.init(num_elems, true,PhysicalConstants::rearth0);
   elems_dx.m_geometry = geo; // Use same views for geometry
 
   // Create tracers
@@ -532,12 +532,12 @@ TEST_CASE("remap_jtv_testing") {
 
   // Create elements geometry
   auto& geo = c.create<ElementsGeometry>();
-  geo.init(num_elems,false,true,PhysicalConstants::rearth0);
+  geo.init(num_elems, true,PhysicalConstants::rearth0);
   geo.randomize(seed);
 
   // Create elements
   ElementsST<DxFadType> elems;
-  elems.init(num_elems,false,true,PhysicalConstants::rearth0);
+  elems.init(num_elems, true,PhysicalConstants::rearth0);
   elems.m_geometry = geo; // Use same views for geometry
 
   for (const bool hydrostatic : {true, false}) {

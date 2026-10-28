@@ -6,9 +6,6 @@
 
 #include "zm_unit_tests_common.hpp"
 
-#include <ekat_pack.hpp>
-#include <ekat_team_policy_utils.hpp>
-
 namespace scream {
 namespace zm {
 namespace unit_test {
@@ -49,12 +46,7 @@ struct UnitWrap::UnitTest<D>::TestIentropy : public UnitWrap::UnitTest<D>::Base 
 
     // Get data from test
     for (auto& d : test_data) {
-      if (this->m_baseline_action == GENERATE) {
-        ientropy_f(d);
-      }
-      else {
-        ientropy(d);
-      }
+      ientropy(d);
     }
 
     // Verify BFB results, all data should be in C layout

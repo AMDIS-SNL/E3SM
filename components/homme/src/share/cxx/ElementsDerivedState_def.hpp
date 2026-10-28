@@ -38,6 +38,14 @@ void ElementsDerivedStateST<ST>::init(const int num_elems) {
   m_divdp_proj        = ExecViewManaged<PT * [NP][NP][NUM_LEV]>("derived_divdp_proj", m_num_elems);
   m_dpdiss_biharmonic = ExecViewManaged<PT * [NP][NP][NUM_LEV]>("derived_dpdiss_biharmonic", m_num_elems);
   m_dpdiss_ave        = ExecViewManaged<PT * [NP][NP][NUM_LEV]>("derived_dpdiss_ave", m_num_elems);
+
+  // allocate SGS turbulence related fields
+  m_turb_diff_mom  = ExecViewManaged<PT * [NP][NP][NUM_LEV]>("turb_diff_mom",  m_num_elems);
+  m_turb_diff_heat = ExecViewManaged<PT * [NP][NP][NUM_LEV]>("turb_diff_heat", m_num_elems);
+
+  // Initialize to zero
+  Kokkos::deep_copy(m_turb_diff_mom,  PT(0));
+  Kokkos::deep_copy(m_turb_diff_heat, PT(0));
 }
 
 template<typename ST>

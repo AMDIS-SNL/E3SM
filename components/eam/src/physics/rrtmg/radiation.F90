@@ -19,7 +19,7 @@ use spmd_utils,      only: masterproc, iam, npes
 use ppgrid,          only: pcols, pver, pverp, begchunk, endchunk
 use physics_types,   only: physics_state, physics_ptend
 use physconst,       only: cappa
-use time_manager,    only: get_nstep, is_first_restart_step
+use time_manager,    only: get_nstep, is_first_restart_step, is_first_step
 use cam_abortutils,      only: endrun
 use error_messages,  only: handle_err
 use cam_control_mod, only: lambm0, obliqr, mvelpp, eccen
@@ -643,6 +643,9 @@ end function radiation_nextsw_cday
           call addfld('FSDS'//diag(icall),  horiz_only,     'A',    'W/m2', 'Downwelling solar flux at surface', &
                       sampling_seq='rad_lwsw', flag_xyfill=.true., &
                       standard_name='surface_downwelling_shortwave_flux_in_air')
+          call addfld('FSUS'//diag(icall),  horiz_only,     'A',    'W/m2', 'Upwelling solar flux at surface', &
+                      sampling_seq='rad_lwsw', flag_xyfill=.true., &
+                      standard_name='surface_upwelling_shortwave_flux_in_air')
           call addfld('FUS'//diag(icall),  (/ 'ilev' /), 'I',     'W/m2', 'Shortwave upward flux', &
                       sampling_seq='rad_lwsw', flag_xyfill=.true.)
           call addfld('FDS'//diag(icall),  (/ 'ilev' /), 'I',     'W/m2', 'Shortwave downward flux', &
@@ -696,6 +699,9 @@ end function radiation_nextsw_cday
           call addfld('FLDS'//diag(icall), horiz_only,    'A',    'W/m2', 'Downwelling longwave flux at surface', &
                       sampling_seq='rad_lwsw', flag_xyfill=.true., &
                       standard_name='surface_downwelling_longwave_flux_in_air')
+          call addfld('FLUS'//diag(icall), horiz_only,    'A',    'W/m2', 'Upwelling longwave flux at surface', &
+                      sampling_seq='rad_lwsw', flag_xyfill=.true., &
+                      standard_name='surface_upwelling_longwave_flux_in_air')
           call addfld('FLDSC'//diag(icall), horiz_only,    'A',   'W/m2', 'Clearsky Downwelling longwave flux at surface', &
                       sampling_seq='rad_lwsw', flag_xyfill=.true.)
           call addfld('FLNS'//diag(icall), horiz_only,    'A',    'W/m2', 'Net longwave flux at surface', &
@@ -1139,6 +1145,28 @@ end function radiation_nextsw_cday
     dosw     = radiation_do('sw')      ! do shortwave heating calc this timestep?
     dolw     = radiation_do('lw')      ! do longwave heating calc this timestep?
 
+    ! In sensitivity experiments with iradsw = 0, dosw is always .false.;
+    ! consequently, the "if (dosw) then" blocks later in this subroutine are skipped.
+    ! With a debug build, arrays like qrs, fsnt, and fsns may be left
+    ! in an uninitialized state and subsequently cause floating-point exception.
+    ! Here, we initialize these arrays with zero at the first timestep to avoid trouble.
+
+    if ( (.not.dosw) .and. is_first_step() ) then
+       qrs(1:ncol,1:pver) = 0._r8
+       fsnt(1:ncol) = 0._r8
+       fsns(1:ncol) = 0._r8
+    end if
+
+    ! Similarly, initialize qrl, flnt, and flns with 0 for experiments that have iradlw = 0.
+
+    if ( (.not.dolw) .and. is_first_step() ) then
+       qrl(1:ncol,1:pver) = 0._r8
+       flnt(1:ncol) = 0._r8
+       flns(1:ncol) = 0._r8
+    end if
+
+    !-----------
+
     if (dosw .or. dolw) then
 
        ! construct an RRTMG state object
@@ -1370,6 +1398,9 @@ end function radiation_nextsw_cday
                   call outfld('FSNRTOAS'//diag(icall),fsnirtsq,pcols,lchnk)
                   call outfld('FSNT'//diag(icall),fsnt  ,pcols,lchnk)
                   call outfld('FSNS'//diag(icall),fsns  ,pcols,lchnk)
+                  ! FSUS = upwelling SW at surface = FSDS - FSNS
+                  ftem(:ncol,1) = fsds(:ncol) - fsns(:ncol)
+                  call outfld('FSUS'//diag(icall),ftem  ,pcols,lchnk)
                   call outfld('FSNTC'//diag(icall),fsntc ,pcols,lchnk)
                   call outfld('FSNSC'//diag(icall),fsnsc ,pcols,lchnk)
                   call outfld('FSDSC'//diag(icall),fsdsc ,pcols,lchnk)
@@ -1473,6 +1504,9 @@ end function radiation_nextsw_cday
                   call outfld('FLN200'//diag(icall),fln200,pcols,lchnk)
                   call outfld('FLN200C'//diag(icall),fln200c,pcols,lchnk)
                   call outfld('FLDS'//diag(icall),cam_out%flwds ,pcols,lchnk)
+                  ! FLUS = upwelling LW at surface = FLNS + FLDS
+                  ftem(:ncol,1) = flns(:ncol) + cam_out%flwds(:ncol)
+                  call outfld('FLUS'//diag(icall),ftem  ,pcols,lchnk)
 
               end if
           end do
