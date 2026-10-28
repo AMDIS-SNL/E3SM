@@ -81,23 +81,22 @@ struct ScalarTraits<Homme::SFadN<T,N>>
 
 // EKAT's Pack math functions (exp, log, sqrt,...) call Kokkos::fn on each
 // pack entry, but Kokkos only provides those for builtin arithmetic types.
-// Forward the Kokkos versions to the std overloads that Sacado provides.
+// Forward the Kokkos versions to Sacado's own overloads. Note: Sacado does not
+// provide tgamma and erf, so those are not available for Fad packs.
 namespace Kokkos {
 #define HOMMEXX_SFAD_KOKKOS_UNARY_FN(fn)                                \
   template<typename T, int N>                                          \
   KOKKOS_INLINE_FUNCTION                                               \
-  Homme::SFadN<T,N> fn (const Homme::SFadN<T,N>& x) { return std::fn(x); }
+  Homme::SFadN<T,N> fn (const Homme::SFadN<T,N>& x) { return Sacado::Fad::fn(x); }
 
 HOMMEXX_SFAD_KOKKOS_UNARY_FN(abs)
 HOMMEXX_SFAD_KOKKOS_UNARY_FN(exp)
 HOMMEXX_SFAD_KOKKOS_UNARY_FN(expm1)
 HOMMEXX_SFAD_KOKKOS_UNARY_FN(log)
 HOMMEXX_SFAD_KOKKOS_UNARY_FN(log10)
-HOMMEXX_SFAD_KOKKOS_UNARY_FN(tgamma)
 HOMMEXX_SFAD_KOKKOS_UNARY_FN(sqrt)
 HOMMEXX_SFAD_KOKKOS_UNARY_FN(cbrt)
 HOMMEXX_SFAD_KOKKOS_UNARY_FN(tanh)
-HOMMEXX_SFAD_KOKKOS_UNARY_FN(erf)
 
 #undef HOMMEXX_SFAD_KOKKOS_UNARY_FN
 } // namespace Kokkos
