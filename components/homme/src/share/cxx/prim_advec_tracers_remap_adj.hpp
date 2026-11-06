@@ -37,7 +37,8 @@ void copy_qdp_from_slot (const TracersQdpAdjView& dst,
 //         adj_vn0 = dJ/d(vn0)        (to be handed to prim_advance_adj, for the dynamics)
 //         adj_dp  = dJ/d(derived dp) (dp is a copy of dp3d(n0) at the beginning of the step)
 // (Seeds on eta_dot_dpdn/omega_p, which the Euler steps DSS but nothing here consumes, are
-// not supported. They'll be needed once a vertical_remap adjoint exists.)
+// not supported. They are not needed: the rsplit>0 vertical remap doesn't read them either;
+// see vertical_remap_adj.hpp.)
 //
 // Assumes (this is what the orchestrator of the adjoint is in charge of providing):
 //  - the Context holds the state as it is when prim_advec_tracers_remap starts in the fwd:
