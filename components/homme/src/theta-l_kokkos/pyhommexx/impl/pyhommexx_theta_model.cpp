@@ -1,6 +1,10 @@
 #include "pyhommexx.hpp"
+#include "pyhommexx_utils.hpp"
 
+#include "Context.hpp"
+#include "TimeLevel.hpp"
 #include "Types.hpp"
+#include "prim_step.hpp"
 
 #include <nanobind/ndarray.h>
 
@@ -25,6 +29,14 @@ void forward(const double dt)
 {
   int nm1, n0, np1, nstep;
   prim_run_subcycle_c(dt,nstep,nm1,n0,np1,-1,1);
+}
+
+void prim_step (const double dt, const nb::str& dtype, const bool compute_diagnostics)
+{
+  dispatch_dtype(dtype,"prim_step",[&](auto tag) {
+    using ST = typename decltype(tag)::type;
+    Homme::prim_step<ST>(dt,compute_diagnostics);
+  });
 }
 
 } // namespace pyhommexx

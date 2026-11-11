@@ -38,6 +38,24 @@ NB_MODULE (pyhommexx,m) {
         nb::arg("dtype") = "real",
         nb::arg("tl") = 1);
   m.def("get_state_var_dp_sens",&get_state_var_dp_sens);
+  m.def("get_prim_step_qdp_slots",&get_prim_step_qdp_slots,
+      "Returns (in,out): the qdp slots prim_step will read the tracers from, and write them to.\n"
+      "Only valid BEFORE calling prim_step (afterward, the TimeLevel has been updated, and these\n"
+      "are the current n0_qdp/np1_qdp).");
+  m.def("get_qdp",&get_qdp,
+      "Copies qdp, at the given slot (0 or 1), of the given scalar type into arr, of shape (nelem,qsize,np,np,nlev).",
+        nb::arg("arr"), nb::arg("dtype") = "real", nb::arg("slot"));
+  m.def("set_qdp",&set_qdp,
+      "Sets qdp, at the given slot (0 or 1), of the given scalar type from arr, of shape (nelem,qsize,np,np,nlev).\n"
+      "For 'dpfad', the derivatives are not modified (see set_qdp_dp_sens).",
+        nb::arg("arr"), nb::arg("dtype") = "real", nb::arg("slot"));
+  m.def("get_qdp_dp_sens",&get_qdp_dp_sens,
+      "Copies the derivs of the dpfad qdp, at the given slot, into arr, of shape (nelem,qsize,np,np,nlev,DP_SFAD_SIZE).",
+        nb::arg("arr"), nb::arg("slot"));
+  m.def("set_qdp_dp_sens",&set_qdp_dp_sens,
+      "Sets the derivs of the dpfad qdp, at the given slot, from arr, of shape (nelem,qsize,np,np,nlev,DP_SFAD_SIZE).\n"
+      "The values of qdp are not modified (see set_qdp).",
+        nb::arg("arr"), nb::arg("slot"));
   m.def("copy_state",&copy_state);
   m.def("init_dp3d_from_ps",&init_dp3d_from_ps);
   m.def("set_state_var",&set_state_var,
@@ -101,6 +119,14 @@ NB_MODULE (pyhommexx,m) {
       "The dtype arg specifies which instantiation of the functor to use",
         nb::arg("name"), nb::arg("params"), nb::arg("dtype") = "real");
   m.def("forward",&forward);
+  m.def("prim_step",&prim_step,
+      "Runs prim_step(dt) on the objects with the given scalar type: dt_tracer_factor dynamics steps\n"
+      "followed by one tracers step. Time levels are updated as in the drivers (no dynamics levels rotation\n"
+      "after the last dynamics step, the tracers slots flip).\n"
+      "For dtype='dpfad' (fwd sensitivities), only ttype10_imex, transport_alg=0 and no diagnostics are supported.",
+        nb::arg("dt"),
+        nb::arg("dtype") = "real",
+        nb::arg("compute_diagnostics") = false);
 
   // Dynamics advance, fwd and adjoint
   m.def("update_dynamics_levels",&update_dynamics_levels,
@@ -111,9 +137,12 @@ NB_MODULE (pyhommexx,m) {
       "and a build with HOMMEXX_ENABLE_FAD_TYPES=ON.");
   m.def("prim_advance_exp",&prim_advance_exp,
       "Advances the dynamics by dt, from time level n0 to np1. Does NOT rotate time levels.\n"
-      "If the adjoint is enabled, the fwd trajectory is taped (only the LAST call is kept).",
+      "If the adjoint is enabled, the fwd trajectory is taped (only the LAST call is kept).\n"
+      "The scalar type can be chosen via dtype; for dtype!=real, only ttype10_imex is supported,\n"
+      "and no diagnostics nor taping.",
         nb::arg("dt"),
-        nb::arg("compute_diagnostics") = false);
+        nb::arg("compute_diagnostics") = false,
+        nb::arg("dtype") = "real");
   m.def("prim_advance_adj",&prim_advance_adj,
       "Applies the adjoint of the LAST prim_advance_exp call to the adjoint state, in place.\n"
       "On entry the adjoint state holds dJ/dstate(np1); on exit, dJ/dstate(n0).",

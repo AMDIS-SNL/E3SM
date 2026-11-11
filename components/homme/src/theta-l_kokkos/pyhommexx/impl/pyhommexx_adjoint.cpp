@@ -137,10 +137,13 @@ void enable_adjoint ()
 #endif
 }
 
-void prim_advance_exp (const double dt, const bool compute_diagnostics)
+void prim_advance_exp (const double dt, const bool compute_diagnostics, const nb::str& dtype)
 {
   auto& tl = Context::singleton().get<TimeLevel>();
-  Homme::prim_advance_exp(tl,dt,compute_diagnostics);
+  dispatch_dtype(dtype,"prim_advance_exp",[&](auto tag) {
+    using ST = typename decltype(tag)::type;
+    Homme::prim_advance_exp<ST>(tl,dt,compute_diagnostics);
+  });
 }
 
 void prim_advance_adj (const double dt)

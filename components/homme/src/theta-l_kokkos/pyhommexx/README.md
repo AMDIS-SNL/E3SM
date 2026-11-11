@@ -41,3 +41,30 @@ and requires `-D HOMMEXX_ENABLE_FAD_TYPES:BOOL=ON`. Usage:
 Only the LAST `prim_advance_exp` call is taped, so call `prim_advance_adj`
 right after the fwd step it differentiates. Use `update_dynamics_levels()` to
 rotate time levels between fwd steps.
+
+## Choosing the scalar type: `dtype`
+
+Python has no templates, so functions that can run on different scalar types take a runtime
+`dtype` string (`'real'` or `'dpfad'`) and dispatch to the matching instantiation of the templated
+C++ implementation (see `dispatch_dtype` in `impl/pyhommexx_utils.hpp`). The scalar type must have
+been enabled with `pyhommexx.enable_scalar_type(dtype)` before `model_init()`. `dpfad` needs
+`-D HOMMEXX_ENABLE_FAD_TYPES:BOOL=ON`.
+
+The C++ side does not depend on what `ScalarValue` is: `prim_step<ST>`, `prim_advance_exp<ST>` and
+`prim_advec_tracers_remap<ST>` grab the `ST`-typed objects from the Context.
+For `ST!=ScalarValue` only `time_step_type=10`, Eulerian tracers transport (`transport_alg=0`),
+no diagnostics and no adjoint taping are supported.
+
+## Forward sensitivities of `prim_step`
+
+    pyhommexx.enable_scalar_type('real'); pyhommexx.enable_scalar_type('dpfad')
+    ... read_params, model_init ...
+    slot_in, slot_out = pyhommexx.get_prim_step_qdp_slots()   # BEFORE prim_step
+    pyhommexx.set_qdp(qdp0, 'real', slot_in)   # qdp: (nelem,qsize,np,np,nlev)
+
+    pyhommexx.copy_state('real','dpfad')
+    pyhommexx.perturb_state_var('u',delta,1.0,'dpfad')   # seeds d/dp of u0*(1+p*delta)
+    pyhommexx.set_qdp_dp_sens(dqdp0,slot_in)
+    pyhommexx.prim_step(dt,'dpfad')
+    pyhommexx.get_state_var_dp_sens(out,'u')   # d(u at np1)/dp
+    pyhommexx.get_qdp_dp_sens(out_q,slot_out)
