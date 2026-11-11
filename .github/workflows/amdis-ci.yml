@@ -233,6 +233,8 @@ jobs:
         uses: ./e3sm/source/.github/actions/homme-configure
         with:
           fad: true
+          # pyhommexx picks the scalar type at runtime, and is not compatible with fwd sens mode
+          fwd-sens: false
           pyhommexx: true
       - name: pyhommexx-build
         run: |
