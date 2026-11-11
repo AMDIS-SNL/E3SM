@@ -91,8 +91,8 @@ void PrimStepCheckpoint::take ()
 {
   auto& c = Context::singleton();
   const auto& params = c.get<SimulationParams>();
-  auto& elements = c.get<Elements>();
-  auto& tracers  = c.get<Tracers>();
+  auto& elements = c.get<ElementsST<Real>>();
+  auto& tracers  = c.get<TracersST<Real>>();
 
   tl = c.get<TimeLevel>();
   const int qdp_slot = prim_step_final_time_level(tl,params.dt_tracer_factor).n0_qdp;
@@ -106,8 +106,8 @@ void PrimStepCheckpoint::restore () const
 {
   auto& c = Context::singleton();
   const auto& params = c.get<SimulationParams>();
-  auto& elements = c.get<Elements>();
-  auto& tracers  = c.get<Tracers>();
+  auto& elements = c.get<ElementsST<Real>>();
+  auto& tracers  = c.get<TracersST<Real>>();
 
   c.get<TimeLevel>() = tl;
   const int qdp_slot = prim_step_final_time_level(tl,params.dt_tracer_factor).n0_qdp;
@@ -125,11 +125,9 @@ void prim_step_adj (const Real dt,
 
   auto& c = Context::singleton();
   auto& params   = c.get<SimulationParams>();
-  auto& elements = c.get<Elements>();
+  auto& elements = c.get<ElementsST<Real>>();
   auto& tl       = c.get<TimeLevel>();
 
-  EKAT_REQUIRE_MSG ((std::is_same_v<ScalarValue,Real>),
-      "[prim_step_adj] Error! The fwd trajectory must be recomputed with Real scalar type.\n");
   EKAT_REQUIRE_MSG (params.time_step_type==TimeStepType::ttype10_imex,
       "[prim_step_adj] Error! Only ttype10_imex has an adjoint.\n");
   EKAT_REQUIRE_MSG (params.transport_alg==0,
@@ -175,7 +173,7 @@ void prim_step_adj (const Real dt,
     y_calls.emplace_back(nelem);
     elements.m_state.take_snapshot(y_calls.back(),tl.n0,false);
 
-    prim_advance_exp(tl,dt,false);
+    prim_advance_exp<Real>(tl,dt,false);
   }
 
   // ===================== 2. Adjoint of the tracers step ===================== //
@@ -185,7 +183,7 @@ void prim_step_adj (const Real dt,
   GPTLstart("prim_step_adj-tracers");
   TracersVn0AdjView adj_vn0("adj_vn0",nelem);
   TracersDpAdjView  adj_dp("adj_dp",nelem);
-  prim_advec_tracers_remap_adj(c.get<EulerStepFunctor>(),dt*K,adj_qdp,adj_vn0,adj_dp);
+  prim_advec_tracers_remap_adj(c.get<EulerStepFunctorST<Real>>(),dt*K,adj_qdp,adj_vn0,adj_dp);
   GPTLstop("prim_step_adj-tracers");
 
   // ===================== 3. Adjoint of the dynamics ===================== //
@@ -200,7 +198,7 @@ void prim_step_adj (const Real dt,
     // Replay the n-th call to prim_advance_exp, to regenerate its tape...
     tl = tl_calls[n];
     elements.m_state.import_snapshot(y_calls[n],tl.n0,false);
-    prim_advance_exp(tl,dt,false);
+    prim_advance_exp<Real>(tl,dt,false);
 
     // ...and then run its adjoint.
     prim_advance_adj(dt,adj_state,&adj_vn0);

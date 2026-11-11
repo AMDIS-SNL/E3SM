@@ -53,7 +53,8 @@ TimeLevel prim_step_final_time_level (const TimeLevel& tl_start,
 using PrimStepQdpView = TracersQdpAdjView;
 
 // Everything needed to replay a prim_step from its beginning, for the objects
-// in Context (Elements, Tracers, TimeLevel; theta-l, ScalarValue=Real only).
+// in Context (ElementsST<Real>, TracersST<Real>, TimeLevel; theta-l). Like the rest of
+// the adjoint, it works on the Real-typed objects, whatever ScalarValue is.
 struct PrimStepCheckpoint {
   PrimStepCheckpoint (const int num_elems, const int qsize);
 
@@ -73,7 +74,7 @@ struct PrimStepCheckpoint {
 // state at its beginning. See the top-of-file comment for what adj_state and
 // adj_qdp hold on entry and exit.
 //
-// Assumes (checked): ScalarValue=Real, params.time_step_type==ttype10_imex (the
+// Assumes (checked): params.time_step_type==ttype10_imex (the
 // only time stepping scheme with an adjoint), transport_alg==0, limiter_option==9,
 // nu_p==0, hypervis_scaling==0 (the Euler-step adjoint's restrictions), single MPI
 // rank. The Context must hold everything needed both by the fwd code (Elements,

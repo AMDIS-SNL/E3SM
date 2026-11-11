@@ -53,8 +53,8 @@ void prim_advance_exp (TimeLevel& tl, const Real dt, const bool compute_diagnost
         "[prim_advance_exp] Error! Diagnostics are not supported for a scalar type other than ScalarValue.\n");
     EKAT_REQUIRE_MSG (not params.prescribed_wind,
         "[prim_advance_exp] Error! 'prescribed_wind' is not supported for a scalar type other than ScalarValue.\n");
-    EKAT_REQUIRE_MSG (not params.store_fwd_state,
-        "[prim_advance_exp] Error! Storing the fwd state (for the adjoint) is not supported for a scalar type other than ScalarValue.\n");
+    EKAT_REQUIRE_MSG (not params.store_fwd_state or (std::is_same_v<ST,Real>),
+        "[prim_advance_exp] Error! Storing the fwd state (for the adjoint) is only supported for the Real and ScalarValue scalar types.\n");
   }
 
   // Determine the tracers time level
