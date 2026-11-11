@@ -6,6 +6,8 @@
 
 #include "prim_advance_exp.hpp"
 
+#include <type_traits>
+
 #include "CaarFunctor.hpp"
 #include "Context.hpp"
 #include "Elements.hpp"
@@ -24,8 +26,13 @@ void u3_5stage_timestep(const TimeLevel& tl, const Real dt, const Real eta_ave_w
 
 // -------------- IMPLEMENTATIONS -------------- //
 
+template<typename ST>
 void prim_advance_exp (TimeLevel& tl, const Real dt, const bool compute_diagnostics)
 {
+  // The functors below are the ScalarValue ones (ST is only here to match the theta-l model)
+  EKAT_REQUIRE_MSG ((std::is_same_v<ST,ScalarValue>),
+      "[prim_advance_exp] Error! Scalar types other than ScalarValue are not supported in the preqx model.\n");
+
   GPTLstart("tl-ae prim_advance_exp");
   // Get simulation params
   SimulationParams& params = Context::singleton().get<SimulationParams>();
@@ -136,5 +143,10 @@ void u3_5stage_timestep(const TimeLevel& tl, const Real dt, const Real eta_ave_w
   functor.run(RKStageData(tl.nm1,tl.np1,tl.np1,tl.n0_qdp,3.0*dt/4.0,3.0*eta_ave_w/4.0));
   GPTLstop("tl-ae U3-5stage_timestep");
 }
+
+template void prim_advance_exp<Real> (TimeLevel&, const Real, const bool);
+#ifdef HOMMEXX_ENABLE_FAD_TYPES
+template void prim_advance_exp<DpFadType> (TimeLevel&, const Real, const bool);
+#endif
 
 } // namespace Homme

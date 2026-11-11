@@ -14,7 +14,17 @@
 namespace Homme
 {
 
-// Advance the dynamics by one time step dt (defined in prim_advance_exp.cpp)
+// Advance the dynamics by one time step dt (defined in prim_advance_exp.cpp).
+//
+// The templated version works on the Elements/functors of scalar type ST, fetched from
+// the Context (so it does not depend on what ScalarValue is). It is explicitly
+// instantiated for Real and, if HOMMEXX_ENABLE_FAD_TYPES is on, for DpFadType.
+// For ST!=ScalarValue, only ttype10_imex is supported, and diagnostics, prescribed
+// winds and fwd state storage (params.store_fwd_state) must be off: all of those
+// are tied to the ScalarValue/Real-typed objects.
+//
+// The default is ScalarValue, which is what the f90/EAMxx drivers use.
+template<typename ST = ScalarValue>
 void prim_advance_exp (TimeLevel& tl, const Real dt, const bool compute_diagnostics);
 
 template<typename ST = ScalarValue>

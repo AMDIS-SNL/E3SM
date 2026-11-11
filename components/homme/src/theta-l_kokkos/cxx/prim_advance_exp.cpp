@@ -16,6 +16,8 @@
 #include "TimeLevel.hpp"
 #include "prim_advance_exp.hpp"
 
+#include <type_traits>
+
 namespace Homme
 {
 
@@ -29,6 +31,7 @@ extern "C" void set_prescribed_wind_f_bridge(int n0, int np1, int nstep, Real dt
 
 // -------------- IMPLEMENTATIONS -------------- //
 
+template<typename ST>
 void prim_advance_exp (TimeLevel& tl, const Real dt, const bool compute_diagnostics)
 {
   GPTLstart("tl-ae prim_advance_exp");
@@ -42,6 +45,18 @@ void prim_advance_exp (TimeLevel& tl, const Real dt, const bool compute_diagnost
   // Get simulation params
   SimulationParams& params = context.get<SimulationParams>();
 
+  if constexpr (not std::is_same_v<ST,ScalarValue>) {
+    // Whatever is tied to the ScalarValue-typed objects is not available
+    EKAT_REQUIRE_MSG (params.time_step_type==TimeStepType::ttype10_imex,
+        "[prim_advance_exp] Error! Only time_step_type=10 (ttype10_imex) is supported for a scalar type other than ScalarValue.\n");
+    EKAT_REQUIRE_MSG (not compute_diagnostics,
+        "[prim_advance_exp] Error! Diagnostics are not supported for a scalar type other than ScalarValue.\n");
+    EKAT_REQUIRE_MSG (not params.prescribed_wind,
+        "[prim_advance_exp] Error! 'prescribed_wind' is not supported for a scalar type other than ScalarValue.\n");
+    EKAT_REQUIRE_MSG (not params.store_fwd_state,
+        "[prim_advance_exp] Error! Storing the fwd state (for the adjoint) is not supported for a scalar type other than ScalarValue.\n");
+  }
+
   // Determine the tracers time level
   tl.update_tracers_levels(params.dt_tracer_factor);
 
@@ -50,7 +65,7 @@ void prim_advance_exp (TimeLevel& tl, const Real dt, const bool compute_diagnost
 
   // From f90 code: "this should not be needed, but in case physics update u without updating w b.c."
   if (!params.theta_hydrostatic_mode) {
-    auto e = context.get<Elements>();
+    auto e = context.get<ElementsST<ST>>();
     auto w_i = e.m_state.m_w_i;
     auto v = e.m_state.m_v;
     auto gradphis = e.m_geometry.m_gradphis;
@@ -91,7 +106,7 @@ void prim_advance_exp (TimeLevel& tl, const Real dt, const bool compute_diagnost
       ttype9_imex_timestep  (tl, dt, eta_ave_w);
       break;
     case TimeStepType::ttype10_imex:
-      ttype10_imex_timestep (tl.nm1,tl.n0,tl.np1, dt, eta_ave_w);
+      ttype10_imex_timestep<ST> (tl.nm1,tl.n0,tl.np1, dt, eta_ave_w);
       break;
     default:
       {
@@ -110,7 +125,7 @@ void prim_advance_exp (TimeLevel& tl, const Real dt, const bool compute_diagnost
 
   //// case nu=0 but nu_top>0?
   if (params.hypervis_order==2 && params.nu>0) {
-    HyperviscosityFunctor& functor = context.get<HyperviscosityFunctor>();
+    auto& functor = context.get<HyperviscosityFunctorST<ST>>();
     GPTLstart("tl-ae advance_hypervis_dp");
     functor.run(tl.np1,dt,eta_ave_w);
     GPTLstop("tl-ae advance_hypervis_dp");
@@ -124,7 +139,7 @@ void prim_advance_exp (TimeLevel& tl, const Real dt, const bool compute_diagnost
     using tape_t = Tape<StateSnapshot>;
     auto& tape = std::any_cast<tape_t&>(context.any_map().at("imex_tape"));
     tape.shift_fwd();
-    context.get<Elements>().m_state.take_snapshot(tape.curr(),tl.np1,false);
+    context.get<ElementsST<ST>>().m_state.take_snapshot(tape.curr(),tl.np1,false);
   }
 
   if (params.dcmip16_mu>0) {
@@ -138,6 +153,13 @@ void prim_advance_exp (TimeLevel& tl, const Real dt, const bool compute_diagnost
 
   GPTLstop("tl-ae prim_advance_exp");
 }
+
+// ETI for the commonly used scalar types
+template void prim_advance_exp<Real> (TimeLevel&, const Real, const bool);
+#ifdef HOMMEXX_ENABLE_FAD_TYPES
+template void prim_advance_exp<DpFadType> (TimeLevel&, const Real, const bool);
+#endif
+
 
 // Implementations of timestep schemes, in terms of CaarFunctor runs
 void ttype5_timestep(const TimeLevel& tl, const Real dt, const Real eta_ave_w)
