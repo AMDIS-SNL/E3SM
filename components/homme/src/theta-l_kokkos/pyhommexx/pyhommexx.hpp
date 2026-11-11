@@ -36,6 +36,19 @@ void set_state_var_value (const double value, const nb::str& name, const nb::str
 void init_dp3d_from_ps ();
 void copy_state (const nb::str& from_dtype, const nb::str& to_dtype);
 
+// Tracers (qdp). The array shape is (nelem,qsize,np,np,nlev) (with an extra trailing
+// dimension of size DP_SFAD_SIZE for the *_dp_sens versions). Unlike the dynamics state,
+// qdp has no time level that moves with n0/np1: it is made of two slots that flip at each tracers
+// step, and the caller must say which one it wants. prim_step reads the tracers from the first slot
+// given by get_prim_step_qdp_slots() and writes them to the second, but the answer
+// is only valid *before* calling prim_step (after it, the TimeLevel is already updated,
+// and the slots are the usual n0_qdp/np1_qdp).
+nb::tuple get_prim_step_qdp_slots ();
+void get_qdp (nb::ndarray<double>& arr, const nb::str& dtype, const int slot);
+void set_qdp (const nb::ndarray<double>& arr, const nb::str& dtype, const int slot);
+void get_qdp_dp_sens (nb::ndarray<double>& arr, const int slot);
+void set_qdp_dp_sens (const nb::ndarray<double>& arr, const int slot);
+
 // Perturbs state array as arr *= (1+C(lat,lon)*eps), where eps~N(0,1),
 // and C(lat,lon) = p_max*exp(-d/2*sigma^2), where d is the distance
 // of the 2d point (lat,lon) from (lat0,lon0).
@@ -61,12 +74,18 @@ void run_functor(const nb::str& name,const nb::dict& params,const nb::str& dtype
 void model_init ();
 void forward(const double dt);
 
+// One call to prim_step (dt_tracer_factor dynamics steps, followed by a tracers step), on the
+// objects of the given scalar type. The time levels of the TimeLevel in the Context are updated
+// as in the f90/C++ drivers (see get_prim_step_qdp_slots for the tracers' ones).
+// For dtype!=real: only ttype10_imex, Eulerian transport, no diagnostics, no adjoint taping.
+void prim_step (const double dt, const nb::str& dtype, const bool compute_diagnostics);
+
 // Dynamics advance (fwd/adj). Only ttype10_imex (time_step_type=10) has an adjoint.
 // Neither routine rotates time levels: prim_advance_exp reads n0 (and nm1 as scratch)
 // and writes np1. Call update_dynamics_levels() to move to the next step.
 void update_dynamics_levels ();
 void enable_adjoint ();
-void prim_advance_exp (const double dt, const bool compute_diagnostics = false);
+void prim_advance_exp (const double dt, const bool compute_diagnostics, const nb::str& dtype);
 void prim_advance_adj (const double dt);
 
 // Adjoint state utils. Recognized names: u, v, uv, vtheta_dp, dp, w, phi

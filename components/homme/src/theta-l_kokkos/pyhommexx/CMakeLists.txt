@@ -50,6 +50,7 @@ nanobind_add_module(pyhommexx
   impl/pyhommexx_params.cpp
   impl/pyhommexx_session.cpp
   impl/pyhommexx_state.cpp
+  impl/pyhommexx_tracers.cpp
   impl/pyhommexx_theta_model.cpp
 )
 
