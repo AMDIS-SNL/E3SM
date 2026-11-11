@@ -152,6 +152,21 @@ NB_MODULE (pyhommexx,m) {
       "Copies a field of the adjoint state into arr (same names/shapes as get_state_var).\n"
       "Valid names: u, v, uv, vtheta_dp, dp, w, phi",
         nb::arg("arr"), nb::arg("name"));
+  m.def("prim_step_checkpoint_take",&prim_step_checkpoint_take,
+      "Captures (Real-typed) dynamics state, qdp and time levels, as the start of the prim_step to be differentiated.\n"
+      "Call it right BEFORE the (Real) prim_step that prim_step_adj will differentiate.");
+  m.def("prim_step_adj",&prim_step_adj,
+      "Applies the adjoint of one prim_step(dt), from the last checkpoint, to the adjoint state and adjoint qdp, in place.\n"
+      "On entry they hold dJ/d(state after prim_step), on exit dJ/d(state before prim_step).\n"
+      "The live Real state and time levels are restored to the beginning of the prim_step.",
+        nb::arg("dt"));
+  m.def("zero_adj_qdp",&zero_adj_qdp);
+  m.def("get_adj_qdp",&get_adj_qdp,
+      "Copies the adjoint qdp into arr, of shape (nelem,qsize,np,np,nlev).",
+        nb::arg("arr"));
+  m.def("set_adj_qdp",&set_adj_qdp,
+      "Sets the adjoint qdp from arr, of shape (nelem,qsize,np,np,nlev).",
+        nb::arg("arr"));
   m.def("set_adj_state_var",&set_adj_state_var,
       "Sets a field of the adjoint state from arr (same names/shapes as set_state_var).",
         nb::arg("arr"), nb::arg("name"));

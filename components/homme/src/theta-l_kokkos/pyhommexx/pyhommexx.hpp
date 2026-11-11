@@ -93,6 +93,21 @@ void zero_adj_state ();
 void get_adj_state_var (nb::ndarray<double>& arr, const nb::str& name);
 void set_adj_state_var (nb::ndarray<double>& arr, const nb::str& name);
 
+// Adjoint of prim_step (Eulerian tracers). Requires enable_adjoint() (with qsize>0, transport_alg=0)
+// and a build with HOMMEXX_ENABLE_FAD_TYPES=ON.
+//  - prim_step_checkpoint_take() must be called right BEFORE the prim_step to differentiate
+//    (it captures dynamics state, qdp and time levels, all Real-typed).
+//  - the adjoint state (see above) and the adjoint qdp hold dJ/d(state after prim_step) on entry
+//    and dJ/d(state before prim_step) on exit, in place.
+//  - prim_step_adj recomputes the fwd run from the checkpoint, and puts the live (Real) state
+//    and time levels back at the beginning of the prim_step when it's done.
+// The adjoint qdp has shape (nelem,qsize,np,np,nlev)
+void prim_step_checkpoint_take ();
+void prim_step_adj (const double dt);
+void zero_adj_qdp ();
+void get_adj_qdp (nb::ndarray<double>& arr);
+void set_adj_qdp (const nb::ndarray<double>& arr);
+
 } // namespace pyhommexx
 
 #endif // PYHOMMEXX_HPP
