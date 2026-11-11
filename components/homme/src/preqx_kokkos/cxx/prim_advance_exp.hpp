@@ -13,7 +13,11 @@
 namespace Homme
 {
 
-// Advance the dynamics by one time step dt (defined in prim_advance_exp.cpp)
+// Advance the dynamics by one time step dt (defined in prim_advance_exp.cpp).
+// Templated on the scalar type, to match the theta-l model (so that code shared among
+// models, like prim_step, can call prim_advance_exp<ST>). Only ST=ScalarValue is available
+// (checked at runtime, so that the shared code can be instantiated for other types too).
+template<typename ST = ScalarValue>
 void prim_advance_exp (TimeLevel& tl, const Real dt, const bool compute_diagnostics);
 
 } // namespace Homme

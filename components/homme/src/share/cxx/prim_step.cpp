@@ -19,6 +19,7 @@
 namespace Homme
 {
 
+template<typename ST>
 void prim_step (const Real dt, const bool compute_diagnostics)
 {
   GPTLstart("tl-s prim_step");
@@ -27,22 +28,22 @@ void prim_step (const Real dt, const bool compute_diagnostics)
   assert(params.params_set);
 
   // Get the elements structure
-  Elements& elements = Context::singleton().get<Elements>();
+  auto& elements = Context::singleton().get<ElementsST<ST>>();
 
   // Get the time level info
   TimeLevel& tl = Context::singleton().get<TimeLevel>();
 
-  set_tracer_transport_derived_values(params, elements, tl);
+  set_tracer_transport_derived_values<ST>(params, elements, tl);
 
   // ===============
   // Dynamical Step
   // ===============
   GPTLstart("tl-s prim_advance_exp-loop");
-  prim_advance_exp(tl,dt,compute_diagnostics);
+  prim_advance_exp<ST>(tl,dt,compute_diagnostics);
   tl.tevolve += dt;
   for (int n=1; n<params.dt_tracer_factor; ++n) {
     tl.update_dynamics_levels(UpdateType::LEAPFROG);
-    prim_advance_exp(tl,dt,false);
+    prim_advance_exp<ST>(tl,dt,false);
     tl.tevolve += dt;
   }
   GPTLstop("tl-s prim_advance_exp-loop");
@@ -62,7 +63,7 @@ void prim_step (const Real dt, const bool compute_diagnostics)
   // Currently advecting all species
   GPTLstart("tl-s prim_advec_tracers_remap");
   if (params.qsize>0) {
-    prim_advec_tracers_remap(dt*params.dt_tracer_factor);
+    prim_advec_tracers_remap<ST>(dt*params.dt_tracer_factor);
   }
   GPTLstop("tl-s prim_advec_tracers_remap");
   GPTLstop("tl-s prim_step");
@@ -166,5 +167,11 @@ void prim_step_flexible (const Real dt, const bool compute_diagnostics) {
   EKAT_ERROR_MSG("prim_step_flexible not supported in non-theta-l builds.");
 #endif
 }
+
+// ETI for the commonly used scalar types
+template void prim_step<Real> (const Real, const bool);
+#ifdef HOMMEXX_ENABLE_FAD_TYPES
+template void prim_step<DpFadType> (const Real, const bool);
+#endif
 
 } // namespace Homme

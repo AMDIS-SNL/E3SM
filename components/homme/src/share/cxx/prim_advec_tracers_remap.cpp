@@ -11,10 +11,13 @@
 #include "TimeLevel.hpp"
 #include "profiling.hpp"
 
+#include <type_traits>
+
 namespace Homme
 {
 
 static void prim_advec_tracers_observe_velocity_compose (const int step);
+template<typename ST>
 static void prim_advec_tracers_remap_RK2 (const Real dt);
 static void prim_advec_tracers_remap_compose (const Real dt);
 
@@ -37,16 +40,20 @@ static void prim_advec_tracers_observe_velocity_compose (const int step) {
 #endif  
 }
 
+template<typename ST>
 void prim_advec_tracers_remap (const Real dt) {
   SimulationParams& params = Context::singleton().get<SimulationParams>();
 
   if (params.transport_alg > 0) {
+    EKAT_REQUIRE_MSG ((std::is_same_v<ST,ScalarValue>),
+        "[prim_advec_tracers_remap] Error! transport_alg>0 is only supported for ST=ScalarValue.\n");
     prim_advec_tracers_remap_compose(dt);
   } else {
-    prim_advec_tracers_remap_RK2(dt);
+    prim_advec_tracers_remap_RK2<ST>(dt);
   }
 }
 
+template<typename ST>
 static void prim_advec_tracers_remap_RK2 (const Real dt)
 {
   GPTLstart("tl-at prim_advec_tracers_remap_RK2");
@@ -59,7 +66,7 @@ static void prim_advec_tracers_remap_RK2 (const Real dt)
   tl.update_tracers_levels(params.dt_tracer_factor);
 
   // Get the ESF
-  EulerStepFunctor& esf = Context::singleton().get<EulerStepFunctor>();
+  auto& esf = Context::singleton().get<EulerStepFunctorST<ST>>();
   esf.reset(params);
 
   // Precompute divdp
@@ -99,7 +106,7 @@ static void prim_advec_tracers_remap_RK2 (const Real dt)
   Kokkos::fence();
   GPTLstop("tl-at qdp_time_avg");
 
-  if ( ! EulerStepFunctor::is_quasi_monotone(params.limiter_option)) {
+  if ( ! EulerStepFunctorST<ST>::is_quasi_monotone(params.limiter_option)) {
     Errors::option_error("prim_advec_tracers_remap_RK2","limiter_option",
                           params.limiter_option);
     // call advance_hypervis_scalar(edgeadv,elem,hvcoord,hybrid,deriv,tl%np1,np1_qdp,nets,nete,dt)
@@ -122,5 +129,11 @@ static void prim_advec_tracers_remap_compose (const Real dt) {
                         "transport_alg > 0 not supported in this build.");
 #endif
 }
+
+// ETI for the commonly used scalar types
+template void prim_advec_tracers_remap<Real> (const Real);
+#ifdef HOMMEXX_ENABLE_FAD_TYPES
+template void prim_advec_tracers_remap<DpFadType> (const Real);
+#endif
 
 } // namespace Homme

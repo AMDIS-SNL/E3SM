@@ -17,10 +17,22 @@ namespace Homme
 
 // Defined elsewhere (prim_advec_tracers_remap.cpp, vertical_remap.cpp)
 void prim_advec_tracers_observe_velocity (const int step);
-void prim_advec_tracers_remap (const Real dt);
 void vertical_remap (const Real dt);
 
-// Defined in prim_step.cpp
+// The tracers step. It works on the objects of scalar type ST that live in the Context
+// (explicitly instantiated for Real, and DpFadType if Fad types are enabled), regardless
+// of what ScalarValue is. The default is ScalarValue, which is what the drivers use.
+// Only Eulerian transport is available for ST!=ScalarValue.
+template<typename ST = ScalarValue>
+void prim_advec_tracers_remap (const Real dt);
+
+// Defined in prim_step.cpp.
+// It works on the objects of scalar type ST that live in the Context, regardless of what
+// ScalarValue is (explicitly instantiated for Real, and DpFadType if Fad types are enabled).
+// The default is ScalarValue, which is what the drivers use.
+// The restrictions on ST!=ScalarValue are those of prim_advance_exp<ST>
+// (see prim_advance_exp.hpp) and prim_advec_tracers_remap<ST>.
+template<typename ST = ScalarValue>
 void prim_step (const Real dt, const bool compute_diagnostics);
 void prim_step_flexible (const Real dt, const bool compute_diagnostics);
 

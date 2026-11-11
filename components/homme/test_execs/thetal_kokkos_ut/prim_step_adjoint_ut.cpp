@@ -64,8 +64,8 @@ double dot_state (const StateSnapshot& x, const StateSnapshot& y) {
 // via the same dot-product pattern used for prim_advance_adj in
 // prim_advance_sacado_ut.cpp and euler_step_adj in euler_step_adjoint_ut.cpp:
 //   <J*du0, lambdaN> == <du0, J^T*lambdaN>
-// The tangent J*du0 is obtained by running a Fad-typed (DpFadType) replica of
-// prim_step with a random tangent du0 on the initial (dynamics state, qdp).
+// The tangent J*du0 is obtained by running prim_step<DpFadType> (the production code,
+// instantiated on a Fad scalar type) with a random tangent du0 on the initial (dynamics state, qdp).
 // The adjoint J^T*lambdaN is computed by prim_step_adj, which recomputes the
 // forward trajectory on the Context's Real-typed objects (i.e., the ones an
 // actual run would use), from a PrimStepCheckpoint of the state at the start.
@@ -272,7 +272,7 @@ TEST_CASE("prim_step_adjoint")
   euler_r.init_buffers(fbm_euler_r);
   euler_r.init_boundary_exchanges();
 
-  EulerStepFunctorST<DpFadType> euler_dp(num_elems);
+  auto& euler_dp = c.create<EulerStepFunctorST<DpFadType>>(num_elems);
   euler_dp.setup();
   euler_dp.reset(params);
   FunctorsBuffersManager fbm_euler_dp;
@@ -298,7 +298,6 @@ TEST_CASE("prim_step_adjoint")
   // Scalar params
   const Real dt = 2;
   const int K = params.dt_tracer_factor;
-  const Real eta_ave_w = 1.0/K;
 
   // ===================== Initial condition ===================== //
   // Dynamics state...
@@ -318,7 +317,8 @@ TEST_CASE("prim_step_adjoint")
   ckpt.take();
 
   // ===================== Fwd sweep (DpFadType) ===================== //
-  // Same as prim_step (see prim_step.cpp), but on Fad types.
+  // The production prim_step, instantiated on the Fad scalar type (it picks the DpFadType
+  // objects from the Context, and updates the TimeLevel in the Context).
   // Random tangent du0 on the initial dynamics state and qdp
   elems_dp.m_state.randomize_derivs(seed,tl.n0);
   auto du0 = elems_dp.m_state.take_deriv_snapshot(tl.n0,0);
@@ -328,60 +328,21 @@ TEST_CASE("prim_step_adjoint")
   ut::set_val(tracers_dp.qdp, tracers_r.qdp);
   ut::set_deriv0(tracers_dp.qdp, dqdp);
 
-  TimeLevel tl_dp = tl;
-  printf(" -> Run forward problem (prim_step replica)...\n");
-  set_tracer_transport_derived_values<DpFadType>(params,elems_dp,tl_dp);
-  for (int n=0; n<K; ++n) {
-    if (n>0) {
-      tl_dp.update_dynamics_levels(UpdateType::LEAPFROG);
-    }
+  printf(" -> Run forward problem (prim_step<DpFadType>)...\n");
+  prim_step<DpFadType>(dt,false);
 
-    // Mirror the w_i(n0) surface fix at the top of prim_advance_exp (see
-    // prim_advance_sacado_ut.cpp for why, and what it does here)
-    {
-      const int n0 = tl_dp.n0;
-      auto w_i = elems_dp.m_state.m_w_i;
-      auto v   = elems_dp.m_state.m_v;
-      auto gradphis = geo.m_gradphis;
-      constexpr auto LAST_LEV_P = ColInfo<NUM_INTERFACE_LEV>::LastPack;
-      constexpr auto LAST_LEV   = ColInfo<NUM_PHYSICAL_LEV>::LastPack;
-      constexpr auto LAST_INTERFACE_VEC_IDX = ColInfo<NUM_INTERFACE_LEV>::LastPackEnd;
-      constexpr auto LAST_MIDPOINT_VEC_IDX  = ColInfo<NUM_PHYSICAL_LEV>::LastPackEnd;
-      Kokkos::parallel_for(Kokkos::RangePolicy<ExecSpace>(0,NP*NP*num_elems),
-                           KOKKOS_LAMBDA(const int idx) {
-        const int ie  = idx / (NP*NP);
-        const int igp = (idx / NP) % NP;
-        const int jgp = idx % NP;
-        w_i(ie,n0,igp,jgp,LAST_LEV_P)[LAST_INTERFACE_VEC_IDX] =
-                        (v(ie,n0,0,igp,jgp,LAST_LEV)[LAST_MIDPOINT_VEC_IDX]*gradphis(ie,0,igp,jgp) +
-                         v(ie,n0,1,igp,jgp,LAST_LEV)[LAST_MIDPOINT_VEC_IDX]*gradphis(ie,1,igp,jgp))/PhysicalConstants::g;
-      });
-      Kokkos::fence();
-    }
-
-    ttype10_imex_timestep<DpFadType>(tl_dp.nm1,tl_dp.n0,tl_dp.np1,dt,eta_ave_w);
-    hv_dp.run(tl_dp.np1,dt,eta_ave_w);
-  }
-  // The tangent of the dynamics state at the end of the prim_step
-  auto duN = elems_dp.m_state.take_deriv_snapshot(tl_dp.np1,0);
-
-  // Tracers step (see prim_advec_tracers_remap_RK2 in prim_advec_tracers_remap.cpp)
-  tl_dp.update_tracers_levels(K);
+  // The time levels at the end of prim_step. (prim_step_adj puts the TimeLevel back
+  // to the checkpoint's, so it's fine to have prim_step modify the one in the Context.)
+  const TimeLevel tl_dp = tl;
+  REQUIRE (tl_dp.n0_qdp==qdp_slot); // consistency with the time levels used by the checkpoint
   const int n0_qdp  = tl_dp.n0_qdp;
   const int np1_qdp = tl_dp.np1_qdp;
-  REQUIRE (n0_qdp==qdp_slot); // consistency with the time levels used by the checkpoint
-  {
-    const Real dt_q = dt*K;
-    euler_dp.reset(params);
-    euler_dp.precompute_divdp();
-    euler_dp.euler_step(np1_qdp,n0_qdp, dt_q/2.0,0.0,DSSOption::DIV_VDP_AVE);
-    euler_dp.euler_step(np1_qdp,np1_qdp,dt_q/2.0,1.0,DSSOption::ETA);
-    euler_dp.euler_step(np1_qdp,np1_qdp,dt_q/2.0,2.0,DSSOption::OMEGA);
-    euler_dp.qdp_time_avg(n0_qdp,np1_qdp);
-  }
+
+  // The tangent of the dynamics state at the end of the prim_step
+  auto duN = elems_dp.m_state.take_deriv_snapshot(tl_dp.np1,0);
   auto duN_qdp = Kokkos::create_mirror(tracers_r.qdp);
   ut::get_deriv0(duN_qdp, tracers_dp.qdp);
-  printf(" -> Run forward problem (prim_step replica)...done!\n");
+  printf(" -> Run forward problem (prim_step<DpFadType>)...done!\n");
 
   // ===================== Adjoint ===================== //
   // Looser than the 1e4*eps of the single-functor adjoint tests: here the composite has
