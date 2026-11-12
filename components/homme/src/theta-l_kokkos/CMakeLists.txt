@@ -193,6 +193,8 @@ MACRO(THETAL_KOKKOS_SETUP)
   if (HOMMEXX_ENABLE_FAD_TYPES)
     list(APPEND THETAL_DEPS_CXX
       ${TARGET_DIR}/cxx/prim_advance_adj.cpp
+      ${SRC_SHARE_DIR}/cxx/prim_advec_tracers_remap_adj.cpp
+      ${TARGET_DIR}/cxx/prim_step_adj.cpp
     )
   endif()
 
@@ -275,5 +277,13 @@ ENDMACRO(THETAL_KOKKOS_SETUP)
 # Check if we need to build the pyhommexx library
 option(HOMME_BUILD_PYHOMMEXX "Whether to build a version of the theta-l_kokkos library" OFF)
 if(HOMME_BUILD_PYHOMMEXX)
+  # pyhommexx picks the scalar type at runtime (the 'dtype' arg of the functions), so it needs
+  # ScalarValue=Real and the Fad objects created on demand (HOMMEXX_ENABLE_FAD_TYPES=ON).
+  # Forward sensitivity mode aliases ScalarValue to a Fad type, which is not what we want here.
+  if (HOMMEXX_ENABLE_FWD_SENS)
+    message (FATAL_ERROR
+      "HOMME_BUILD_PYHOMMEXX=ON is not compatible with HOMMEXX_ENABLE_FWD_SENS=ON.\n"
+      "pyhommexx selects the scalar type at runtime: use HOMMEXX_ENABLE_FAD_TYPES=ON instead.")
+  endif()
   add_subdirectory (pyhommexx)
 endif()

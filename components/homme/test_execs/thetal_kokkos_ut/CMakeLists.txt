@@ -352,14 +352,9 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
   # Test the adjoint of the whole tracers step of prim_step (precompute_divdp, 3 euler_steps,
   # qdp_time_avg), via prim_advec_tracers_remap_adj. Only the Euler stack is involved here:
   # the dynamics enters through vn0 and dp, which are inputs of this test.
-  # Note: prim_advec_tracers_remap_adj.cpp is only compiled into this test for now (it has no
-  # other users yet).
-  set (PRIM_ADVEC_TRACERS_REMAP_ADJOINT_SOURCES
-    prim_advec_tracers_remap_adjoint_ut.cpp
-    ${SRC_SHARE_DIR}/cxx/prim_advec_tracers_remap_adj.cpp
-  )
+  # Note: prim_advec_tracers_remap_adj.cpp is in the theta-l library (thetal_kokkos_ut_lib).
   EkatCreateUnitTest ("prim_advec_tracers_remap_adjoint_ut"
-    SOURCES "${PRIM_ADVEC_TRACERS_REMAP_ADJOINT_SOURCES}"
+    SOURCES prim_advec_tracers_remap_adjoint_ut.cpp
     LIBS thetal_kokkos_ut_lib
     LABELS AMDIS
   )
@@ -369,15 +364,10 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
     # prim_advec_tracers_remap_adj, and the glue in between. The adjoint recomputes the fwd
     # trajectory with the Real-typed objects in the Context (the ones a run would use), so
     # ScalarValue must be Real (like for the Real-only euler_step_adj/states_forcing_adj).
-    # Note: prim_step_adj.cpp is only compiled into this test for now (it has no other users
-    # yet), unlike prim_advance_adj.cpp, which is in the lib.
-    set (PRIM_STEP_ADJOINT_SOURCES
-      prim_step_adjoint_ut.cpp
-      ${SRC_THETA_DIR}/cxx/prim_step_adj.cpp
-      ${SRC_SHARE_DIR}/cxx/prim_advec_tracers_remap_adj.cpp
-    )
+    # Note: prim_step_adj.cpp and prim_advec_tracers_remap_adj.cpp are in the theta-l library
+    # (thetal_kokkos_ut_lib). This test is not run with FWD_SENS=ON yet: it has not been validated there.
     EkatCreateUnitTest ("prim_step_adjoint_ut"
-      SOURCES "${PRIM_STEP_ADJOINT_SOURCES}"
+      SOURCES prim_step_adjoint_ut.cpp
       LIBS thetal_kokkos_ut_lib
       LABELS AMDIS
     )

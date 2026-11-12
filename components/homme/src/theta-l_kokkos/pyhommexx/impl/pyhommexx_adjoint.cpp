@@ -10,11 +10,14 @@
 #include "Types.hpp"
 #include "prim_advance_exp.hpp"
 
+// Note: prim_step_adj replays the fwd run with the Real-typed objects of the Context
 #ifdef HOMMEXX_ENABLE_FAD_TYPES
 #include "prim_advance_adj.hpp"
+#include "prim_step_adj.hpp"
 #endif
 
 #include <ekat_assert.hpp>
+#include <ekat_pack_kokkos.hpp>
 
 #include <nanobind/ndarray.h>
 
@@ -25,6 +28,21 @@ using namespace Homme;
 namespace {
 
 constexpr const char* adj_state_key = "pyhommexx_adj_state";
+
+#ifdef HOMMEXX_ENABLE_FAD_TYPES
+constexpr const char* adj_qdp_key = "pyhommexx_adj_qdp";
+constexpr const char* prim_step_ckpt_key = "pyhommexx_prim_step_ckpt";
+
+template<typename T>
+T& get_from_any_map (const char* key, const char* what)
+{
+  auto& c = Context::singleton();
+  EKAT_REQUIRE_MSG (c.any_map().find(key)!=c.any_map().end(),
+      std::string("[pyhommexx] Error! ") + what + " not available.\n"
+      " - call enable_adjoint() first (it requires qsize>0 and transport_alg=0 to set up the tracers adjoint).\n");
+  return std::any_cast<T&>(c.any_map().at(key));
+}
+#endif
 
 StateSnapshot& get_adj_state ()
 {
@@ -132,6 +150,13 @@ void enable_adjoint ()
   params.store_fwd_state = true;
   ensure_imex_tape(nelem);
   c.any_map().try_emplace(adj_state_key,std::in_place_type<StateSnapshot>,nelem);
+
+  // The tracers adjoint (needed by prim_step_adj) only exists for Eulerian transport.
+  // The qdp adjoint state, and the checkpoint prim_step_adj replays the fwd run from.
+  if (params.qsize>0 and params.transport_alg==0) {
+    c.any_map().try_emplace(adj_qdp_key,std::in_place_type<PrimStepQdpView>,"pyhommexx adj qdp",nelem);
+    c.any_map().try_emplace(prim_step_ckpt_key,std::in_place_type<PrimStepCheckpoint>,nelem,params.qsize);
+  }
 #else
   EKAT_ERROR_MSG("[pyhommexx::enable_adjoint] Error! Adjoint requires homme to be built with HOMMEXX_ENABLE_FAD_TYPES=ON.\n");
 #endif
@@ -159,6 +184,91 @@ void prim_advance_adj (const double dt)
 void zero_adj_state ()
 {
   get_adj_state().zero();
+}
+
+void prim_step_checkpoint_take ()
+{
+#ifdef HOMMEXX_ENABLE_FAD_TYPES
+  get_from_any_map<PrimStepCheckpoint>(prim_step_ckpt_key,"The prim_step checkpoint").take();
+#else
+  EKAT_ERROR_MSG("[pyhommexx::prim_step_checkpoint_take] Error! prim_step_adj requires homme to be built with HOMMEXX_ENABLE_FAD_TYPES=ON.\n");
+#endif
+}
+
+void prim_step_adj (const double dt)
+{
+#ifdef HOMMEXX_ENABLE_FAD_TYPES
+  auto& ckpt = get_from_any_map<PrimStepCheckpoint>(prim_step_ckpt_key,"The prim_step checkpoint");
+  auto& qdp  = get_from_any_map<PrimStepQdpView>(adj_qdp_key,"The qdp adjoint state");
+  Homme::prim_step_adj(dt,ckpt,get_adj_state(),qdp);
+#else
+  (void)dt;
+  EKAT_ERROR_MSG("[pyhommexx::prim_step_adj] Error! prim_step_adj requires homme to be built with HOMMEXX_ENABLE_FAD_TYPES=ON.\n");
+#endif
+}
+
+#ifdef HOMMEXX_ENABLE_FAD_TYPES
+namespace {
+template<bool ToPy>
+void copy_adj_qdp (const nb::ndarray<double>& arr)
+{
+  auto& adj_qdp = get_from_any_map<PrimStepQdpView>(adj_qdp_key,"The qdp adjoint state");
+  const int nelem = adj_qdp.extent_int(0);
+  const int qsize = Context::singleton().get<SimulationParams>().qsize;
+
+  const std::vector<int> shape = {nelem,qsize,NP,NP,NUM_PHYSICAL_LEV};
+  EKAT_REQUIRE_MSG (arr.ndim()==shape.size(),
+      "[pyhommexx] Error! Wrong rank for the adjoint qdp array (expected (nelem,qsize,np,np,nlev)).\n");
+  for (size_t i=0; i<shape.size(); ++i) {
+    EKAT_REQUIRE_MSG (static_cast<int>(arr.shape(i))==shape[i],
+        "[pyhommexx] Error! Wrong shape for the adjoint qdp array (expected (nelem,qsize,np,np,nlev)).\n");
+  }
+  EKAT_REQUIRE_MSG ((int)arr.dtype().bits==64,
+      "[pyhommexx] Error! The input array must have dtype float64.\n");
+
+  auto q = ekat::scalarize(adj_qdp);
+  ExecViewUnmanaged<double*****> v (vp2dp(arr.data()),nelem,qsize,NP,NP,NUM_PHYSICAL_LEV);
+  using policy_t = Kokkos::MDRangePolicy<ExecSpace,Kokkos::Rank<5>>;
+  policy_t p ({0,0,0,0,0},{nelem,qsize,NP,NP,NUM_PHYSICAL_LEV});
+  Kokkos::parallel_for(p,KOKKOS_LAMBDA (int ie, int iq, int ip, int jp, int k) {
+    if constexpr (ToPy) {
+      v(ie,iq,ip,jp,k) = q(ie,iq,ip,jp,k);
+    } else {
+      q(ie,iq,ip,jp,k) = v(ie,iq,ip,jp,k);
+    }
+  });
+  Kokkos::fence();
+}
+} // anonymous namespace
+#endif
+
+void zero_adj_qdp ()
+{
+#ifdef HOMMEXX_ENABLE_FAD_TYPES
+  Kokkos::deep_copy(get_from_any_map<PrimStepQdpView>(adj_qdp_key,"The qdp adjoint state"),Real(0));
+#else
+  EKAT_ERROR_MSG("[pyhommexx::zero_adj_qdp] Error! Requires HOMMEXX_ENABLE_FAD_TYPES=ON.\n");
+#endif
+}
+
+void get_adj_qdp (nb::ndarray<double>& arr)
+{
+#ifdef HOMMEXX_ENABLE_FAD_TYPES
+  copy_adj_qdp<true>(arr);
+#else
+  (void)arr;
+  EKAT_ERROR_MSG("[pyhommexx::get_adj_qdp] Error! Requires HOMMEXX_ENABLE_FAD_TYPES=ON.\n");
+#endif
+}
+
+void set_adj_qdp (const nb::ndarray<double>& arr)
+{
+#ifdef HOMMEXX_ENABLE_FAD_TYPES
+  copy_adj_qdp<false>(arr);
+#else
+  (void)arr;
+  EKAT_ERROR_MSG("[pyhommexx::set_adj_qdp] Error! Requires HOMMEXX_ENABLE_FAD_TYPES=ON.\n");
+#endif
 }
 
 void get_adj_state_var (nb::ndarray<double>& arr, const nb::str& name)
