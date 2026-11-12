@@ -77,7 +77,8 @@ void forward(const double dt);
 // One call to prim_step (dt_tracer_factor dynamics steps, followed by a tracers step), on the
 // objects of the given scalar type. The time levels of the TimeLevel in the Context are updated
 // as in the f90/C++ drivers (see get_prim_step_qdp_slots for the tracers' ones).
-// For dtype!=real: only ttype10_imex, Eulerian transport, no diagnostics, no adjoint taping.
+// For dtype!=real: only ttype10_imex, Eulerian transport and no diagnostics are supported
+// (the adjoint taping, if on, is skipped for the call).
 void prim_step (const double dt, const nb::str& dtype, const bool compute_diagnostics);
 
 // Dynamics advance (fwd/adj). Only ttype10_imex (time_step_type=10) has an adjoint.

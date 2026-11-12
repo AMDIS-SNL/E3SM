@@ -57,7 +57,8 @@ that mode aliases `ScalarValue` to a Fad type for the Fortran-driven runs, while
 The C++ side does not depend on what `ScalarValue` is: `prim_step<ST>`, `prim_advance_exp<ST>` and
 `prim_advec_tracers_remap<ST>` grab the `ST`-typed objects from the Context.
 For `ST!=ScalarValue` only `time_step_type=10`, Eulerian tracers transport (`transport_alg=0`),
-no diagnostics and no adjoint taping are supported.
+and no diagnostics are supported. If the adjoint is enabled, its taping of the forward run
+is skipped for the calls with a type other than `real`.
 
 ## Forward sensitivities and adjoint of `prim_step`
 

@@ -53,8 +53,19 @@ void prim_advance_exp (TimeLevel& tl, const Real dt, const bool compute_diagnost
         "[prim_advance_exp] Error! Diagnostics are not supported for a scalar type other than ScalarValue.\n");
     EKAT_REQUIRE_MSG (not params.prescribed_wind,
         "[prim_advance_exp] Error! 'prescribed_wind' is not supported for a scalar type other than ScalarValue.\n");
-    EKAT_REQUIRE_MSG (not params.store_fwd_state or (std::is_same_v<ST,Real>),
-        "[prim_advance_exp] Error! Storing the fwd state (for the adjoint) is only supported for the Real and ScalarValue scalar types.\n");
+  }
+
+  // The fwd state taping (for the adjoint, see enable_adjoint in pyhommexx) is for the Real-typed
+  // run, which is what the adjoint differentiates. For the other scalar types (e.g., the Fad run that
+  // computes the fwd sensitivities the adjoint is compared to) turn it off, for the duration of this call
+  // only: taping a Fad run would also overwrite the tape of the Real run.
+  struct RestoreStoreFwdState {
+    ~RestoreStoreFwdState () { params.store_fwd_state = old_value; }
+    SimulationParams& params;
+    const bool old_value;
+  } restore_store_fwd_state {params, params.store_fwd_state};
+  if constexpr (not (std::is_same_v<ST,Real> or std::is_same_v<ST,ScalarValue>)) {
+    params.store_fwd_state = false;
   }
 
   // Determine the tracers time level

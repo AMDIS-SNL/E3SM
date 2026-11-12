@@ -139,7 +139,7 @@ NB_MODULE (pyhommexx,m) {
       "Advances the dynamics by dt, from time level n0 to np1. Does NOT rotate time levels.\n"
       "If the adjoint is enabled, the fwd trajectory is taped (only the LAST call is kept).\n"
       "The scalar type can be chosen via dtype; for dtype!=real, only ttype10_imex is supported,\n"
-      "and no diagnostics nor taping.",
+      "and no diagnostics (the adjoint taping, if on, is skipped for the call).",
         nb::arg("dt"),
         nb::arg("compute_diagnostics") = false,
         nb::arg("dtype") = "real");
