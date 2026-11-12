@@ -329,7 +329,12 @@ TEST_CASE("prim_step_adjoint")
   ut::set_deriv0(tracers_dp.qdp, dqdp);
 
   printf(" -> Run forward problem (prim_step<DpFadType>)...\n");
+  // If the fwd state taping (for the adjoint) is on, the Fad run must not use it (it would
+  // overwrite the tape of the Real run), and must leave the flag as it found it
+  params.store_fwd_state = true;
   prim_step<DpFadType>(dt,false);
+  REQUIRE (params.store_fwd_state);
+  params.store_fwd_state = false; // prim_step_adj takes care of turning it on when needed
 
   // The time levels at the end of prim_step. (prim_step_adj puts the TimeLevel back
   // to the checkpoint's, so it's fine to have prim_step modify the one in the Context.)

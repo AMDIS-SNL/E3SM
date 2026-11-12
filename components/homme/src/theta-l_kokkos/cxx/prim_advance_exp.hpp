@@ -19,9 +19,10 @@ namespace Homme
 // The templated version works on the Elements/functors of scalar type ST, fetched from
 // the Context (so it does not depend on what ScalarValue is). It is explicitly
 // instantiated for Real and, if HOMMEXX_ENABLE_FAD_TYPES is on, for DpFadType.
-// For ST!=ScalarValue, only ttype10_imex is supported, and diagnostics, prescribed
-// winds and fwd state storage (params.store_fwd_state) must be off: all of those
-// are tied to the ScalarValue/Real-typed objects.
+// For ST!=ScalarValue, only ttype10_imex is supported, and diagnostics and prescribed
+// winds must be off: both are tied to the ScalarValue-typed objects.
+// The fwd state storage (params.store_fwd_state, for the adjoint) only applies to ST=Real and
+// ST=ScalarValue: for any other type it is turned off for the duration of the call.
 //
 // The default is ScalarValue, which is what the f90/EAMxx drivers use.
 template<typename ST = ScalarValue>
