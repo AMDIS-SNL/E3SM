@@ -316,7 +316,8 @@ void init_simulation_params_c (const int& ne, const int& remap_alg, const int& l
     Errors::check_option("init_simulation_params_c","limiter_option",limiter_option,{8,9});
   }
   Errors::check_option("init_simulation_params_c","ftype",ftype, {-1, 0, 2});
-  Errors::check_option("init_simulation_params_c","nu_p",nu_p,0.0,Errors::ComparisonOp::GT);
+  // nu_p=0 is supported (no dp hyperviscosity): the adjoint of prim_step even requires it
+  Errors::check_option("init_simulation_params_c","nu_p",nu_p,0.0,Errors::ComparisonOp::GE);
   Errors::check_option("init_simulation_params_c","nu",nu,0.0,Errors::ComparisonOp::GT);
   Errors::check_option("init_simulation_params_c","dp3d_thresh",dp3d_thresh,0.0,Errors::ComparisonOp::GT);
   Errors::check_option("init_simulation_params_c","vtheta_thresh",vtheta_thresh,0.0,Errors::ComparisonOp::GT);
