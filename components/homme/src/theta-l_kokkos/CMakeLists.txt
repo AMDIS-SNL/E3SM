@@ -193,6 +193,7 @@ MACRO(THETAL_KOKKOS_SETUP)
   if (HOMMEXX_ENABLE_FAD_TYPES)
     list(APPEND THETAL_DEPS_CXX
       ${TARGET_DIR}/cxx/prim_advance_adj.cpp
+      ${TARGET_DIR}/cxx/DirkAdjoint.cpp
       ${SRC_SHARE_DIR}/cxx/prim_advec_tracers_remap_adj.cpp
       ${TARGET_DIR}/cxx/prim_step_adj.cpp
     )

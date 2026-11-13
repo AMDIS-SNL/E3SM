@@ -18,6 +18,18 @@ std::shared_ptr<BoundaryExchangeST<Real>> create_adj_bex (StateSnapshot& adj_sta
 // checkpoints (y0,u1,y1,...,u5,y5), plus 1 for the state right after HV.
 constexpr int imex_tape_capacity = 12;
 
+// How the adjoint of the implicit (DIRK) stages is computed:
+//  - IFT:   implicit function theorem at the converged solution: one transposed tridiagonal solve
+//           per column, plus local products (see DirkAdjoint.hpp). No Fad types, and no replay of the
+//           Newton iterations.
+//  - Dense: replay of the Newton iterations with Dx-Fad types (DxFadTypeDirk), which carry a derivative
+//           per input of the column. Much more costly, in both memory and time, and it needs the
+//           ElementsST and DirkFunctorST of DxFadTypeDirk in the Context. Kept as a reference for the tests.
+enum class DirkAdjMethod {
+  IFT,
+  Dense
+};
+
 // Create the tape if it's not there yet; otherwise, check that it is large enough.
 void ensure_imex_tape (const int num_elems);
 
@@ -35,7 +47,8 @@ using AdjVn0View = decltype(ElementsDerivedStateST<Real>::m_vn0);
 void ttype10_imex_adjoint(const Real dt_dyn,
                           const Real eta_ave_w,
                           StateSnapshot& adj_state,
-                          const AdjVn0View* adj_vn0 = nullptr);
+                          const AdjVn0View* adj_vn0 = nullptr,
+                          const DirkAdjMethod dirk_method = DirkAdjMethod::IFT);
 
 // Full adjoint of prim_advance_exp (theta-l_kokkos), covering the top w_i
 // surface fix (if !theta_hydrostatic_mode), the hyperviscosity step (if
@@ -61,7 +74,8 @@ void ttype10_imex_adjoint(const Real dt_dyn,
 // (eta_dot_dpdn, omega_p) are NOT differentiated (nothing in prim_step
 // consumes them; a future vertical_remap adjoint will).
 void prim_advance_adj(const Real dt, StateSnapshot& adj_state,
-                      const AdjVn0View* adj_vn0 = nullptr);
+                      const AdjVn0View* adj_vn0 = nullptr,
+                      const DirkAdjMethod dirk_method = DirkAdjMethod::IFT);
 
 } // namespace Homme
 

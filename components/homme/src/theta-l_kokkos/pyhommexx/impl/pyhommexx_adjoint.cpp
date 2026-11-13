@@ -43,9 +43,10 @@ constexpr const char* adj_qdp_key = "pyhommexx_adj_qdp";
 constexpr const char* prim_step_ckpt_key = "pyhommexx_prim_step_ckpt";
 constexpr const char* adj_dx_fbm_key = "pyhommexx_adj_dx_fbm";
 
-// prim_advance_adj builds the transposed Jacobians of the CAAR and DIRK stages with Fad types whose
-// derivatives are w.r.t. the state (DxFadTypeCaar/DxFadTypeDirk), so it needs their elements and functors
-// in the Context. model_init only creates the Real (and dpfad, if enabled) ones: create the others here.
+// prim_advance_adj builds the transposed Jacobian of the CAAR stages with a Fad type whose
+// derivatives are w.r.t. the state (DxFadTypeCaar), so it needs its elements and functors
+// in the Context. model_init only creates the Real (and dpfad, if enabled) ones: create the other here.
+// (The implicit DIRK stages don't need Fad types: see DirkAdjoint.hpp.)
 // This mirrors the setup of the adjoint unit tests (e.g., prim_step_adjoint_ut).
 void ensure_dx_fad_stacks ()
 {
@@ -66,9 +67,9 @@ void ensure_dx_fad_stacks ()
   elems_caar.init(nelem,true,params.scale_factor,params.laplacian_rigid_factor,params.alloc_sphere_coords);
   elems_caar.m_geometry = geo;
 
-  auto& elems_dirk = c.create<ElementsST<DxFadTypeDirk>>();
-  elems_dirk.init(nelem,true,params.scale_factor,params.laplacian_rigid_factor,params.alloc_sphere_coords);
-  elems_dirk.m_geometry = geo;
+  // No DIRK stack: prim_advance_adj (by default) differentiates the implicit stages with the implicit
+  // function theorem, which needs no Fad types (see DirkAdjoint.hpp). A DxFadTypeDirk stack takes
+  // hundreds of MB per element.
 
   // The functors
   auto& sphop = c.create<SphereOperatorsST<DxFadTypeCaar>>(geo,ref_FE);
@@ -80,17 +81,13 @@ void ensure_dx_fad_stacks ()
   // where the straight-through derivative is the best we can do anyway)
   std::any_cast<CaarFunctorImplST<DxFadTypeCaar>&>(caar.impl()).m_run_limiter = false;
 
-  auto& dirk = c.create<DirkFunctorST<DxFadTypeDirk>>(nelem);
-
   // Their scratch buffers. They are not carved out of the manager that model_init used (which
   // has already been allocated), so give them their own, and keep it alive as long as the Context.
   auto& fbm = std::any_cast<FunctorsBuffersManager&>(
       c.any_map().try_emplace(adj_dx_fbm_key,std::in_place_type<FunctorsBuffersManager>).first->second);
   fbm.request_size(caar.requested_buffer_size());
-  fbm.request_size(dirk.requested_buffer_size());
   fbm.allocate();
   caar.init_buffers(fbm);
-  dirk.init_buffers(fbm);
 }
 
 template<typename T>
