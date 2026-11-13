@@ -440,6 +440,21 @@ TEST_CASE("prim_step_adjoint")
                 << ", with nu_q=0: " << d_no << "\n";
     CHECK (std::abs(d_with-d_no) > 1e-9*std::abs(d_with));
   }
+
+  // Unsupported options are rejected up front, by prim_step_adj itself (and not later on, inside
+  // the tracers adjoint, after having replayed the fwd dynamics). The check comes before anything
+  // is modified, so the params can just be restored, and the checkpoint is still usable afterwards.
+  {
+    StateSnapshot no_state(num_elems);
+    no_state.zero();
+    auto lambda = no_state.clone(true);
+    PrimStepQdpView lambda_qdp("lambda_qdp",num_elems);
+    Kokkos::deep_copy(lambda_qdp,make_qdp_seed(false));
+
+    params.limiter_option = 8;
+    CHECK_THROWS (prim_step_adj(dt,ckpt,lambda,lambda_qdp));
+    params.limiter_option = 9;
+  }
 }
 
 } // namespace Homme
