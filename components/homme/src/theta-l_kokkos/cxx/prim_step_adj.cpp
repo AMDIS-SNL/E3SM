@@ -18,6 +18,7 @@
 
 #include <ekat_pack_kokkos.hpp>
 
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -136,6 +137,11 @@ void prim_step_adj (const Real dt,
       "[prim_step_adj] Error! Invalid number of tracers (must be >0 and match the checkpoint's).\n");
   EKAT_REQUIRE_MSG (params.nu_p==0,
       "[prim_step_adj] Error! nu_p>0 (dpdiss_ave/dpdiss_biharmonic) is not supported.\n");
+  // Checked here, and not left to euler_step_adj, so that we fail before replaying the fwd dynamics
+  EKAT_REQUIRE_MSG (params.limiter_option==9,
+      "[prim_step_adj] Error! Only limiter_option=9 (limiter_clip_and_sum) has an adjoint.\n"
+      " - limiter_option=8 (limiter_optim_iter_full) is a legacy (preqx) limiter: its adjoint is not implemented.\n"
+      " - limiter_option: " + std::to_string(params.limiter_option) + "\n");
   EKAT_REQUIRE_MSG (not params.prescribed_wind,
       "[prim_step_adj] Error! 'prescribed_wind' is not supported.\n");
 
