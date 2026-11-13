@@ -2,6 +2,7 @@
 
 #include "CaarFunctor.hpp"
 #include "CaarFunctorImpl.hpp"
+#include "DirkAdjoint.hpp"
 #include "DirkFunctor.hpp"
 #include "DirkFunctorImpl.hpp"
 #include "Context.hpp"
@@ -158,7 +159,8 @@ std::shared_ptr<BoundaryExchangeST<Real>> create_adj_bex (StateSnapshot& adj_sta
 void ttype10_imex_adjoint(const Real dt_dyn,
                           const Real eta_ave_w,
                           StateSnapshot& adj_state,
-                          const AdjVn0View* adj_vn0)
+                          const AdjVn0View* adj_vn0,
+                          const DirkAdjMethod dirk_method)
 {
   GPTLstart("ttype10_imex_adjoint");
   using const_tape_t = const Tape<StateSnapshot>;
@@ -167,15 +169,19 @@ void ttype10_imex_adjoint(const Real dt_dyn,
   SimulationParams& params = c.get<SimulationParams>();
 
   // Get elements, hvcoord, and functors
-  auto& elems_dirk = c.get<ElementsST<DxFadTypeDirk>>();
   auto& elems_caar = c.get<ElementsST<DxFadTypeCaar>>();
-  auto& state_dirk = elems_dirk.m_state;
   auto& state_caar = elems_caar.m_state;
   auto& hvcoord    = c.get<HybridVCoord>();
-  auto& dirk_base  = c.get<DirkFunctorST<DxFadTypeDirk>>();
   auto& caar_base  = c.get<CaarFunctorST<DxFadTypeCaar>>();
-  auto& dirk       = std::any_cast<DirkFunctorImplST<DxFadTypeDirk>&>(dirk_base.impl());
   auto& caar       = std::any_cast<CaarFunctorImplST<DxFadTypeCaar>&>(caar_base.impl());
+
+  // The Dx-Fad stack of DIRK is only needed by the dense DIRK adjoint
+  ElementsST<DxFadTypeDirk>*        elems_dirk = nullptr;
+  DirkFunctorImplST<DxFadTypeDirk>* dirk       = nullptr;
+  if (dirk_method==DirkAdjMethod::Dense) {
+    elems_dirk = &c.get<ElementsST<DxFadTypeDirk>>();
+    dirk = &std::any_cast<DirkFunctorImplST<DxFadTypeDirk>&>(c.get<DirkFunctorST<DxFadTypeDirk>>().impl());
+  }
   auto& tape       = std::any_cast<const_tape_t&>(c.any_map().at("imex_tape"));
   auto& geo        = c.get<ElementsGeometry>();
 
@@ -244,23 +250,38 @@ void ttype10_imex_adjoint(const Real dt_dyn,
   const auto& u5 = tape.at(9);
   const auto& y5 = tape.at(10);
 
-  // First, compute dDdy0_mu5 and dDdy1_mu5 (deriv of DIRK w.r.t. y0 and y1, times mu5)
-  state_dirk.import_snapshot(y0, n0);
-  state_dirk.import_snapshot(y1, nm1);
-
-  dt = dt_dyn;
-
-  debug_print("   dDdy0_mu5...\n");
-  state_dirk.import_snapshot(u5, np1);
-  dirk.init_J(n0,state_dirk);
-  dirk.run(nm1, a2*dt, n0, a1*dt, np1, a3*dt, elems_dirk, hvcoord);
-  dirk.run_JtV(np1,elems_dirk.m_state,mu5,dDdy0_mu5);
-
-  debug_print("   dDdy1_mu5...\n");
-  state_dirk.import_snapshot(u5,np1);
-  dirk.init_J(nm1,state_dirk);
-  dirk.run(nm1, a2*dt, n0, a1*dt, np1, a3*dt, elems_dirk, hvcoord);
-  dirk.run_JtV(np1,elems_dirk.m_state,mu5,dDdy1_mu5);
+  // J^T*mu_in for one implicit (DIRK) stage, which took u_pre (as the np1 state) and gave y_post.
+  // J_np1 is d(state after)/d(u_pre), and goes to out_np1. If the stage's RHS also depends on the
+  // states at n0 and nm1 (alphadt_n0, alphadt_nm1 != 0: the last stage, where those are y0 and y1),
+  // the products with the Jacobians w.r.t. them can be requested too (out_n0, out_nm1).
+  auto dirk_jtv = [&] (const Real alphadt_nm1, const Real alphadt_n0, const Real dt2,
+                       const StateSnapshot& u_pre, const StateSnapshot& y_post,
+                       const StateSnapshot& mu_in, StateSnapshot& out_np1,
+                       StateSnapshot* out_n0, StateSnapshot* out_nm1) {
+    if (dirk_method==DirkAdjMethod::IFT) {
+      dirk_stage_adjoint_ift(alphadt_nm1,alphadt_n0,dt2,geo,hvcoord,
+                             alphadt_nm1!=0 ? &y1 : nullptr, alphadt_n0!=0 ? &y0 : nullptr,
+                             u_pre,y_post,mu_in,out_np1,out_n0,out_nm1);
+    } else {
+      auto& state_dirk = elems_dirk->m_state;
+      state_dirk.import_snapshot(y0, n0);
+      state_dirk.import_snapshot(y1, nm1);
+      // Replay the stage with Dx-Fad types, seeding the derivs w.r.t. the state at dx_tl
+      auto jtv = [&] (const int dx_tl, StateSnapshot& out) {
+        state_dirk.import_snapshot(u_pre,np1);
+        dirk->init_J(dx_tl,state_dirk);
+        dirk->run(nm1, alphadt_nm1, n0, alphadt_n0, np1, dt2, *elems_dirk, hvcoord);
+        dirk->run_JtV(np1,elems_dirk->m_state,mu_in,out);
+      };
+      jtv(np1,out_np1);
+      if (out_n0 != nullptr) {
+        jtv(n0,*out_n0);
+      }
+      if (out_nm1 != nullptr) {
+        jtv(nm1,*out_nm1);
+      }
+    }
+  };
 
   // Now do dirk/caar passes bwd
   state_caar.import_snapshot(y0,nm1); // Departure point is y0 for all stages
@@ -269,11 +290,10 @@ void ttype10_imex_adjoint(const Real dt_dyn,
   debug_print("   stage 5...\n");
   dt = dt_dyn;
 
+  // In the last DIRK stage we also need the products of mu5 with the derivs of DIRK w.r.t. y0
+  // and y1 (dDdy0_mu5 and dDdy1_mu5). They don't depend on the CAAR passes, so we get them now
   debug_print("     DIRK...\n");
-  state_dirk.import_snapshot(u5,np1);
-  dirk.init_J(np1,state_dirk);
-  dirk.run(nm1, a2*dt, n0, a1*dt, np1, a3*dt, elems_dirk, hvcoord);
-  dirk.run_JtV(np1,elems_dirk.m_state,mu5,lambda5);
+  dirk_jtv(a2*dt,a1*dt,a3*dt,u5,y5,mu5,lambda5,&dDdy0_mu5,&dDdy1_mu5);
 
   debug_print("     CAAR...\n");
   const RKStageData stage5_data(nm1, n0, np1, -1, dt, eta_ave_w, 1.0, 0.0, 1.0);
@@ -313,10 +333,7 @@ void ttype10_imex_adjoint(const Real dt_dyn,
   dt = dt_dyn/2.0;
 
   debug_print("     DIRK...\n");
-  state_dirk.import_snapshot(u4,np1);
-  dirk.init_J(np1,state_dirk);
-  dirk.run(nm1, 0.0, n0, 0.0, np1, dt, elems_dirk, hvcoord);
-  dirk.run_JtV(np1,elems_dirk.m_state,mu4,lambda4);
+  dirk_jtv(0.0,0.0,dt,u4,y4,mu4,lambda4,nullptr,nullptr);
 
   debug_print("     CAAR...\n");
   const RKStageData stage4_data(nm1, n0, np1, -1, dt, 0.0, 1.0, 0.0, 1.0);
@@ -338,10 +355,7 @@ void ttype10_imex_adjoint(const Real dt_dyn,
   dt = 3.0*dt_dyn/8.0;
 
   debug_print("     DIRK...\n");
-  state_dirk.import_snapshot(u3,np1);
-  dirk.init_J(np1,state_dirk);
-  dirk.run(nm1, 0.0, n0, 0.0, np1, dt, elems_dirk, hvcoord);
-  dirk.run_JtV(np1,elems_dirk.m_state,mu3,lambda3);
+  dirk_jtv(0.0,0.0,dt,u3,y3,mu3,lambda3,nullptr,nullptr);
 
   debug_print("     CAAR...\n");
   const RKStageData stage3_data(nm1, n0, np1, -1, dt, 0.0, 1.0, 0.0, 1.0);
@@ -363,10 +377,7 @@ void ttype10_imex_adjoint(const Real dt_dyn,
   dt = dt_dyn/6.0;
 
   debug_print("     DIRK...\n");
-  state_dirk.import_snapshot(u2,np1);
-  dirk.init_J(np1,state_dirk);
-  dirk.run(nm1, 0.0, n0, 0.0, np1, dt, elems_dirk, hvcoord);
-  dirk.run_JtV(np1,elems_dirk.m_state,mu2,lambda2);
+  dirk_jtv(0.0,0.0,dt,u2,y2,mu2,lambda2,nullptr,nullptr);
 
   debug_print("     CAAR...\n");
   const RKStageData stage2_data(nm1, n0, np1, -1, dt, 0.0, 1.0, 0.0, 1.0);
@@ -389,10 +400,7 @@ void ttype10_imex_adjoint(const Real dt_dyn,
   dt = dt_dyn/4.0;
 
   debug_print("     DIRK...\n");
-  state_dirk.import_snapshot(u1,np1);
-  dirk.init_J(np1,state_dirk);
-  dirk.run(nm1, 0.0, n0, 0.0, np1, dt, elems_dirk, hvcoord);
-  dirk.run_JtV(np1,elems_dirk.m_state,mu1,lambda1);
+  dirk_jtv(0.0,0.0,dt,u1,y1,mu1,lambda1,nullptr,nullptr);
 
   debug_print("     CAAR...\n");
   const RKStageData stage1_data(nm1, n0, np1, -1, dt, 0.0, 1.0, 0.0, 1.0);
@@ -417,7 +425,8 @@ void ttype10_imex_adjoint(const Real dt_dyn,
 }
 
 void prim_advance_adj (const Real dt, StateSnapshot& adj_state,
-                       const AdjVn0View* adj_vn0)
+                       const AdjVn0View* adj_vn0,
+                       const DirkAdjMethod dirk_method)
 {
   GPTLstart("prim_advance_adj");
 
@@ -467,7 +476,7 @@ void prim_advance_adj (const Real dt, StateSnapshot& adj_state,
 
   switch (params.time_step_type) {
     case TimeStepType::ttype10_imex:
-      ttype10_imex_adjoint(dt,eta_ave_w,adj_state,adj_vn0);
+      ttype10_imex_adjoint(dt,eta_ave_w,adj_state,adj_vn0,dirk_method);
       break;
     default:
       {
