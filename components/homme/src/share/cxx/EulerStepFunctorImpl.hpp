@@ -7,6 +7,8 @@
 #ifndef HOMMEXX_EULER_STEP_FUNCTOR_IMPL_HPP
 #define HOMMEXX_EULER_STEP_FUNCTOR_IMPL_HPP
 
+#include <cstdlib>
+#include <cstdio>
 #include "Context.hpp"
 #include "ReferenceElement.hpp"
 #include "ElementsGeometry.hpp"
@@ -136,6 +138,7 @@ class EulerStepFunctorImplST {
   using RPT = PackType<Real>;
 
   bool m_tape_for_adjoint = false;
+  bool m_dbg_no_limiter = false; // DEBUG (throwaway): HOMME_DEBUG_NO_LIMITER skips the limiter, fwd and adjoint
 
   // Real-only, device-reachable cache of two of the Context-held adjoint
   // tape's Views (EulerStepAdjointTape::qtens_prelimiter and ::qlim_final).
@@ -203,6 +206,7 @@ public:
   void reset (const SimulationParams& params) {
     m_data.rhs_viss = 0.0;
     m_data.qsize = params.qsize;
+    m_dbg_no_limiter = (std::getenv("HOMME_DEBUG_NO_LIMITER") != nullptr);
     m_data.limiter_option = params.limiter_option;
     m_data.nu_p = params.nu_p;
     m_data.nu_q = params.nu_q;
@@ -817,7 +821,9 @@ private:
           kv.team_barrier();
         }
       }
-      limiter_clip_and_sum(kv);
+      if (!m_dbg_no_limiter) {
+        limiter_clip_and_sum(kv);
+      }
       kv.team_barrier();
     }
 
@@ -1300,6 +1306,8 @@ public:
     // branch condition is exactly recomputable), then differentiate that
     // short, purely local sequence in reverse. See the design writeup
     // above euler_step_adj for the derivation. ----
+    Kokkos::View<int[5],ExecSpace> dbg_cnt("dbg_cnt");
+    if (!m_dbg_no_limiter)
     {
       auto adj_qtens    = adj_tracers.qtens_biharmonic; // bufA in, bufB out
       auto tape_ptens    = adj_qtens_prelimiter;          // ptens_in (pre-limiter)
@@ -1325,6 +1333,7 @@ public:
           sum1 += c[i][j];
           gout[i][j] = adj_qtens(ie,iq,i,j,vpi)[vsi]; // read bufA now, before any writes
         }
+        Kokkos::atomic_add(&dbg_cnt(0),1);
         if (sum1 <= 0) return; // fwd: "this should never happen"; identity map (bufB==bufA already)
 
         const Real minp0 = tape_qlimF(ie,iq,0,vpi)[vsi];
@@ -1336,6 +1345,9 @@ public:
         if (relaxA) minp = sum0/sum1;
         const bool relaxB = sum0 > maxp*sum1;
         if (relaxB) maxp = sum0/sum1;
+        if (clamped0) Kokkos::atomic_add(&dbg_cnt(1),1);
+        if (relaxA) Kokkos::atomic_add(&dbg_cnt(2),1);
+        if (relaxB) Kokkos::atomic_add(&dbg_cnt(3),1);
 
         int  dir[NP][NP];
         Real xpost[NP][NP];
@@ -1348,6 +1360,7 @@ public:
           addmass += d*c[i][j];
         }
         if (addmass == 0) return; // fwd: modified==false; identity map (bufB==bufA already)
+        Kokkos::atomic_add(&dbg_cnt(4),1);
 
         const bool pos = addmass > 0;
         Real fac_sum = 0;
@@ -1443,6 +1456,12 @@ public:
       });
     }
     Kokkos::fence();
+    if (!m_dbg_no_limiter) {
+      auto h = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), dbg_cnt);
+      std::printf("[dbg-limiter-adj] rhs_mult=%g groups=%d clamped0(minp<0)=%d relaxA=%d relaxB=%d limiter_modified=%d\n",
+                  double(rhs_multiplier), h(0), h(1), h(2), h(3), h(4));
+      std::fflush(stdout);
+    }
 
     // NOTE: the transposed-divergence kernel below is duplicated in
     // precompute_divdp_adj (same stencil); keep them in sync.
