@@ -20,7 +20,11 @@ NB_MODULE (pyhommexx,m) {
   // Input parameters utilities
   m.def("read_params",&read_params);
   m.def("get_params",&get_params);
-  m.def("set_params",&set_params);
+  m.def("set_params",&set_params,
+      "Overrides some of the parameters read from the namelist. Valid keys:\n"
+      " - alloc_sphere_coords (bool)\n"
+      " - nu_p (float): to be set after read_params and before model_init. Meant for tests that need a value\n"
+      "   the init checks reject (nu_p=0 for the adjoint of prim_step, which does not support nu_p>0 yet).");
 
   // Model geometry utilities
   m.def("get_nelemd",&get_nelemd);

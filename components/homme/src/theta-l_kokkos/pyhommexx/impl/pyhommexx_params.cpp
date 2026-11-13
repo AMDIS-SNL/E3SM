@@ -1,6 +1,7 @@
 #include "pyhommexx.hpp"
 
 #include "Context.hpp"
+#include "ElementsState.hpp"
 #include "SimulationParams.hpp"
 #include "Types.hpp"
 
@@ -59,10 +60,20 @@ void set_params(const nb::dict& params)
       EKAT_REQUIRE_MSG(nb::isinstance<bool>(value),
           "[pyhommexx::set_params] Functor param 'alloc_sphere_coords' should be a boolean.\n");
       s.alloc_sphere_coords = nb::cast<bool>(value);
+    } else if (key_str=="nu_p") {
+      // Overrides the value read from the namelist, which the shared init checks require to be >0.
+      // This is meant for tests that need a value the checks reject (e.g., the adjoint of prim_step
+      // only supports nu_p=0 for now). The functors read nu_p when they are created, so it has to be
+      // set after read_params, but before model_init.
+      EKAT_REQUIRE_MSG(nb::isinstance<double>(value),
+          "[pyhommexx::set_params] Param 'nu_p' should be a float (e.g., 0.0, not 0).\n");
+      EKAT_REQUIRE_MSG(not c.has<ElementsState>(),
+          "[pyhommexx::set_params] Param 'nu_p' must be set before model_init(): it would be ignored.\n");
+      s.nu_p = nb::cast<double>(value);
     } else {
       EKAT_ERROR_MSG("[pyhommexx::set_params] Invalid key for set_params.\n"
           " - key: " + key_str + "\n" +
-          " - valid keys: alloc_sphere_coords\n");
+          " - valid keys: alloc_sphere_coords, nu_p\n");
     }
   }
 }

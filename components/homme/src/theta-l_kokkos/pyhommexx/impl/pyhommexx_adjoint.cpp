@@ -12,6 +12,15 @@
 
 // Note: prim_step_adj replays the fwd run with the Real-typed objects of the Context
 #ifdef HOMMEXX_ENABLE_FAD_TYPES
+#include "CaarFunctor.hpp"
+#include "CaarFunctorImpl.hpp"
+#include "DirkFunctor.hpp"
+#include "Elements.hpp"
+#include "FunctorsBuffersManager.hpp"
+#include "HybridVCoord.hpp"
+#include "ReferenceElement.hpp"
+#include "SphereOperators.hpp"
+#include "mpi/MpiBuffersManager.hpp"
 #include "prim_advance_adj.hpp"
 #include "prim_step_adj.hpp"
 #endif
@@ -32,6 +41,57 @@ constexpr const char* adj_state_key = "pyhommexx_adj_state";
 #ifdef HOMMEXX_ENABLE_FAD_TYPES
 constexpr const char* adj_qdp_key = "pyhommexx_adj_qdp";
 constexpr const char* prim_step_ckpt_key = "pyhommexx_prim_step_ckpt";
+constexpr const char* adj_dx_fbm_key = "pyhommexx_adj_dx_fbm";
+
+// prim_advance_adj builds the transposed Jacobians of the CAAR and DIRK stages with Fad types whose
+// derivatives are w.r.t. the state (DxFadTypeCaar/DxFadTypeDirk), so it needs their elements and functors
+// in the Context. model_init only creates the Real (and dpfad, if enabled) ones: create the others here.
+// This mirrors the setup of the adjoint unit tests (e.g., prim_step_adjoint_ut).
+void ensure_dx_fad_stacks ()
+{
+  auto& c = Context::singleton();
+  if (c.has<ElementsST<DxFadTypeCaar>>()) {
+    return;
+  }
+
+  const auto& params  = c.get<SimulationParams>();
+  const auto& geo     = c.get<ElementsGeometry>();
+  const auto& ref_FE  = c.get<ReferenceElement>();
+  const auto& hvcoord = c.get<HybridVCoord>();
+  auto& bmm           = c.get<MpiBuffersManagerMap>();
+  const int nelem     = geo.num_elems();
+
+  // The elements, sharing the geometry views with the others
+  auto& elems_caar = c.create<ElementsST<DxFadTypeCaar>>();
+  elems_caar.init(nelem,true,params.scale_factor,params.laplacian_rigid_factor,params.alloc_sphere_coords);
+  elems_caar.m_geometry = geo;
+
+  auto& elems_dirk = c.create<ElementsST<DxFadTypeDirk>>();
+  elems_dirk.init(nelem,true,params.scale_factor,params.laplacian_rigid_factor,params.alloc_sphere_coords);
+  elems_dirk.m_geometry = geo;
+
+  // The functors
+  auto& sphop = c.create<SphereOperatorsST<DxFadTypeCaar>>(geo,ref_FE);
+
+  auto& caar = c.create<CaarFunctorST<DxFadTypeCaar>>();
+  caar.setup(elems_caar,ref_FE,hvcoord,sphop);
+  caar.init_boundary_exchanges(bmm[MPI_EXCHANGE]);
+  // Like the unit tests, don't run the limiter in the Jacobian (it only kicks in for extreme states,
+  // where the straight-through derivative is the best we can do anyway)
+  std::any_cast<CaarFunctorImplST<DxFadTypeCaar>&>(caar.impl()).m_run_limiter = false;
+
+  auto& dirk = c.create<DirkFunctorST<DxFadTypeDirk>>(nelem);
+
+  // Their scratch buffers. They are not carved out of the manager that model_init used (which
+  // has already been allocated), so give them their own, and keep it alive as long as the Context.
+  auto& fbm = std::any_cast<FunctorsBuffersManager&>(
+      c.any_map().try_emplace(adj_dx_fbm_key,std::in_place_type<FunctorsBuffersManager>).first->second);
+  fbm.request_size(caar.requested_buffer_size());
+  fbm.request_size(dirk.requested_buffer_size());
+  fbm.allocate();
+  caar.init_buffers(fbm);
+  dirk.init_buffers(fbm);
+}
 
 template<typename T>
 T& get_from_any_map (const char* key, const char* what)
@@ -149,6 +209,7 @@ void enable_adjoint ()
 
   params.store_fwd_state = true;
   ensure_imex_tape(nelem);
+  ensure_dx_fad_stacks();
   c.any_map().try_emplace(adj_state_key,std::in_place_type<StateSnapshot>,nelem);
 
   // The tracers adjoint (needed by prim_step_adj) only exists for Eulerian transport.
