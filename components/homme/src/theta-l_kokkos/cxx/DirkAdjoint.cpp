@@ -32,6 +32,7 @@ template<typename SS>
 struct SView {
   using V5 = decltype(ekat::scalarize(std::declval<SS&>().v));
   using V4 = decltype(ekat::scalarize(std::declval<SS&>().vtheta_dp));
+  using V4i = decltype(ekat::scalarize(std::declval<SS&>().w_i));
 
   explicit SView (SS& s)
    : v   (ekat::scalarize(s.v))
@@ -42,7 +43,8 @@ struct SView {
   {}
 
   V5 v;
-  V4 vth, dp, w, phi;
+  V4 vth, dp;
+  V4i w, phi;
 };
 
 template<typename SV>
