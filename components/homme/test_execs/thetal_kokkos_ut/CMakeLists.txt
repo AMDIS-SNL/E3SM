@@ -371,5 +371,20 @@ if (HOMMEXX_ENABLE_FAD_TYPES)
       LIBS thetal_kokkos_ut_lib
       LABELS AMDIS
     )
+
+    # Test the adjoint of vertical_remap (rsplit>0: dynamics, ps_v and all tracers) and
+    # update_q, against the DpFad-typed fwd code. Like prim_step_adj, the adjoint works on
+    # the Real-typed objects in the Context, so ScalarValue must be Real.
+    # Note: vertical_remap_adj.cpp is only compiled into this test for now (it has no other
+    # users yet).
+    set (VERTICAL_REMAP_ADJOINT_SOURCES
+      vertical_remap_adjoint_ut.cpp
+      ${SRC_SHARE_DIR}/cxx/vertical_remap_adj.cpp
+    )
+    EkatCreateUnitTest ("vertical_remap_adjoint_ut"
+      SOURCES "${VERTICAL_REMAP_ADJOINT_SOURCES}"
+      LIBS thetal_kokkos_ut_lib
+      LABELS AMDIS
+    )
   endif()
 endif()
