@@ -85,3 +85,20 @@ is skipped for the calls with a type other than `real`.
 `prim_step_adj` works on the Real-typed objects, so `'real'` must be enabled (it is, unless disabled).
 It recomputes the forward run from the checkpoint and restores the live Real state and time levels to the
 beginning of the `prim_step` on exit. Note that `prim_step('real')` is NOT needed before it.
+
+### Directions must be continuous across elements
+
+The model's fields are continuous across elements (they are DSS'd): the copies of a GLL node shared by
+neighboring elements hold the same value. The directions of the forward run (`delta`, `dqdp0` above), i.e., the
+directions you differentiate along, must be continuous too, e.g., smooth functions of (lat, lon, level), or random
+fields to which a DSS was applied. Independent random values on each node of each element are not valid directions.
+
+Why it matters: the tracers limiter clips to min/max bounds computed over the node values of an element and its
+neighbors, where the copies of a shared node tie exactly. The forward run (`dpfad`) takes the tangent of one of the
+tied values, the adjoint routes the gradient to a single winner (the element itself, else the first matching
+neighbor; the previous bound, else the first matching point of the column), and a finite difference averages. When the
+copies carry the same tangent, all of these agree (to ~1e-12 between `dpfad` and the adjoint, for smooth directions, with
+the limiter clipping about a third of the points). When they do not, they can differ by a few percent
+(`pyhomme/test_prim_step_adjoint.py` in the pyhommexx repo did, with independent random directions).
+
+The adjoint seeds (covectors, `set_adj_state_var`, `set_adj_qdp`) can be anything.
