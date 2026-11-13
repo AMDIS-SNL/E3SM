@@ -1579,9 +1579,13 @@ public:
     // g_bih from stage 3 above). The min/max reduction adjoint needs *no*
     // new communication (min/max never modifies the winning value, only
     // selects it): compare the taped pre-reduction candidate(s) against
-    // the post-reduction result, bit-exact, and route full gradient to
-    // every matching candidate (documented mild over-counting on exact
-    // ties, consistent with the project's kink-convention approach). ----
+    // the post-reduction result, bit-exact, and route the gradient to a
+    // single matching candidate (see the tie conventions below: exact ties
+    // are structural here, e.g., the copies of a node shared by neighboring
+    // elements). The fwd mode, the adjoint and finite differences resolve a
+    // tie in their own way, so they only agree when the tied candidates
+    // have the same tangent (directions must be continuous across elements:
+    // see pyhommexx/README.md). ----
     const bool has_exchange = (rhs_multiplier == 0.0 || rhs_multiplier == 2.0);
 
     // ---- 2a. exchange_min_max's forward reduction is NOT a broadcast to
@@ -1600,8 +1604,8 @@ public:
     // reverse above) must be routed entirely to whichever ONE of
     // {ie itself, ie's direct neighbors} actually produced ie's own
     // final(ie) -- bit-exact comparison against the pre-exchange tape,
-    // same "route to every matching candidate on ties" convention used
-    // elsewhere. Implemented as a direct host round trip over
+    // same "single winner on ties" convention used
+    // elsewhere (priority: ie itself, then the first matching neighbor). Implemented as a direct host round trip over
     // Connectivity's own per-element connection list (mirrors
     // exchange_min_max's own pack/unpack grouping, but as a scatter into
     // the *winner's* accumulator instead of a local combine) rather than
