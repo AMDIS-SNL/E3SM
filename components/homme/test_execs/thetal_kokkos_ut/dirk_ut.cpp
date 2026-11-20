@@ -365,6 +365,50 @@ TEST_CASE ("dirk_pieces_testing") {
         for (int k = 0; k < nlev; ++k)
           REQUIRE(equal(x2m(k,pi)[si], x3(i,j,k), 1e3*eps));
       }
+
+    // Test the transposed solver: x = solve_transpose(J,b) must satisfy J^T x = b, with J the
+    // original Jacobian (dlm, dm, dum, still holding the values before the solves above).
+    {
+      dfi::LinearSystem lsT("lsT", 1), lsB("lsB", 1);
+      const auto
+        dlT = dfi::get_ls_slot(lsT, 0, 0),
+        dT  = dfi::get_ls_slot(lsT, 0, 1),
+        duT = dfi::get_ls_slot(lsT, 0, 2),
+        scratchT = dfi::get_ls_slot(lsT, 0, 3),
+        bT  = dfi::get_ls_slot(lsB, 0, 0),
+        xT  = dfi::get_ls_slot(lsB, 0, 1);
+      const auto bTm = create_mirror_view(bT);
+      for (int k = 0; k < nlev; ++k)
+        for (int pi = 0; pi < dfi::npack; ++pi)
+          for (int si = 0; si < dfi::packn; ++si)
+            bTm(k,pi)[si] = r.urrng(-1,1);
+      deep_copy(bT, bTm);
+      for (const bool bfb : {false, true}) {
+        deep_copy(xT, bT);
+        deep_copy(dlT, dlm); deep_copy(dT, dm); deep_copy(duT, dum);
+        const auto fT = KOKKOS_LAMBDA(const dfi::MT& t) {
+          KernelVariables kv(t);
+          dfi::solve_transpose(kv, dlT, dT, duT, scratchT, xT, bfb);
+        };
+        parallel_for(d1.m_policy, fT); fence();
+        const auto xTm = cmvdc(xT);
+        for (int i = 0; i < np; ++i)
+          for (int j = 0; j < np; ++j) {
+            const auto
+              idx = np*i + j,
+              pi = idx / dfi::packn,
+              si = idx % dfi::packn;
+            for (int k = 0; k < nlev; ++k) {
+              // (J^T x)(k) = d(k) x(k) + du(k-1) x(k-1) + dl(k+1) x(k+1)
+              ScalarValue jtx = dm(k,pi)[si]*xTm(k,pi)[si];
+              if (k > 0)      jtx += dum(k-1,pi)[si]*xTm(k-1,pi)[si];
+              if (k < nlev-1) jtx += dlm(k+1,pi)[si]*xTm(k+1,pi)[si];
+              // (almost_equal uses a relative error with an offset of 1: ~absolute for the O(1) b)
+              REQUIRE(almost_equal(jtx, bTm(k,pi)[si], 1e5*eps));
+            }
+          }
+      }
+    }
   }
 
   SECTION ("pnh_and_exner_from_eos") {

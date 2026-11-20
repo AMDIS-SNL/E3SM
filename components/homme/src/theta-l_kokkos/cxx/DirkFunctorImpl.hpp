@@ -549,62 +549,18 @@ struct DirkFunctorImplST {
       LinearSystemSlot x = subview(xfull, Kokkos::pair<int,int>(0,nlev), a);
       xfull(nlev,0)[0] = 0.0;
 
-      const auto transpose4 = [&] (const int nt, const bool transpose_phi_np1 = true) {
-        transpose(kv, nlev+1, subview(e_w_i      ,ie,nt,a,a,a), w_np1    );
-        transpose(kv, nlev,   subview(e_vtheta_dp,ie,nt,a,a,a), vtheta_dp);
-        transpose(kv, nlev,   subview(e_dp3d     ,ie,nt,a,a,a), dp3d     );
-        if ( ! transpose_phi_np1) return;
-        transpose(kv, nlev+1, subview(e_phinh_i  ,ie,nt,a,a,a), phi_np1  );
+      // Compute w_n0, phi_n0 (the 'known' parts of the equations), and the np1 vtheta_dp and dp3d.
+      const auto state_at = [&] (const int nt) {
+        return make_state_views(subview(e_w_i      ,ie,nt,a,a,a),
+                                subview(e_phinh_i  ,ie,nt,a,a,a),
+                                subview(e_vtheta_dp,ie,nt,a,a,a),
+                                subview(e_dp3d     ,ie,nt,a,a,a),
+                                subview(e_v        ,ie,nt,a,a,a,a));
       };
-
-      const auto accum_n0 = [&] (const Real dt3, const int nt) {
-        // Computing these transposes is inefficient, but doing so lets us use
-        // the same pnh_and_exner_from_eos as we use elsewhere. This function is
-        // called only in ~1 out of 5 DIRK stage calls, and only outside of the
-        // Newton iteration. (Also, tbc, transpose and pnh_and_exner_from_eos
-        // are parallel efficient.)
-        transpose4(nt);
-        calc_gwphis(kv, subview(e_dp3d,ie,nt,a,a,a), subview(e_v,ie,nt,a,a,a,a),
-                    subview(e_gradphis,ie,a,a,a), hybi, gwh_i);
-        kv.team_barrier();
-        loop_ki(kv, nlev, nvec, [&] (int k, int i) {
-          dphi(k,i) = phi_np1(k+1,i) - phi_np1(k,i);
-        });
-        kv.team_barrier();
-        const bool ok = pnh_and_exner_from_eos(kv, hvcoord, eos, vtheta_dp, dp3d,
-                                               dphi, pnh, wrk, dpnh_dp_i);
-        if ( ! ok) nerr = 1;
-        kv.team_barrier();
-        loop_ki(kv, nlev, nvec, [&] (const int k, const int i) {
-          w_n0(k,i) += dt3*grav*(dpnh_dp_i(k,i) - 1);
-        });
-        loop_ki(kv, nlev, nvec, [&] (int k, int i) {
-          phi_n0(k,i) = phi_n0(k,i) + dt3*grav*w_np1(k,i) - dt3*gwh_i(k,i);
-        });
-      };
-
-      // Compute w_n0, phi_n0.
-      transpose(kv, nlev+1, subview(e_phinh_i,ie,np1,a,a,a), phi_n0);
-      transpose(kv, nlev+1, subview(e_w_i    ,ie,np1,a,a,a), w_n0  );
-      kv.team_barrier();
-      // wmax is computed before optional updates to w_n0.
-      const auto wmax = calc_wmax(kv, nlev+1, nvec, w_n0);
-      // Computed only in some cases.
-      if (alphadt_n0 != 0) {
-        accum_n0(alphadt_n0, n0);
-        kv.team_barrier();
-      }
-      if (alphadt_nm1 != 0) {
-        assert(nm1 >= 0);
-        accum_n0(alphadt_nm1, nm1);
-        kv.team_barrier();
-      }
-      // Always computed.
-      transpose4(np1, false);
-      calc_gwphis(kv, subview(e_dp3d,ie,np1,a,a,a), subview(e_v,ie,np1,a,a,a,a),
-                  subview(e_gradphis,ie,a,a,a), hybi, gwh_i);
-      kv.team_barrier();
-      loop_ki(kv, nlev, nvec, [&] (int k, int i) { phi_n0(k,i) -= dt2*gwh_i(k,i); });
+      const auto wmax = calc_w0_phi0(kv, hvcoord, eos, dt2, nm1, alphadt_nm1, n0, alphadt_n0, np1,
+                                     state_at, subview(e_gradphis,ie,a,a,a), hybi,
+                                     phi_n0, phi_np1, dphi, w_n0, w_np1, dpnh_dp_i, gwh_i,
+                                     vtheta_dp, dp3d, pnh, wrk, nerr);
 
       // Initial guess for phi_np1.
       if (calc_initial_guess_in_newton_kernel) {
@@ -639,9 +595,7 @@ struct DirkFunctorImplST {
                                                dphi, pnh, wrk, dpnh_dp_i);
         if ( ! ok) nerr = 1;
         kv.team_barrier();
-        loop_ki(kv, nlev, nvec, [&] (const int k, const int i) {
-          x(k,i) = -(w_np1(k,i) - (w_n0(k,i) + grav*dt2*(dpnh_dp_i(k,i) - 1))); // -residual
-        });
+        calc_neg_residual(kv, nlev, nvec, grav, dt2, w_np1, w_n0, dpnh_dp_i, x);
 
         calc_jacobian(kv, constants, dt2, dp3d, dphi, pnh, dl, d, du);
         kv.team_barrier();
@@ -785,6 +739,124 @@ struct DirkFunctorImplST {
       Kokkos::parallel_for(p, g);
     };    
     Kokkos::parallel_for(Kokkos::TeamThreadRange(kv.team, NP*NP), f);
+  }
+
+  // Views of the state at one time level of one element, in Hxx format, as returned by
+  // the state_at callable passed to calc_w0_phi0.
+  template <typename Vi, typename Vm, typename Vv>
+  struct StateViews {
+    Vi w_i, phinh_i;       // interfaces
+    Vm vtheta_dp, dp3d;    // midpoints
+    Vv v;                  // horizontal velocity
+  };
+
+  template <typename Vi, typename Vm, typename Vv>
+  KOKKOS_INLINE_FUNCTION
+  static StateViews<Vi,Vm,Vv> make_state_views (const Vi& w_i, const Vi& phinh_i,
+                                                const Vm& vtheta_dp, const Vm& dp3d,
+                                                const Vv& v) {
+    return StateViews<Vi,Vm,Vv>{w_i, phinh_i, vtheta_dp, dp3d, v};
+  }
+
+  // The equations that the Newton iteration solves for w_np1 are, in each column,
+  //   r(w) = w - (w0 + g*dt2*(dpnh_dp(vtheta_dp,dp3d,dphi) - 1)) = 0,
+  //   dphi = diff(phi0) + dt2*g*diff(w),     phi_np1 = phi0 + dt2*g*w,
+  // where w0 and phi0 are the 'known' parts: the np1 state before the stage, plus the terms coming
+  // from the states at n0 and nm1 (if alphadt_n0 and alphadt_nm1 are not 0), and, for phi0, the
+  // vertical velocity induced by the topography. This computes, in DIRK format and for all the
+  // columns of one element, w_n0 (=w0) and phi_n0 (=phi0), and loads the np1 vtheta_dp and dp3d
+  // (and w_np1 with the np1 w). The state of each time level comes from state_at(nt), which
+  // returns a StateViews (see make_state_views): this way, the state can come from anywhere (not
+  // only from the Elements). The work slots are all scratch (they are overwritten), and wrk, pnh,
+  // dpnh_dp_i, gwh_i are only used as such. Returns wmax = max(1, max|w(np1)|), computed before
+  // adding the n0/nm1 terms. Must be called by the whole team. It does not end with a team barrier
+  // (the caller adds one before using the outputs, if needed).
+  template <typename StateAt, typename GPhis, typename Hybi>
+  KOKKOS_INLINE_FUNCTION
+  static ST calc_w0_phi0 (const KernelVariables& kv, const HybridVCoord& hvcoord,
+                          const EquationOfState<Constants>& eos, const Real dt2,
+                          const int nm1, const Real alphadt_nm1,
+                          const int n0, const Real alphadt_n0, const int np1,
+                          const StateAt& state_at, const GPhis& gradphis, const Hybi& hybi,
+                          const WorkSlot& phi_n0, const WorkSlot& phi_np1, const WorkSlot& dphi,
+                          const WorkSlot& w_n0, const WorkSlot& w_np1, const WorkSlot& dpnh_dp_i,
+                          const WorkSlot& gwh_i, const WorkSlot& vtheta_dp, const WorkSlot& dp3d,
+                          const WorkSlot& pnh, const WorkSlot& wrk, int& nerr) {
+    const int nlev = num_phys_lev;
+    const int nvec = npack;
+    const auto grav = eos.m_constants.g();
+
+    const auto transpose4 = [&] (const auto& s, const bool transpose_phi_np1 = true) {
+      transpose(kv, nlev+1, s.w_i      , w_np1    );
+      transpose(kv, nlev,   s.vtheta_dp, vtheta_dp);
+      transpose(kv, nlev,   s.dp3d     , dp3d     );
+      if ( ! transpose_phi_np1) return;
+      transpose(kv, nlev+1, s.phinh_i  , phi_np1  );
+    };
+
+    // Add to w_n0, phi_n0 the contribution of the state at time level nt (n0 or nm1), weighted by dt3.
+    const auto accum_time_level = [&] (const Real dt3, const int nt) {
+      // Computing these transposes is inefficient, but doing so lets us use
+      // the same pnh_and_exner_from_eos as we use elsewhere. This function is
+      // called only in ~1 out of 5 DIRK stage calls, and only outside of the
+      // Newton iteration. (Also, tbc, transpose and pnh_and_exner_from_eos
+      // are parallel efficient.)
+      const auto s = state_at(nt);
+      transpose4(s);
+      calc_gwphis(kv, s.dp3d, s.v, gradphis, hybi, gwh_i);
+      kv.team_barrier();
+      loop_ki(kv, nlev, nvec, [&] (int k, int i) {
+        dphi(k,i) = phi_np1(k+1,i) - phi_np1(k,i);
+      });
+      kv.team_barrier();
+      const bool ok = pnh_and_exner_from_eos(kv, hvcoord, eos, vtheta_dp, dp3d,
+                                             dphi, pnh, wrk, dpnh_dp_i);
+      if ( ! ok) nerr = 1;
+      kv.team_barrier();
+      loop_ki(kv, nlev, nvec, [&] (const int k, const int i) {
+        w_n0(k,i) += dt3*grav*(dpnh_dp_i(k,i) - 1);
+      });
+      loop_ki(kv, nlev, nvec, [&] (int k, int i) {
+        phi_n0(k,i) = phi_n0(k,i) + dt3*grav*w_np1(k,i) - dt3*gwh_i(k,i);
+      });
+    };
+
+    // Compute w_n0, phi_n0.
+    const auto s_np1 = state_at(np1);
+    transpose(kv, nlev+1, s_np1.phinh_i, phi_n0);
+    transpose(kv, nlev+1, s_np1.w_i    , w_n0  );
+    kv.team_barrier();
+    // wmax is computed before optional updates to w_n0.
+    const auto wmax = calc_wmax(kv, nlev+1, nvec, w_n0);
+    // Computed only in some cases.
+    if (alphadt_n0 != 0) {
+      accum_time_level(alphadt_n0, n0);
+      kv.team_barrier();
+    }
+    if (alphadt_nm1 != 0) {
+      assert(nm1 >= 0);
+      accum_time_level(alphadt_nm1, nm1);
+      kv.team_barrier();
+    }
+    // Always computed.
+    transpose4(s_np1, false);
+    calc_gwphis(kv, s_np1.dp3d, s_np1.v, gradphis, hybi, gwh_i);
+    kv.team_barrier();
+    loop_ki(kv, nlev, nvec, [&] (int k, int i) { phi_n0(k,i) -= dt2*gwh_i(k,i); });
+    return wmax;
+  }
+
+  // x = -r(w), with r the residual of the equations solved by the Newton iteration (see
+  // calc_w0_phi0), given dpnh_dp_i (see pnh_and_exner_from_eos) evaluated at w.
+  template <typename GravT>
+  KOKKOS_INLINE_FUNCTION
+  static void calc_neg_residual (const KernelVariables& kv, const int nlev, const int nvec,
+                                 const GravT& grav, const Real dt2,
+                                 const WorkSlot& w_np1, const WorkSlot& w_n0,
+                                 const WorkSlot& dpnh_dp_i, const LinearSystemSlot& x) {
+    loop_ki(kv, nlev, nvec, [&] (const int k, const int i) {
+      x(k,i) = -(w_np1(k,i) - (w_n0(k,i) + grav*dt2*(dpnh_dp_i(k,i) - 1))); // -residual
+    });
   }
 
   // Compute a vertical velocity induced by surface topography:
@@ -1079,6 +1151,30 @@ struct DirkFunctorImplST {
       const auto f = [&] () { scream::tridiag::thomas(dl, d, du, x); };
       Kokkos::single(Kokkos::PerTeam(kv.team), f);
     }
+  }
+
+  // Solve J^T x = b, where J is the tridiagonal matrix described by (dl, d, du) (as computed by
+  // calc_jacobian, see above) and x holds b on input. J^T has sub-diagonal du(k-1) (row k) and
+  // super-diagonal dl(k+1) (row k), so we build the (dl, du) of J^T (in dl and du) and solve as usual.
+  // Like solve, this overwrites dl, d, du. scratch is a linear-system slot (as big as dl). Must be called by the whole
+  // team, and ends with the same synchronization as solve (the caller adds the barrier before using x).
+  template <typename W>
+  KOKKOS_INLINE_FUNCTION
+  static void solve_transpose (const KernelVariables& kv,
+                               const W& dl, const W& d, const W& du, const W& scratch, const W& x,
+                               const bool bfb_solver = default_bfb_solver) {
+    const int nlev = num_phys_lev, nvec = npack;
+    loop_ki(kv, nlev, nvec, [&] (const int k, const int i) {
+      if (k > 0) scratch(k,i) = du(k-1,i); else scratch(k,i) = 0;
+    });
+    kv.team_barrier();
+    loop_ki(kv, nlev, nvec, [&] (const int k, const int i) {
+      if (k < nlev-1) du(k,i) = dl(k+1,i); else du(k,i) = 0;
+    });
+    kv.team_barrier();
+    loop_ki(kv, nlev, nvec, [&] (const int k, const int i) { dl(k,i) = scratch(k,i); });
+    kv.team_barrier();
+    if (bfb_solver) solvebfb(kv, dl, d, du, x); else solve(kv, dl, d, du, x);
   }
 
   template <typename W>
