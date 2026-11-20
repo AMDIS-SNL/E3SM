@@ -1156,23 +1156,23 @@ struct DirkFunctorImplST {
   // Solve J^T x = b, where J is the tridiagonal matrix described by (dl, d, du) (as computed by
   // calc_jacobian, see above) and x holds b on input. J^T has sub-diagonal du(k-1) (row k) and
   // super-diagonal dl(k+1) (row k), so we build the (dl, du) of J^T (in dl and du) and solve as usual.
-  // Like solve, this overwrites dl, d, du. ws is scratch (as big as dl). Must be called by the whole
+  // Like solve, this overwrites dl, d, du. scratch is a linear-system slot (as big as dl). Must be called by the whole
   // team, and ends with the same synchronization as solve (the caller adds the barrier before using x).
   template <typename W>
   KOKKOS_INLINE_FUNCTION
   static void solve_transpose (const KernelVariables& kv,
-                               const W& dl, const W& d, const W& du, const W& ws, const W& x,
+                               const W& dl, const W& d, const W& du, const W& scratch, const W& x,
                                const bool bfb_solver = default_bfb_solver) {
     const int nlev = num_phys_lev, nvec = npack;
     loop_ki(kv, nlev, nvec, [&] (const int k, const int i) {
-      if (k > 0) ws(k,i) = du(k-1,i); else ws(k,i) = 0;
+      if (k > 0) scratch(k,i) = du(k-1,i); else scratch(k,i) = 0;
     });
     kv.team_barrier();
     loop_ki(kv, nlev, nvec, [&] (const int k, const int i) {
       if (k < nlev-1) du(k,i) = dl(k+1,i); else du(k,i) = 0;
     });
     kv.team_barrier();
-    loop_ki(kv, nlev, nvec, [&] (const int k, const int i) { dl(k,i) = ws(k,i); });
+    loop_ki(kv, nlev, nvec, [&] (const int k, const int i) { dl(k,i) = scratch(k,i); });
     kv.team_barrier();
     if (bfb_solver) solvebfb(kv, dl, d, du, x); else solve(kv, dl, d, du, x);
   }

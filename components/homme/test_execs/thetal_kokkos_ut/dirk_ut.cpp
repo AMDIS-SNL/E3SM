@@ -374,7 +374,7 @@ TEST_CASE ("dirk_pieces_testing") {
         dlT = dfi::get_ls_slot(lsT, 0, 0),
         dT  = dfi::get_ls_slot(lsT, 0, 1),
         duT = dfi::get_ls_slot(lsT, 0, 2),
-        wsT = dfi::get_ls_slot(lsT, 0, 3),
+        scratchT = dfi::get_ls_slot(lsT, 0, 3),
         bT  = dfi::get_ls_slot(lsB, 0, 0),
         xT  = dfi::get_ls_slot(lsB, 0, 1);
       const auto bTm = create_mirror_view(bT);
@@ -388,7 +388,7 @@ TEST_CASE ("dirk_pieces_testing") {
         deep_copy(dlT, dlm); deep_copy(dT, dm); deep_copy(duT, dum);
         const auto fT = KOKKOS_LAMBDA(const dfi::MT& t) {
           KernelVariables kv(t);
-          dfi::solve_transpose(kv, dlT, dT, duT, wsT, xT, bfb);
+          dfi::solve_transpose(kv, dlT, dT, duT, scratchT, xT, bfb);
         };
         parallel_for(d1.m_policy, fT); fence();
         const auto xTm = cmvdc(xT);
