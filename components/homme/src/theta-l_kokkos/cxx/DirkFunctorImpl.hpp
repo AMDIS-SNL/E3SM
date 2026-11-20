@@ -794,7 +794,8 @@ struct DirkFunctorImplST {
       transpose(kv, nlev+1, s.phinh_i  , phi_np1  );
     };
 
-    const auto accum_n0 = [&] (const Real dt3, const int nt) {
+    // Add to w_n0, phi_n0 the contribution of the state at time level nt (n0 or nm1), weighted by dt3.
+    const auto accum_time_level = [&] (const Real dt3, const int nt) {
       // Computing these transposes is inefficient, but doing so lets us use
       // the same pnh_and_exner_from_eos as we use elsewhere. This function is
       // called only in ~1 out of 5 DIRK stage calls, and only outside of the
@@ -829,12 +830,12 @@ struct DirkFunctorImplST {
     const auto wmax = calc_wmax(kv, nlev+1, nvec, w_n0);
     // Computed only in some cases.
     if (alphadt_n0 != 0) {
-      accum_n0(alphadt_n0, n0);
+      accum_time_level(alphadt_n0, n0);
       kv.team_barrier();
     }
     if (alphadt_nm1 != 0) {
       assert(nm1 >= 0);
-      accum_n0(alphadt_nm1, nm1);
+      accum_time_level(alphadt_nm1, nm1);
       kv.team_barrier();
     }
     // Always computed.
