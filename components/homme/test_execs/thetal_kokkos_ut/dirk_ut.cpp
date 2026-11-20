@@ -400,10 +400,11 @@ TEST_CASE ("dirk_pieces_testing") {
               si = idx % dfi::packn;
             for (int k = 0; k < nlev; ++k) {
               // (J^T x)(k) = d(k) x(k) + du(k-1) x(k-1) + dl(k+1) x(k+1)
-              Real jtx = dm(k,pi)[si]*xTm(k,pi)[si];
+              ScalarValue jtx = dm(k,pi)[si]*xTm(k,pi)[si];
               if (k > 0)      jtx += dum(k-1,pi)[si]*xTm(k-1,pi)[si];
               if (k < nlev-1) jtx += dlm(k+1,pi)[si]*xTm(k+1,pi)[si];
-              REQUIRE(std::abs(jtx - bTm(k,pi)[si]) <= 1e5*eps); // absolute: b is O(1)
+              // (almost_equal uses a relative error with an offset of 1: ~absolute for the O(1) b)
+              REQUIRE(almost_equal(jtx, bTm(k,pi)[si], 1e5*eps));
             }
           }
       }
