@@ -2,7 +2,11 @@
 
 #include "DirkFunctorImpl.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <random>
+#include <vector>
 
 #include "Types.hpp"
 #include "Context.hpp"
@@ -488,6 +492,207 @@ TEST_CASE ("dirk_jtv_testing") {
                 << "       <a, J*b> = " << gdot.v[0]
                 << ",  <J^T*a, b> = " << gdot.v[1] << "\n";
     }
+  }
+
+  Context::finalize_singleton();
+}
+
+TEST_CASE ("dirk_ift_jtv_testing") {
+  // J^T*mu of a DIRK stage, from the implicit function theorem (run_adjoint: one transposed
+  // tridiagonal solve per column, and a Fad type with few derivatives), against the dense one (run_JtV,
+  // which differentiates through the Newton iterations, with a Dx-Fad type). The seeds are the same, and so are the states.
+  // We check the products with the Jacobians w.r.t. the states at np1, n0 and nm1.
+
+  std::random_device rd;
+  const unsigned int catchRngSeed = Catch::rngSeed();
+  unsigned int seed = catchRngSeed == 0 ? rd() : catchRngSeed;
+  std::cout << "seed: " << seed << (catchRngSeed == 0 ? " (catch rng seed was 0)\n" : "\n");
+
+  using ipdf = std::uniform_int_distribution<int>;
+  using rpdf = std::uniform_real_distribution<Real>;
+  using rngAlg = std::mt19937_64;
+
+  rngAlg engine(seed);
+
+  Context::finalize_singleton();
+  Context::singleton().create<ekat::Comm>(MPI_COMM_WORLD);
+
+  // The dense one differentiates through the Newton iterations (which stop when the increment is
+  // below 1e-11, or 1e-6 in BFB testing mode), while the IFT one differentiates the exact solution:
+  // they differ by about that much.
+#ifdef HOMMEXX_BFB_TESTING
+  const Real rtol = 1e-4;
+#else
+  const Real rtol = 1e-7;
+#endif
+  const int num_elems = ipdf(5, 20)(engine);
+  const int nm1 = 0;
+  const int n0  = 1;
+  const int np1 = 2;
+
+  HybridVCoord hvcoord;
+  hvcoord.random_init(seed++);
+  const auto max_pressure = 1000 + hvcoord.ps0;
+
+  using DxFadType = DxFadTypeDirk;
+  using DirkDx = DirkFunctorImplST<DxFadType>;
+
+  ElementsST<DxFadType> elems_dx;
+  elems_dx.init(num_elems, true, PhysicalConstants::rearth0, -1, true);
+
+  auto& geometry = elems_dx.m_geometry;
+  Context::singleton().create_ref(geometry);
+  geometry.randomize(seed++);
+
+  StateSnapshot mu(num_elems);
+  mu.randomize(seed++, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geometry.m_phis);
+
+  DirkDx dirk_dx(num_elems);
+  dirk_dx.m_verbose = false;
+  DirkFunctorImplST<DirkAdjFadType> dirk_adj(num_elems);
+
+  FunctorsBuffersManager fbm;
+  fbm.request_size(dirk_dx.requested_buffer_size());
+  fbm.request_size(dirk_adj.requested_buffer_size());
+  fbm.allocate();
+  dirk_dx.init_buffers(fbm);
+  dirk_adj.init_buffers(fbm);
+
+  Real dt2 = 0;
+  const bool bfb_solver = false;
+
+  // The error is checked level by level (a field spans many levels, with very different magnitudes,
+  // and the surface/top levels are special), relative to the max |dense| over the level. The floor
+  // (1e-3 of the max over the whole field) avoids dividing by values that are zero by cancellation.
+  struct Err { std::vector<Real> err, scale; Err(int n) : err(n,0), scale(n,0) {} };
+  auto compare = [&] (const StateSnapshot& a, const StateSnapshot& b,
+                      const std::string& what) {
+    auto h = [] (const auto& v) {
+      return Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(),ekat::scalarize(v));
+    };
+    const auto av = h(a.v),   bv = h(b.v);
+    const auto avt = h(a.vtheta_dp), bvt = h(b.vtheta_dp);
+    const auto adp = h(a.dp3d),      bdp = h(b.dp3d);
+    const auto aw  = h(a.w_i),       bw  = h(b.w_i);
+    const auto aph = h(a.phinh_i),   bph = h(b.phinh_i);
+
+    Err ev(NUM_PHYSICAL_LEV), evt(NUM_PHYSICAL_LEV), edp(NUM_PHYSICAL_LEV),
+        ew(NUM_INTERFACE_LEV), eph(NUM_INTERFACE_LEV);
+    auto upd = [] (Err& e, const int k, const Real x, const Real y) {
+      // !(<=) so that NaNs are caught
+      const Real d = std::abs(x-y);
+      e.err[k]   = (d>e.err[k] or std::isnan(d)) ? d : e.err[k];
+      e.scale[k] = std::max(e.scale[k], std::abs(x));
+    };
+    for (int ie=0; ie<num_elems; ++ie) {
+      for (int ip=0; ip<NP; ++ip) {
+        for (int jp=0; jp<NP; ++jp) {
+          for (int k=0; k<NUM_PHYSICAL_LEV; ++k) {
+            upd(ev, k, av(ie,0,ip,jp,k), bv(ie,0,ip,jp,k));
+            upd(ev, k, av(ie,1,ip,jp,k), bv(ie,1,ip,jp,k));
+            upd(evt,k, avt(ie,ip,jp,k),  bvt(ie,ip,jp,k));
+            upd(edp,k, adp(ie,ip,jp,k),  bdp(ie,ip,jp,k));
+          }
+          for (int k=0; k<NUM_INTERFACE_LEV; ++k) {
+            upd(ew, k, aw (ie,ip,jp,k), bw (ie,ip,jp,k));
+            upd(eph,k, aph(ie,ip,jp,k), bph(ie,ip,jp,k));
+          }
+        }
+      }
+    }
+    const std::pair<std::string,const Err*> errs[] = {
+      {"v",&ev}, {"vtheta_dp",&evt}, {"dp3d",&edp}, {"w_i",&ew}, {"phinh_i",&eph}
+    };
+    for (const auto& it : errs) {
+      const auto& e = *it.second;
+      const Real fscale = *std::max_element(e.scale.begin(),e.scale.end());
+      Real worst = 0;
+      int  worst_k = -1;
+      for (size_t k=0; k<e.err.size(); ++k) {
+        const Real ratio = e.err[k] / std::max({e.scale[k], 1e-3*fscale, Real(1e-10)});
+        if (not (ratio<=worst)) { worst = ratio; worst_k = k; }
+      }
+      std::cout << std::setprecision(6)
+                << "      [" << what << "] " << it.first << ": max level-relative |dense-ift| = " << worst
+                << " (level " << worst_k << "), max|dense| = " << fscale << "\n";
+      CHECK (worst <= rtol);
+    }
+  };
+
+  auto poison = [] (StateSnapshot& s) {
+    const Real nan = std::numeric_limits<Real>::quiet_NaN();
+    Kokkos::deep_copy(ekat::scalarize(s.v),nan);
+    Kokkos::deep_copy(ekat::scalarize(s.vtheta_dp),nan);
+    Kokkos::deep_copy(ekat::scalarize(s.dp3d),nan);
+    Kokkos::deep_copy(ekat::scalarize(s.w_i),nan);
+    Kokkos::deep_copy(ekat::scalarize(s.phinh_i),nan);
+  };
+
+  for (int idt=0; idt<2; ++idt) {
+   dt2 = rpdf(0.1, 0.9)(engine);
+   printf("-> dt2: %f\n", dt2);
+   for (Real alphadt_nm1 : {0.0, 0.3}) {
+    printf(" -> alphadt_nm1: %f\n", alphadt_nm1);
+    for (Real alphadt_n0 : {0.0, 0.7}) {
+      printf("  -> alphadt_n0: %f\n", alphadt_n0);
+
+      // New random state and seed for each combination
+      mu.randomize(seed++, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geometry.m_phis);
+      elems_dx.m_state.randomize(seed++, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geometry.m_phis);
+
+      // The values of the states at the 3 time levels, before the stage
+      auto s_nm1 = elems_dx.m_state.take_snapshot(nm1);
+      auto s_n0  = elems_dx.m_state.take_snapshot(n0);
+      auto s_pre = elems_dx.m_state.take_snapshot(np1);
+
+      // Dense: replay the stage with the derivs w.r.t. the state at itl, and apply J^T
+      StateSnapshot d_np1(num_elems), d_n0(num_elems), d_nm1(num_elems);
+      auto dense = [&] (const int itl, StateSnapshot& out) {
+        elems_dx.m_state.import_snapshot(s_pre,np1);
+        dirk_dx.init_J(itl, elems_dx.m_state);
+        dirk_dx.run(nm1, alphadt_nm1, n0, alphadt_n0, np1, dt2, elems_dx, hvcoord, bfb_solver);
+        Kokkos::fence();
+        dirk_dx.run_JtV(np1, elems_dx.m_state, mu, out);
+        Kokkos::fence();
+      };
+      dense(np1,d_np1);
+      // The converged solution (the same for all the runs, as the Fad derivatives don't affect the values)
+      auto s_post = elems_dx.m_state.take_snapshot(np1);
+      if (alphadt_n0 != 0) {
+        dense(n0,d_n0);
+      }
+      if (alphadt_nm1 != 0) {
+        dense(nm1,d_nm1);
+      }
+
+      // IFT
+      // (The outputs must be fully overwritten: start from NaNs)
+      StateSnapshot i_np1(num_elems), i_n0(num_elems), i_nm1(num_elems);
+      poison(i_np1); poison(i_n0); poison(i_nm1);
+      dirk_adj.run_adjoint(alphadt_nm1, alphadt_n0, dt2, geometry, hvcoord,
+                           alphadt_nm1!=0 ? &s_nm1 : nullptr, alphadt_n0!=0 ? &s_n0 : nullptr,
+                           s_pre, s_post, mu, i_np1,
+                           alphadt_n0!=0 ? &i_n0 : nullptr, alphadt_nm1!=0 ? &i_nm1 : nullptr,
+                           bfb_solver);
+
+      compare(d_np1,i_np1,"np1");
+
+      // Aliased seed and output (documented as allowed)
+      {
+        auto mu_alias = mu.clone(true);
+        dirk_adj.run_adjoint(alphadt_nm1, alphadt_n0, dt2, geometry, hvcoord,
+                             alphadt_nm1!=0 ? &s_nm1 : nullptr, alphadt_n0!=0 ? &s_n0 : nullptr,
+                             s_pre, s_post, mu_alias, mu_alias, nullptr, nullptr, bfb_solver);
+        compare(d_np1,mu_alias,"np1 (mu aliased with the output)");
+      }
+      if (alphadt_n0 != 0) {
+        compare(d_n0,i_n0,"n0");
+      }
+      if (alphadt_nm1 != 0) {
+        compare(d_nm1,i_nm1,"nm1");
+      }
+    }
+   }
   }
 
   Context::finalize_singleton();
