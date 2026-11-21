@@ -1,4 +1,7 @@
 #include <catch2/catch.hpp>
+#include <algorithm>
+#include <cmath>
+#include <vector>
 
 #include "Types.hpp"
 #include "thetal_f90_interface.hpp"
@@ -581,6 +584,13 @@ TEST_CASE("ttype10_imex_adjoint")
   printf(" -> Run adjoint problem...done!\n");
   auto lambda0 = lambda.clone(true);
 
+  // Same adjoint, with the (more expensive) DIRK adjoint that differentiates through the Newton
+  // iterations with Fad types. It keeps the two DIRK adjoints honest on a full trajectory: the IFT
+  // one differentiates the exact root, the dense one the truncated Newton iterations (stopped when the
+  // increment is below 1e-11, or 1e-6 in BFB testing mode), so they agree up to about that much.
+  auto lambda0_dense = lambdaN.clone(true);
+  ttype10_imex_adjoint(dt,eta_ave_w,lambda0_dense,nullptr,DirkAdjMethod::Dense);
+
   // Compare du0*lambda0 with duN*lambdaN
   auto v_dot0 = dot(ekat::scalarize(du0.v),ekat::scalarize(lambda0.v),nlevs);
   auto v_dotN = dot(ekat::scalarize(duN.v),ekat::scalarize(lambdaN.v),nlevs);
@@ -611,6 +621,55 @@ TEST_CASE("ttype10_imex_adjoint")
                 << ",  <duN, lambdaN> = " << full_dotN << "\n";
   }
 
+
+  // Compare the IFT and dense adjoints, level by level (relative to the max over the level, with a
+  // floor of 1e-3 of the max over the whole field, to avoid dividing by values that are ~0)
+#ifdef HOMMEXX_BFB_TESTING
+  const Real dense_rtol = 1e-3;
+#else
+  const Real dense_rtol = 1e-6;
+#endif
+  auto compare_levels = [&] (const int nl, const int ncomp, const std::string& name,
+                             const auto& get_a, const auto& get_b) {
+    std::vector<Real> err(nl,0), scale(nl,0);
+    for (int ie=0; ie<num_elems; ++ie)
+      for (int c=0; c<ncomp; ++c)
+        for (int ip=0; ip<NP; ++ip)
+          for (int jp=0; jp<NP; ++jp)
+            for (int k=0; k<nl; ++k) {
+              const Real x = get_a(ie,c,ip,jp,k);
+              const Real y = get_b(ie,c,ip,jp,k);
+              const Real d = std::abs(x-y);
+              err[k]   = (d>err[k] or std::isnan(d)) ? d : err[k];
+              scale[k] = std::max(scale[k],std::abs(y));
+            }
+    const Real fscale = *std::max_element(scale.begin(),scale.end());
+    Real worst = 0;
+    for (int k=0; k<nl; ++k) {
+      const Real ratio = err[k] / std::max({scale[k],1e-3*fscale,Real(1e-30)});
+      if (not (ratio<=worst)) worst = ratio;
+    }
+    if (comm.am_i_root())
+      std::cout << "   [ift vs dense] " << name << ": max level-relative diff = " << worst << "\n";
+    CHECK (worst<=dense_rtol);
+  };
+  auto host = [] (const auto& v) {
+    return Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(),ekat::scalarize(v));
+  };
+  {
+    const auto a = host(lambda0.v),         b = host(lambda0_dense.v);
+    compare_levels(nlevs,2,"v",[&](int e,int c,int i,int j,int k){return a(e,c,i,j,k);},
+                               [&](int e,int c,int i,int j,int k){return b(e,c,i,j,k);});
+  }
+  auto cmp4 = [&] (const auto& x, const auto& y, const int nl, const std::string& name) {
+    const auto a = host(x), b = host(y);
+    compare_levels(nl,1,name,[&](int e,int,int i,int j,int k){return a(e,i,j,k);},
+                             [&](int e,int,int i,int j,int k){return b(e,i,j,k);});
+  };
+  cmp4(lambda0.vtheta_dp,lambda0_dense.vtheta_dp,nlevs,   "vtheta_dp");
+  cmp4(lambda0.dp3d,     lambda0_dense.dp3d,     nlevs,   "dp3d");
+  cmp4(lambda0.w_i,      lambda0_dense.w_i,      nlevs+1, "w_i");
+  cmp4(lambda0.phinh_i,  lambda0_dense.phinh_i,  nlevs+1, "phinh_i");
 }
 
 } // namespace Homme

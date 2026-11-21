@@ -20,7 +20,10 @@
 #include "utilities/MathUtils.hpp"
 #include "utilities/scream_tridiag.hpp"
 
+#include <ekat_assert.hpp>
+
 #include <cassert>
+#include <type_traits>
 
 namespace Homme {
 
@@ -91,6 +94,23 @@ struct DirkFunctorImplST {
   TeamPolicy m_policy, m_ig_policy;
   TeamUtils<ExecSpace> m_tu, m_tu_ig;
   int nslot;
+
+#ifdef HOMMEXX_ENABLE_FAD_TYPES
+  // Whether this is the functor of the adjoint of the DIRK stages (see run_adjoint)
+  static constexpr bool is_adj_fad = std::is_same_v<ST, DirkAdjFadType>;
+#else
+  static constexpr bool is_adj_fad = false;
+#endif
+
+  // Scratch space for run_adjoint: the Fad-typed state of one element, in Hxx format, for 2 time
+  // levels (buffer 0: the np1 state; buffer 1: the n0 and nm1 states, one at a time).
+  // Only allocated if is_adj_fad. Dims: (team slot, buffer, [component,] ip, jp, level).
+  using AdjViewV = Kokkos::View<PT*[2][2][NP][NP][NUM_LEV  ], Kokkos::LayoutRight, ExecSpace>;
+  using AdjViewM = Kokkos::View<PT*[2]   [NP][NP][NUM_LEV  ], Kokkos::LayoutRight, ExecSpace>;
+  using AdjViewI = Kokkos::View<PT*[2]   [NP][NP][NUM_LEV_P], Kokkos::LayoutRight, ExecSpace>;
+  AdjViewV m_adj_v;
+  AdjViewM m_adj_vth, m_adj_dp;
+  AdjViewI m_adj_w, m_adj_phi;
   int m_dx_tl = -1;  // time level seeded in init_J; used by run_JtV for identity block
   bool m_verbose = true; // Set to false to suppress some warnings in unit tests
   EquationOfState<Constants> m_eos;
@@ -126,6 +146,13 @@ struct DirkFunctorImplST {
     }
     m_tu = TeamUtils<ExecSpace>(m_policy);
     nslot = std::min(nelem, m_tu.get_num_ws_slots());
+    if constexpr (is_adj_fad) {
+      m_adj_v   = AdjViewV  ("dirk_adj_v"  , nslot);
+      m_adj_vth = AdjViewM  ("dirk_adj_vth", nslot);
+      m_adj_dp  = AdjViewM  ("dirk_adj_dp" , nslot);
+      m_adj_w   = AdjViewI  ("dirk_adj_w"  , nslot);
+      m_adj_phi = AdjViewI  ("dirk_adj_phi", nslot);
+    }
     m_ig_policy = Homme::get_default_team_policy<ExecSpace>(nelem);
     m_tu_ig = TeamUtils<ExecSpace>(m_ig_policy);
   }
@@ -437,6 +464,304 @@ struct DirkFunctorImplST {
   }
 #endif // HOMMEXX_ENABLE_FAD_TYPES
 
+#ifdef HOMMEXX_ENABLE_FAD_TYPES
+  // ---- Adjoint of a DIRK stage (implicit function theorem) ---------------------------------------
+  //
+  // A stage solves r(w*; p) = 0 for w* (see calc_w0_phi0 for r), where p are the inputs of the stage
+  // (the state at np1 before the stage and, if alphadt_n0/alphadt_nm1 are not 0, the states at n0 and
+  // nm1), and then sets phi = phi0(p) + dt2*g*w*. At the converged solution, dw*/dp = -(dr/dw)^{-1} dr/dp,
+  // so, for the seed mu on the output of the stage, J^T*mu has these pieces (levels 0..nlev-1):
+  //   omega = mu_w + dt2*g*mu_phi,    z = (dr/dw)^{-T} omega,
+  //   (J^T*mu)_p = -z^T dr/dp + mu_phi^T dphi0/dp,
+  // plus an identity block for v, vtheta_dp, dp3d (the stage does not change them), and for w_i at the
+  // surface (the stage does not solve for it). dr/dw is the tridiagonal matrix of calc_jacobian.
+  //
+  // The vector -z^T dr/dp + mu_phi^T dphi0/dp is the derivative w.r.t. p of sum_k [z_k*x_k + mu_phi_k*phi0_k],
+  // where x=-r and z, mu_phi, and w* are held fixed. So, we evaluate, with the same code as the forward
+  // solve, w0, phi0, and x, in a Fad type that carries the derivatives w.r.t. the state of the time level
+  // we want the product for, with a given z. The rows k of x and phi0 only depend on a few levels of
+  // each variable (the stencil of the equations). So, instead of one derivative per level, the levels l
+  // of a variable are 'colored': l goes in the slot base + l%m, with m the number of levels a row depends
+  // on. Then the derivative w.r.t. level l is the sum, over the rows k that depend on l, of the
+  // derivative of t_k = z_k*x_k + mu_phi_k*phi0_k w.r.t. the slot of l.
+  //
+  // Row k depends on the levels [k-a, k+b] of each variable (this is a bound, shared by the 3 time levels):
+  //   w_i: [k-1,k+1],  vtheta_dp: [k-1,k],  dp3d and v: [k-2,k+1],  phinh_i: [k-1,k+1]
+  // (D_k involves pnh_{k-1}, pnh_k, which depend on vtheta_dp_m and dphi_m for m=k-1,k, and thus on
+  // phi0_j for j=k-1..k+1, which involves phi_j, w_j, and the vertical velocity induced by the topography
+  // gwh_j, which depends on dp and v at the levels j-1, j).
+  struct AdjWin { int a, b, m, base; };
+  static constexpr AdjWin adj_win_w   = {1,1,3, 0};
+  static constexpr AdjWin adj_win_vth = {1,0,2, 3};
+  static constexpr AdjWin adj_win_dp  = {2,1,4, 5};
+  static constexpr AdjWin adj_win_v1  = {2,1,4, 9};
+  static constexpr AdjWin adj_win_v2  = {2,1,4,13};
+  static constexpr AdjWin adj_win_phi = {1,1,3,17};
+
+  // Copy a Real field (Hxx format, midpoints or interfaces) into a Fad one, and, if seed, seed the
+  // derivative of the level l in the slot base + l%m. Must be called by the whole team.
+  template <typename SrcView, typename DstView>
+  KOKKOS_INLINE_FUNCTION
+  static void adj_copy_seed (const KernelVariables& kv, const SrcView& src, const DstView& dst,
+                             const int nlev_field, const bool seed, const AdjWin& win) {
+    const auto f = [&] (const int idx) {
+      const int gi = idx / NP, gj = idx % NP;
+      const auto g = [&] (const int pk) {
+        for (int s = 0; s < VECTOR_SIZE; ++s) {
+          const int l = pk*VECTOR_SIZE + s;
+          auto& d = dst(gi,gj,pk)[s];
+          d.zero();
+          d.val() = src(gi,gj,pk)[s];
+          if (seed && l < nlev_field)
+            d.fastAccessDx(win.base + l % win.m) = 1;
+        }
+      };
+      Kokkos::parallel_for(Kokkos::ThreadVectorRange(kv.team, dst.extent_int(2)), g);
+    };
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(kv.team, NP*NP), f);
+  }
+
+  // For each level l of a variable, and for each column, call store(gi,gj,l,value), with value
+  // the sum, over the rows k of t that depend on l, of the derivative of t_k w.r.t. the slot of l.
+  // Must be called by the whole team.
+  template <typename Store>
+  KOKKOS_INLINE_FUNCTION
+  static void adj_uncolor (const KernelVariables& kv, const LinearSystemSlot& t, const AdjWin& win,
+                           const int nlev_field, const int nrows, const Store& store) {
+    const auto f = [&] (const int l) {
+      const int klo = l - win.b > 0 ? l - win.b : 0;
+      const int khi = l + win.a < nrows - 1 ? l + win.a : nrows - 1;
+      const int slot = win.base + l % win.m;
+      const auto g = [&] (const int i) {
+        for (int s = 0; s < packn; ++s) {
+          const int idx = packn*i + s;
+          if (idx >= scaln) break;
+          Real val = 0;
+          for (int k = klo; k <= khi; ++k)
+            val += t(k,i)[s].fastAccessDx(slot);
+          store(idx / NP, idx % NP, l, val);
+        }
+      };
+      Kokkos::parallel_for(Kokkos::ThreadVectorRange(kv.team, npack), g);
+    };
+    Kokkos::parallel_for(Kokkos::TeamThreadRange(kv.team, nlev_field), f);
+  }
+
+  // J^T*mu for one DIRK stage, which took s_pre as the np1 state and gave s_post (only w_i is used).
+  // J_np1 = d(state after)/d(s_pre) goes to out_pre, and, if not null, J_n0 and J_nm1 (the derivs w.r.t.
+  // the states s_n0 and s_nm1, which the stage depends on iff alphadt_n0 and alphadt_nm1 are not 0)
+  // go to out_n0 and out_nm1. s_n0 (s_nm1) is not used, and can be null, if alphadt_n0 (alphadt_nm1) is 0.
+  // All the outputs are fully overwritten. mu and out_pre may be the same object.
+  // This is the adjoint of run (with the same arguments), but the Newton iterations are not replayed:
+  // the converged solution is read from s_post. See above for the math. Only for ST=DirkAdjFadType.
+  void run_adjoint (const Real alphadt_nm1, const Real alphadt_n0, const Real dt2,
+                    const ElementsGeometry& geo, const HybridVCoord& hvcoord,
+                    const StateSnapshot* s_nm1, const StateSnapshot* s_n0,
+                    const StateSnapshot& s_pre, const StateSnapshot& s_post,
+                    const StateSnapshot& mu,
+                    StateSnapshot& out_pre, StateSnapshot* out_n0, StateSnapshot* out_nm1,
+                    const bool bfb_solver = default_bfb_solver) {
+    static_assert(is_adj_fad, "run_adjoint is only available for ST=DirkAdjFadType");
+    EKAT_REQUIRE_MSG (alphadt_nm1==0 or s_nm1!=nullptr,
+        "[DirkFunctorImpl::run_adjoint] Error! The nm1 state is needed if alphadt_nm1!=0.\n");
+    EKAT_REQUIRE_MSG (alphadt_n0==0 or s_n0!=nullptr,
+        "[DirkFunctorImpl::run_adjoint] Error! The n0 state is needed if alphadt_n0!=0.\n");
+    GPTLstart("dirk_stage_adjoint");
+
+    // If a state is not needed, pass in another valid one: it won't be read
+    const StateSnapshot& snm1 = s_nm1 ? *s_nm1 : s_pre;
+    const StateSnapshot& sn0  = s_n0  ? *s_n0  : s_pre;
+
+    // The np1 output goes last, since out_pre may alias mu (which all the passes read)
+    if (out_n0)  run_adjoint_pass(n0_tl,  alphadt_nm1, alphadt_n0, dt2, geo, hvcoord, snm1, sn0, s_pre, s_post, mu, *out_n0,  bfb_solver);
+    if (out_nm1) run_adjoint_pass(nm1_tl, alphadt_nm1, alphadt_n0, dt2, geo, hvcoord, snm1, sn0, s_pre, s_post, mu, *out_nm1, bfb_solver);
+    run_adjoint_pass(np1_tl, alphadt_nm1, alphadt_n0, dt2, geo, hvcoord, snm1, sn0, s_pre, s_post, mu, out_pre, bfb_solver);
+
+    GPTLstop("dirk_stage_adjoint");
+  }
+
+  // The time levels, as seen by calc_w0_phi0 in run_adjoint
+  static constexpr int nm1_tl = 0, n0_tl = 1, np1_tl = 2;
+
+  // J^T*mu for the derivs w.r.t. the state at time level seed_tl (see run_adjoint)
+  void run_adjoint_pass (const int seed_tl, const Real alphadt_nm1, const Real alphadt_n0, const Real dt2,
+                         const ElementsGeometry& geo, const HybridVCoord& hvcoord,
+                         const StateSnapshot& s_nm1, const StateSnapshot& s_n0,
+                         const StateSnapshot& s_pre, const StateSnapshot& s_post,
+                         const StateSnapshot& mu, StateSnapshot& out, const bool bfb_solver) {
+    using Kokkos::subview;
+    using Kokkos::parallel_reduce;
+    const auto a = Kokkos::ALL();
+    const bool is_np1 = seed_tl == np1_tl;
+
+    const auto work = m_work;
+    const auto ls = m_ls;
+    const auto tu = m_tu;
+    const auto policy = m_policy;
+    const auto adj_v = m_adj_v, adj_vth = m_adj_vth, adj_dp = m_adj_dp, adj_w = m_adj_w, adj_phi = m_adj_phi;
+    const auto eos = m_eos;
+    const auto constants = eos.m_constants;
+    const auto gradphis = geo.m_gradphis;
+    const auto hybi = hvcoord.hybrid_bi;
+
+    // Shallow copies, to capture in the kernel
+    const StateSnapshot nm1s = s_nm1, n0s = s_n0, pre = s_pre, post = s_post, muc = mu;
+    const auto o_v   = ekat::scalarize(out.v);
+    const auto o_vth = ekat::scalarize(out.vtheta_dp);
+    const auto o_dp  = ekat::scalarize(out.dp3d);
+    const auto o_w   = ekat::scalarize(out.w_i);
+    const auto o_phi = ekat::scalarize(out.phinh_i);
+    const auto m_v   = ekat::scalarize(muc.v);
+    const auto m_vth = ekat::scalarize(muc.vtheta_dp);
+    const auto m_dp  = ekat::scalarize(muc.dp3d);
+    const auto m_w   = ekat::scalarize(muc.w_i);
+
+    const AdjWin win_w = adj_win_w, win_vth = adj_win_vth, win_dp = adj_win_dp,
+                 win_v1 = adj_win_v1, win_v2 = adj_win_v2, win_phi = adj_win_phi;
+
+    // Tolerance on the residual of the stage equations at the solution that we read from s_post
+    const Real res_tol = 1e-5;
+
+    const auto toplevel = KOKKOS_LAMBDA (const MT& team, int& nerr) {
+      KernelVariables kv(team, tu);
+      const auto ie = kv.ie;
+      const int slot = kv.team_idx;
+      const int nlev = num_phys_lev;
+      const int nvec = npack;
+      const auto grav = constants.g();
+
+      // The slots are the same as in run_newton
+      const auto
+      phi_n0    = get_work_slot(work, slot,  0),
+      phi_np1   = get_work_slot(work, slot,  1),
+      dphi      = get_work_slot(work, slot,  2),
+      w_n0      = get_work_slot(work, slot,  3),
+      w_np1     = get_work_slot(work, slot,  4),
+      dpnh_dp_i = get_work_slot(work, slot,  5),
+      gwh_i     = get_work_slot(work, slot,  6),
+      dphi_n0   = get_work_slot(work, slot,  6), // reuse gwh_i
+      vtheta_dp = get_work_slot(work, slot,  7),
+      dp3d      = get_work_slot(work, slot,  8),
+      pnh       = get_work_slot(work, slot,  9),
+      wrk       = get_work_slot(work, slot, 10),
+      xfull     = get_work_slot(work, slot, 11);
+      const auto
+      dl = get_ls_slot(ls, slot, 0),
+      d  = get_ls_slot(ls, slot, 1),
+      du = get_ls_slot(ls, slot, 2),
+      scratch = get_ls_slot(ls, slot, 3);
+      LinearSystemSlot x = subview(xfull, Kokkos::pair<int,int>(0,nlev), a);
+      LinearSystemSlot z = subview(wrk,   Kokkos::pair<int,int>(0,nlev), a);
+
+      // Load a Real state into the Fad scratch, seeding the derivs if it is the state we differentiate
+      // w.r.t. (the np1 state in buffer 0; the n0 and nm1 states, one at a time, in buffer 1).
+      const auto state_at = [&] (const int nt) {
+        const StateSnapshot& s = nt == np1_tl ? pre : (nt == n0_tl ? n0s : nm1s);
+        const int buf = nt == np1_tl ? 0 : 1;
+        const bool seed = nt == seed_tl;
+        adj_copy_seed(kv, subview(s.v,ie,0,a,a,a), subview(adj_v,slot,buf,0,a,a,a), nlev, seed, win_v1);
+        adj_copy_seed(kv, subview(s.v,ie,1,a,a,a), subview(adj_v,slot,buf,1,a,a,a), nlev, seed, win_v2);
+        adj_copy_seed(kv, subview(s.vtheta_dp,ie,a,a,a), subview(adj_vth,slot,buf,a,a,a), nlev,   seed, win_vth);
+        adj_copy_seed(kv, subview(s.dp3d,ie,a,a,a),      subview(adj_dp, slot,buf,a,a,a), nlev,   seed, win_dp);
+        adj_copy_seed(kv, subview(s.w_i,ie,a,a,a),       subview(adj_w,  slot,buf,a,a,a), nlev+1, seed, win_w);
+        adj_copy_seed(kv, subview(s.phinh_i,ie,a,a,a),   subview(adj_phi,slot,buf,a,a,a), nlev+1, seed, win_phi);
+        kv.team_barrier();
+        return make_state_views(subview(adj_w,  slot,buf,a,a,a), subview(adj_phi,slot,buf,a,a,a),
+                                subview(adj_vth,slot,buf,a,a,a), subview(adj_dp, slot,buf,a,a,a),
+                                subview(adj_v,  slot,buf,a,a,a,a));
+      };
+
+      // w0, phi0 (in w_n0 and phi_n0), and the np1 vtheta_dp, dp3d (all with derivs)
+      const auto wmax = calc_w0_phi0(kv, hvcoord, eos, dt2, nm1_tl, alphadt_nm1, n0_tl, alphadt_n0, np1_tl,
+                                     state_at, subview(gradphis,ie,a,a,a), hybi,
+                                     phi_n0, phi_np1, dphi, w_n0, w_np1, dpnh_dp_i, gwh_i,
+                                     vtheta_dp, dp3d, pnh, wrk, nerr);
+      kv.team_barrier();
+
+      // The converged solution (no derivs), and the dphi it implies
+      transpose(kv, nlev+1, subview(post.w_i,ie,a,a,a), w_np1);
+      loop_ki(kv, nlev, nvec, [&] (const int k, const int i) { dphi_n0(k,i) = phi_n0(k+1,i) - phi_n0(k,i); });
+      kv.team_barrier();
+      loop_ki(kv, nlev-1, nvec, [&] (const int k, const int i) {
+        dphi(k,i) = dphi_n0(k,i) + dt2*grav*(w_np1(k+1,i) - w_np1(k,i));
+      });
+      loop_ki(kv, 1, nvec, [&] (const int, const int i) {
+        const int k = nlev-1;
+        dphi(k,i) = dphi_n0(k,i) - dt2*grav*w_np1(k,i);
+      });
+      kv.team_barrier();
+
+      // x = -r(w*), and the Jacobian dr/dw
+      const bool ok = pnh_and_exner_from_eos(kv, hvcoord, eos, vtheta_dp, dp3d, dphi, pnh, wrk, dpnh_dp_i);
+      if ( ! ok) nerr = 1;
+      kv.team_barrier();
+      calc_neg_residual(kv, nlev, nvec, grav, dt2, w_np1, w_n0, dpnh_dp_i, x);
+      calc_jacobian(kv, constants, dt2, dp3d, dphi, pnh, dl, d, du);
+      kv.team_barrier();
+
+#ifndef NDEBUG
+      // If w* is not the root of r (e.g., the forward Newton solve did not converge), the adjoint is wrong
+      ST deltaerr = 0;
+      if ( ! exit_on_step(kv, nlev, nvec, wmax, res_tol, x, deltaerr)) nerr = 1;
+      kv.team_barrier();
+#else
+      (void) wmax; (void) res_tol;
+#endif
+
+      // z = J^{-T}*omega, with omega = mu_w + dt2*g*mu_phi. mu_phi stays in phi_np1, for later
+      transpose(kv, nlev+1, subview(muc.w_i,    ie,a,a,a), wrk);
+      transpose(kv, nlev+1, subview(muc.phinh_i,ie,a,a,a), phi_np1);
+      kv.team_barrier();
+      loop_ki(kv, nlev, nvec, [&] (const int k, const int i) { wrk(k,i) += dt2*grav*phi_np1(k,i); });
+      kv.team_barrier();
+      solve_transpose(kv, dl, d, du, scratch, z, bfb_solver);
+      kv.team_barrier();
+
+      // z is a constant for this purpose (drop the derivs it got from J)
+      loop_ki(kv, nlev, nvec, [&] (const int k, const int i) {
+        for (int s = 0; s < packn; ++s)
+          z(k,i)[s] = ADValue(z(k,i)[s]);
+      });
+      kv.team_barrier();
+
+      // t_k = z_k*x_k + mu_phi_k*phi0_k, whose derivs are the product we want
+      loop_ki(kv, nlev, nvec, [&] (const int k, const int i) {
+        x(k,i) = z(k,i)*x(k,i) + phi_np1(k,i)*phi_n0(k,i);
+      });
+      kv.team_barrier();
+
+      // The np1 output also has the identity blocks (v, vtheta_dp, dp3d, and the surface w).
+      // Note: out and mu may alias; each entry is read, if at all, only by the one thread that writes it
+      adj_uncolor(kv, x, win_v1, nlev, nlev, [&] (const int gi, const int gj, const int l, const Real val) {
+        o_v(ie,0,gi,gj,l) = val + (is_np1 ? m_v(ie,0,gi,gj,l) : 0);
+      });
+      adj_uncolor(kv, x, win_v2, nlev, nlev, [&] (const int gi, const int gj, const int l, const Real val) {
+        o_v(ie,1,gi,gj,l) = val + (is_np1 ? m_v(ie,1,gi,gj,l) : 0);
+      });
+      adj_uncolor(kv, x, win_vth, nlev, nlev, [&] (const int gi, const int gj, const int l, const Real val) {
+        o_vth(ie,gi,gj,l) = val + (is_np1 ? m_vth(ie,gi,gj,l) : 0);
+      });
+      adj_uncolor(kv, x, win_dp, nlev, nlev, [&] (const int gi, const int gj, const int l, const Real val) {
+        o_dp(ie,gi,gj,l) = val + (is_np1 ? m_dp(ie,gi,gj,l) : 0);
+      });
+      adj_uncolor(kv, x, win_w, nlev+1, nlev, [&] (const int gi, const int gj, const int l, const Real val) {
+        o_w(ie,gi,gj,l) = (is_np1 && l == nlev) ? m_w(ie,gi,gj,l) : val;
+      });
+      adj_uncolor(kv, x, win_phi, nlev+1, nlev, [&] (const int gi, const int gj, const int l, const Real val) {
+        o_phi(ie,gi,gj,l) = val;
+      });
+    };
+
+    int nerr = 0;
+    parallel_reduce(policy, toplevel, nerr);
+    Kokkos::fence();
+    // (The check that the state after the stage is the root of the stage equations is only done in debug builds)
+    EKAT_REQUIRE_MSG (nerr == 0,
+        "[DirkFunctorImpl::run_adjoint] Error! In some columns, either vtheta_dp<0 or dphi>0, or (debug builds\n"
+        "only) the state after the stage is not the root of the stage equations (did the forward Newton solve converge?).\n");
+  }
+#endif // HOMMEXX_ENABLE_FAD_TYPES
+
   // Optimal impl of phi_from_eos for the initial guess. See comments for the
   // function phi_from_eos, below, for discussion. This kernel uses standard
   // Hommexx layout and parallelization approaches to compute the scans
@@ -742,20 +1067,23 @@ struct DirkFunctorImplST {
   }
 
   // Views of the state at one time level of one element, in Hxx format, as returned by
-  // the state_at callable passed to calc_w0_phi0.
-  template <typename Vi, typename Vm, typename Vv>
+  // the state_at callable passed to calc_w0_phi0. The type of each view is independent, so
+  // that, e.g., the state may be stored in a different scalar type than the work slots.
+  template <typename Vw, typename Vphi, typename Vvth, typename Vdp, typename Vv>
   struct StateViews {
-    Vi w_i, phinh_i;       // interfaces
-    Vm vtheta_dp, dp3d;    // midpoints
-    Vv v;                  // horizontal velocity
+    Vw w_i;         // interfaces
+    Vphi phinh_i;   // interfaces
+    Vvth vtheta_dp; // midpoints
+    Vdp dp3d;       // midpoints
+    Vv v;           // horizontal velocity
   };
 
-  template <typename Vi, typename Vm, typename Vv>
+  template <typename Vw, typename Vphi, typename Vvth, typename Vdp, typename Vv>
   KOKKOS_INLINE_FUNCTION
-  static StateViews<Vi,Vm,Vv> make_state_views (const Vi& w_i, const Vi& phinh_i,
-                                                const Vm& vtheta_dp, const Vm& dp3d,
-                                                const Vv& v) {
-    return StateViews<Vi,Vm,Vv>{w_i, phinh_i, vtheta_dp, dp3d, v};
+  static StateViews<Vw,Vphi,Vvth,Vdp,Vv>
+  make_state_views (const Vw& w_i, const Vphi& phinh_i, const Vvth& vtheta_dp,
+                    const Vdp& dp3d, const Vv& v) {
+    return StateViews<Vw,Vphi,Vvth,Vdp,Vv>{w_i, phinh_i, vtheta_dp, dp3d, v};
   }
 
   // The equations that the Newton iteration solves for w_np1 are, in each column,
