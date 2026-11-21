@@ -32,6 +32,15 @@ using DxFadTypeCaar = SFadN<double,19*NP*NP>; // for JV
 // {w_i,phinh_i} at NUM_INTERFACE_LEV interface levels, all per column.
 using DxFadTypeDirk = SFadN<double, NUM_PHYSICAL_LEV*4 + NUM_INTERFACE_LEV*2>;
 
+// The fad type for the adjoint of the DIRK stages (see DirkFunctorImplST::run_adjoint).
+// The adjoint only needs the derivatives of the (local) residual of the Newton equations w.r.t. the state
+// of the column. Each row of the residual only depends on a few levels of each variable, so the derivs
+// w.r.t. the levels of a variable are 'colored': the level l of a variable goes in the slot
+// (base + l % m), with m the number of levels that a row can depend on. The windows (see
+// DirkFunctorImplST::run_adjoint) are: w_i 3, vtheta_dp 2, dp3d 4, v (each component) 4, phinh_i 3.
+constexpr int DirkAdjFadSize = 3 + 2 + 4 + 4 + 4 + 3;
+using DirkAdjFadType = SFadN<double, DirkAdjFadSize>;
+
 // The fad type for the deriv w.r.t. state vars for the remap functor.
 // There is no horizontal coupling but full level coupling.
 // Most variables only depend on themselves and dp, but w and phi appear
