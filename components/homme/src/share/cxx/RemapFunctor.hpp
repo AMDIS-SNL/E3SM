@@ -923,6 +923,145 @@ struct RemapFunctor : public RemapperST<ST> {
     Kokkos::parallel_for(p4_int, jtv_int);
     Kokkos::parallel_for(p4_mid, jtv_mid);
   }
+
+  // ------------------------------------------------------------------------ //
+  //   Tracers (qdp) and surface pressure (ps_v) in the column Jacobian
+  // ------------------------------------------------------------------------ //
+  // The remapped qdp(iq) depends only on qdp(iq) itself and on dp3d (through the
+  // src/tgt grids), and no dynamics output depends on qdp. Hence the derivative slots of qdp(iq,k) can *alias* those of u(k):
+  //  - in d(qdp_out(iq))/dx, the slots [fad_offset_qdp, +NUM_PHYSICAL_LEV) hold
+  //    d(qdp_out(iq))/d(qdp_in(iq)) (the u contribution is structurally zero);
+  //  - in d(dyn_out)/dx, those slots hold d(dyn_out)/d(u_in) (the qdp
+  //    contribution is structurally zero).
+  // This way all tracers are differentiated in the same pass, at no extra cost
+  // in Fad size. If an upstream change ever couples tracers and dynamics inside
+  // the remap, this breaks, and vertical_remap_adjoint_ut (which checks against
+  // the DpFad-typed fwd remap) fails.
+  // The surface pressure ps_v(np1) is an output only (it is recomputed from dp3d
+  // at the start of the remap), and depends only on dp3d.
+  static constexpr int fad_offset_qdp = fad_offset_u;
+
+  // qdp at a single (implied) time level, as used by the adjoint drivers
+  using QdpSlotView = ExecViewManaged<PackType<Real>*[QSIZE_D][NP][NP][NUM_LEV]>;
+
+  // Seed the qdp derivatives: qdp(ie,tl,iq,ip,jp,k).dx(fad_offset_qdp+k) = (tl==dx_qdp_tl),
+  // all other derivatives set to 0. Call after init_J (it doesn't touch the state).
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, DxFadTypeRemap>>
+  init_J_qdp (const int dx_qdp_tl, const TracersST<ST>& tracers) {
+    using md_range_t = Kokkos::MDRangePolicy<ExecSpace, Kokkos::Rank<6>>;
+    const int nelem = tracers.qdp.extent_int(0);
+    auto p6 = md_range_t({0,0,0,0,0,0}, {nelem, Q_NUM_TIME_LEVELS, QSIZE_D, NP, NP, NUM_PHYSICAL_LEV});
+    auto q = ekat::scalarize(tracers.qdp);
+    const int offset_qdp = fad_offset_qdp;
+    Kokkos::parallel_for(p6, KOKKOS_LAMBDA (int ie, int tl, int iq, int ip, int jp, int k) {
+      auto& dq = q(ie,tl,iq,ip,jp,k);
+      dq.zero();
+      dq.fastAccessDx(offset_qdp+k) = (tl==dx_qdp_tl ? 1.0 : 0.0);
+    });
+  }
+
+  // As run_JV above, but including tracers and ps_v. On top of the dynamics part:
+  //   y.ps_v (if allocated) = d(ps_v(np1))/d(dp3d) * x.dp3d
+  //   y_qdp(iq)             = d(qdp_out(iq))/d(qdp_in(iq)) * x_qdp(iq) + d(qdp_out(iq))/d(dp3d) * x.dp3d
+  // for iq<qsize. Preconditions: init_J(np1,..), init_J_qdp(np1_qdp,tracers_dx), run_remap(np1,np1_qdp,..).
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, DxFadTypeRemap>>
+  run_JV (const int np1, const int np1_qdp,
+          const ElementsStateST<ST>& state_dx, const TracersST<ST>& tracers_dx,
+          const StateSnapshot& x, const QdpSlotView& x_qdp,
+          StateSnapshot& y, const QdpSlotView& y_qdp)
+  {
+    run_JV(np1, state_dx, x, y);
+
+    const int nelem = state_dx.num_elems();
+    const int qsize = m_data.qsize;
+    const int offset_dp  = fad_offset_dp;
+    const int offset_qdp = fad_offset_qdp;
+    auto dq   = ekat::scalarize(tracers_dx.qdp);
+    auto dps  = state_dx.m_ps_v;
+    auto x_dp = ekat::scalarize(x.dp3d);
+    auto x_q  = ekat::scalarize(x_qdp);
+    auto y_q  = ekat::scalarize(y_qdp);
+
+    using md3_t = Kokkos::MDRangePolicy<ExecSpace, Kokkos::Rank<3>>;
+    using md5_t = Kokkos::MDRangePolicy<ExecSpace, Kokkos::Rank<5>>;
+    if (y.ps_v.size()>0) {
+      auto y_ps = y.ps_v;
+      Kokkos::parallel_for(md3_t({0,0,0},{nelem,NP,NP}),
+                           KOKKOS_LAMBDA (const int ie, const int ip, const int jp) {
+        const auto& Jps = dps(ie,np1,ip,jp).dx();
+        Real s = 0;
+        for (int k2=0; k2<NUM_PHYSICAL_LEV; ++k2)
+          s += Jps[offset_dp+k2]*x_dp(ie,ip,jp,k2);
+        y_ps(ie,ip,jp) = s;
+      });
+    }
+    if (qsize>0) {
+      Kokkos::parallel_for(md5_t({0,0,0,0,0},{nelem,qsize,NP,NP,NUM_PHYSICAL_LEV}),
+                           KOKKOS_LAMBDA (const int ie, const int iq, const int ip, const int jp, const int k) {
+        const auto& Jq = dq(ie,np1_qdp,iq,ip,jp,k).dx();
+        Real s = 0;
+        for (int k2=0; k2<NUM_PHYSICAL_LEV; ++k2)
+          s += Jq[offset_qdp+k2]*x_q (ie,iq,ip,jp,k2)
+             + Jq[offset_dp +k2]*x_dp(ie,   ip,jp,k2);
+        y_q(ie,iq,ip,jp,k) = s;
+      });
+    }
+    Kokkos::fence();
+  }
+
+  // As run_JtV above, but including tracers and ps_v: y = J^T x, where the outputs
+  // (rows of J) are the dynamics state, ps_v(np1) (only if x.ps_v is allocated) and
+  // qdp(np1_qdp,iq<qsize), and the inputs (columns of J) are the dynamics state and
+  // qdp(np1_qdp,iq<qsize). The input ps_v is not consumed by the remap, so y.ps_v
+  // (if allocated) is set to 0. x/x_qdp must not alias y/y_qdp.
+  template<typename MyST = ST>
+  std::enable_if_t<std::is_same_v<MyST, DxFadTypeRemap>>
+  run_JtV (const int np1, const int np1_qdp,
+           const ElementsStateST<ST>& state_dx, const TracersST<ST>& tracers_dx,
+           const StateSnapshot& x, const QdpSlotView& x_qdp,
+           StateSnapshot& y, const QdpSlotView& y_qdp)
+  {
+    run_JtV(np1, state_dx, x, y);
+    Kokkos::fence();
+
+    const int nelem = state_dx.num_elems();
+    const int qsize = m_data.qsize;
+    const int offset_dp  = fad_offset_dp;
+    const int offset_qdp = fad_offset_qdp;
+    const bool has_ps = x.ps_v.size()>0;
+    auto dq   = ekat::scalarize(tracers_dx.qdp);
+    auto dps  = state_dx.m_ps_v;
+    auto x_ps = x.ps_v;
+    auto x_q  = ekat::scalarize(x_qdp);
+    auto y_dp = ekat::scalarize(y.dp3d);
+    auto y_q  = ekat::scalarize(y_qdp);
+
+    using md4_t = Kokkos::MDRangePolicy<ExecSpace, Kokkos::Rank<4>>;
+    Kokkos::parallel_for(md4_t({0,0,0,0},{nelem,NP,NP,NUM_PHYSICAL_LEV}),
+                         KOKKOS_LAMBDA (const int ie, const int ip, const int jp, const int k2) {
+      Real s_dp = 0;
+      if (has_ps) {
+        s_dp += dps(ie,np1,ip,jp).dx()[offset_dp+k2]*x_ps(ie,ip,jp);
+      }
+      for (int iq=0; iq<qsize; ++iq) {
+        Real s_q = 0;
+        for (int k=0; k<NUM_PHYSICAL_LEV; ++k) {
+          const auto& Jq  = dq(ie,np1_qdp,iq,ip,jp,k).dx();
+          const Real  xqk = x_q(ie,iq,ip,jp,k);
+          s_q  += Jq[offset_qdp+k2]*xqk;
+          s_dp += Jq[offset_dp +k2]*xqk;
+        }
+        y_q(ie,iq,ip,jp,k2) = s_q;
+      }
+      y_dp(ie,ip,jp,k2) += s_dp;
+    });
+    if (y.ps_v.size()>0) {
+      Kokkos::deep_copy(y.ps_v,Real(0));
+    }
+    Kokkos::fence();
+  }
 #endif // HOMMEXX_ENABLE_FAD_TYPES
 
 private:

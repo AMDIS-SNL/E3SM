@@ -59,7 +59,7 @@ void ttype10_imex_adjoint(const Real dt_dyn,
 // them, since vn0 is just their sum), pass it as adj_vn0 and its contribution
 // will be added to dJ/d state(n0). The other accumulated derived quantities
 // (eta_dot_dpdn, omega_p) are NOT differentiated (nothing in prim_step
-// consumes them; a future vertical_remap adjoint will).
+// consumes them, and neither does the rsplit>0 vertical remap; see vertical_remap_adj.hpp).
 void prim_advance_adj(const Real dt, StateSnapshot& adj_state,
                       const AdjVn0View* adj_vn0 = nullptr);
 

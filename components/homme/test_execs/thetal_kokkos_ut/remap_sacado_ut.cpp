@@ -495,7 +495,40 @@ TEST_CASE("remap_jv_testing") {
   }
 }
 
-// Verify the JtV transpose identity: <a, J*b> == <J^T*a, b>.
+namespace {
+
+// Dot product of two snapshots over the physical levels (incl. ps_v)
+double dot_full (const StateSnapshot& x, const StateSnapshot& y) {
+  constexpr int nlevs = NUM_PHYSICAL_LEV;
+  return dot(ekat::scalarize(x.v),        ekat::scalarize(y.v),        nlevs)
+       + dot(ekat::scalarize(x.vtheta_dp),ekat::scalarize(y.vtheta_dp),nlevs)
+       + dot(ekat::scalarize(x.dp3d),     ekat::scalarize(y.dp3d),     nlevs)
+       + dot(ekat::scalarize(x.w_i),      ekat::scalarize(y.w_i),      nlevs+1)
+       + dot(ekat::scalarize(x.phinh_i),  ekat::scalarize(y.phinh_i),  nlevs+1)
+       + dot(x.ps_v, y.ps_v);
+}
+
+// Dot product of two single-slot qdp views, over the first qsize tracers and physical levels
+template<typename View>
+double dot_slot (const View& a, const View& b, const int qsize) {
+  auto ah = Kokkos::create_mirror(a); Kokkos::deep_copy(ah,a);
+  auto bh = Kokkos::create_mirror(b); Kokkos::deep_copy(bh,b);
+  double s = 0;
+  for (int ie=0; ie<ah.extent_int(0); ++ie)
+    for (int iq=0; iq<qsize; ++iq)
+      for (int i=0; i<NP; ++i)
+        for (int j=0; j<NP; ++j)
+          for (int lev=0; lev<NUM_PHYSICAL_LEV; ++lev) {
+            const int vpi = lev/VECTOR_SIZE, vsi = lev%VECTOR_SIZE;
+            s += ah(ie,iq,i,j,vpi)[vsi] * bh(ie,iq,i,j,vpi)[vsi];
+          }
+  return s;
+}
+
+} // anonymous namespace
+
+// Verify the JtV transpose identity: <a, J*b> == <J^T*a, b>, first for the dynamics
+// state only, then including the tracers (qdp) and the surface pressure output (ps_v).
 TEST_CASE("remap_jtv_testing") {
   using DxFadType = DxFadTypeRemap;
 
@@ -559,7 +592,7 @@ TEST_CASE("remap_jtv_testing") {
       MPI_Bcast(&dt,1,MPI_DOUBLE,0,mpi_comm);
 
       // Random snapshots
-      StateSnapshot xa(num_elems), xb(num_elems);
+      StateSnapshot xa(num_elems,true), xb(num_elems,true);
       xa.randomize(seed, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geo.m_phis);
       xb.randomize(seed+1, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geo.m_phis);
       auto ya = xa.clone();
@@ -569,7 +602,7 @@ TEST_CASE("remap_jtv_testing") {
       using RemapAlgTypeDX = Remap::Ppm::PpmVertRemap<Remap::Ppm::PpmMirrored<DxFadType>>;
       TracersST<DxFadType> tracers;
       tracers.init(num_elems, params.qsize);
-      Remap::RemapFunctor<true, RemapAlgTypeDX, DxFadType> remap(1, elems, tracers, hvcoord, -1);
+      Remap::RemapFunctor<true, RemapAlgTypeDX, DxFadType> remap(params.qsize, elems, tracers, hvcoord, -1);
 
       FunctorsBuffersManager fbm;
       fbm.request_size(remap.requested_buffer_size());
@@ -579,10 +612,22 @@ TEST_CASE("remap_jtv_testing") {
       // Randomize element state
       elems.m_state.randomize(seed+2, max_pressure, hvcoord.ps0, hvcoord.hybrid_ai0, geo.m_phis);
 
+      // Randomize tracers (the qdp derivs are overwritten by init_J_qdp)
+      const int np1_qdp = 1;
+      tracers.randomize(seed+3, 1.0, 10.0);
+
       // Assemble Jacobian
       remap.init_J(np1, elems.m_state);
-      remap.run_remap(np1, 0, dt);
+      remap.init_J_qdp(np1_qdp, tracers);
+      remap.run_remap(np1, np1_qdp, dt);
       Kokkos::fence();
+
+      // Random qdp directions (one qdp slot)
+      using QdpView = typename decltype(remap)::QdpSlotView;
+      QdpView xa_qdp("xa_qdp",num_elems), xb_qdp("xb_qdp",num_elems);
+      QdpView ya_qdp("ya_qdp",num_elems), yb_qdp("yb_qdp",num_elems);
+      genRandArray(xa_qdp, engine, RPDF(-1.0,1.0));
+      genRandArray(xb_qdp, engine, RPDF(-1.0,1.0));
 
       // Compute ya = J*xa
       remap.run_JV(np1, elems.m_state, xa, ya);
@@ -664,6 +709,28 @@ TEST_CASE("remap_jtv_testing") {
       const Real rtol = 1e-8;
       const Real atol = 1e-8;
       CHECK_THAT(gdot.v[0], Catch::WithinRel(gdot.v[1], rtol) || Catch::WithinAbs(gdot.v[1], atol));
+
+      //
+      // Same, including qdp (in and out) and ps_v (out): the input ps_v is not consumed,
+      // so xa.ps_v is ignored by run_JV, and yb.ps_v is set to 0 by run_JtV
+      //
+      remap.run_JV (np1, np1_qdp, elems.m_state, tracers, xa, xa_qdp, ya, ya_qdp);
+      remap.run_JtV(np1, np1_qdp, elems.m_state, tracers, xb, xb_qdp, yb, yb_qdp);
+      Kokkos::fence();
+
+      const int qsize = params.qsize;
+      const double dot_a = dot_full(xa, yb) + dot_slot(xa_qdp, yb_qdp, qsize);
+      const double dot_b = dot_full(ya, xb) + dot_slot(ya_qdp, xb_qdp, qsize);
+      if (comm.am_i_root()) {
+        std::cout << std::setprecision(15) << "     <xa, J^T*xb> = " << dot_a
+                  << ", <J*xa, xb> = " << dot_b << "\n";
+      }
+      CHECK (dot_a != 0);
+      CHECK_THAT(dot_a, Catch::WithinRel(dot_b, rtol) || Catch::WithinAbs(dot_b, atol));
+
+      // The qdp and ps_v parts are not trivial
+      CHECK (dot_slot(ya_qdp, xb_qdp, qsize) != 0);
+      CHECK (dot(ya.ps_v, xb.ps_v) != 0);
     }
   }
 }

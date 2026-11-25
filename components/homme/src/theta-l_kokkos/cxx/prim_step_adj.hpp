@@ -29,8 +29,8 @@ namespace Homme {
 //               adj_qdp   = dJ/d(qdp after qdp_time_avg)
 //   - on exit:  adj_state = dJ/d(dyn state before the 1st prim_advance_exp),
 //               adj_qdp   = dJ/d(qdp before the 1st euler_step)
-// (Seeds on eta_dot_dpdn/omega_p, needed once a vertical_remap adjoint exists,
-// are not supported yet.)
+// (No seeds on eta_dot_dpdn/omega_p are needed: the rsplit>0 vertical remap
+// that follows does not read them; see vertical_remap_adj.hpp.)
 //
 // This is the "reference orchestrator" of the building blocks: the adjoint of the tracers
 // step (prim_advec_tracers_remap_adj) and of the dynamics (prim_advance_adj, with the
